@@ -1,0 +1,18 @@
+diff --git a/utils/bazel/llvm-project-overlay/llvm/BUILD.bazel b/utils/bazel/llvm-project-overlay/llvm/BUILD.bazel
+index 2b5a70b..da0514d 100644
+--- a/utils/bazel/llvm-project-overlay/llvm/BUILD.bazel
++++ b/utils/bazel/llvm-project-overlay/llvm/BUILD.bazel
+@@ -305,7 +305,12 @@ write_file(
+ config_setting(
+     name = "is_windows_clang_mingw",
+     constraint_values = ["@platforms//os:windows"],
+-    flag_values = {"@rules_cc//cc/compiler:compiler": "clang"},
++    # This fork exclusively drives clang against the MSVC ABI on Windows.
++    # Using the generic "clang" value here makes this MinGW branch more
++    # specialized than :is_windows_msvc on x86-64, injecting GNU --stack
++    # flags into lld-link. Reserve the branch for an explicitly MinGW-named
++    # toolchain instead.
++    flag_values = {"@rules_cc//cc/compiler:compiler": "clang-mingw"},
+ )
+ 
+ config_setting(

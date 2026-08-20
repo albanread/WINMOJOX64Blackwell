@@ -1,0 +1,41 @@
+diff --git a/utils/bazel/llvm-project-overlay/llvm/BUILD.bazel b/utils/bazel/llvm-project-overlay/llvm/BUILD.bazel
+index da0514d..e437972 100644
+--- a/utils/bazel/llvm-project-overlay/llvm/BUILD.bazel
++++ b/utils/bazel/llvm-project-overlay/llvm/BUILD.bazel
+@@ -460,13 +460,19 @@ cc_library(
+             "ntdll.lib",
+             "winhttp.lib",
+         ],
++        # Driver spellings, not linker spellings. In this fork is_windows_msvc
++        # means "MSVC ABI reached through the ordinary clang driver", so bare
++        # .lib names and a raw /STACK: are read as input filenames and the
++        # compile fails with "no such file or directory: 'ole32.lib'". -l works
++        # because the driver translates it, and /STACK: has to be handed to
++        # lld-link explicitly through -Wl.
+         ":is_windows_msvc": [
+-            "/STACK:10000000",
+-            "ole32.lib",
+-            "uuid.lib",
+-            "ws2_32.lib",
+-            "ntdll.lib",
+-            "winhttp.lib",
++            "-Wl,/STACK:10000000",
++            "-lole32",
++            "-luuid",
++            "-lws2_32",
++            "-lntdll",
++            "-lwinhttp",
+         ],
+         "@platforms//os:freebsd": [
+             "-pthread",
+@@ -4894,8 +4900,8 @@ cc_library(
+             "winhttp.lib",
+         ],
+         ":is_windows_msvc": [
+-            "crypt32.lib",
+-            "winhttp.lib",
++            "-lcrypt32",
++            "-lwinhttp",
+         ],
+         "//conditions:default": [],
+     }),

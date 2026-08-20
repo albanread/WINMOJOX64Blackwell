@@ -1,0 +1,19 @@
+diff --git a/absl/crc/internal/non_temporal_arm_intrinsics.h b/absl/crc/internal/non_temporal_arm_intrinsics.h
+index 9e5ccfc..a506ff1 100644
+--- a/absl/crc/internal/non_temporal_arm_intrinsics.h
++++ b/absl/crc/internal/non_temporal_arm_intrinsics.h
+@@ -53,7 +53,13 @@ static inline __attribute__((always_inline)) __m128i _mm_loadu_si128(
+ // https://msdn.microsoft.com/en-us/library/ba08y07y%28v=vs.90%29.aspx
+ static inline __attribute__((always_inline)) void _mm_stream_si128(__m128i *p,
+                                                                    __m128i a) {
+-#if ABSL_HAVE_BUILTIN(__builtin_nontemporal_store)
++// Not on Windows: there __m128i resolves to MSVC's __n128, which is a union,
++// and __builtin_nontemporal_store rejects it with "address argument to
++// nontemporal builtin must be a pointer to integer, float, pointer, or a vector
++// of such types". ABSL_HAVE_BUILTIN still reports the builtin as present, since
++// it exists but does not accept this type. The vst1q_s64 path below is the
++// portable equivalent, losing only the non-temporal cache hint.
++#if ABSL_HAVE_BUILTIN(__builtin_nontemporal_store) && !defined(_WIN32)
+   __builtin_nontemporal_store(a, p);
+ #else
+   vst1q_s64((int64_t *)p, vreinterpretq_s64_m128i(a));

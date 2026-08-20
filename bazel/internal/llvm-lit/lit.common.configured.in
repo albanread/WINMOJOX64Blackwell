@@ -1,0 +1,42 @@
+# Used internally by lit
+config.target_triple = "@TARGET_TRIPLE@"
+
+# FileCheck, not and count live in the llvm-project external repo inside the
+# test's runfiles. The old "../" spelling relied on the working directory
+# being a materialized runfiles _main directory, which does not hold on
+# Windows: runfiles there are a MANIFEST plus a stub, and only the runfiles
+# library can translate a runfiles path into a real file. Resolve FileCheck
+# through it and point lit at that directory; the "../" fallback preserves
+# the old behavior anywhere the library or manifest is absent.
+import os as _os
+_llvm_tools_dir = None
+try:
+    from python.runfiles import runfiles as _runfiles
+
+    _fc_rpath = "+llvm_configure+llvm-project/llvm/FileCheck" + (
+        ".exe" if _os.name == "nt" else ""
+    )
+    _fc = _runfiles.Create().Rlocation(_fc_rpath)
+    if _fc and _os.path.exists(_fc):
+        _llvm_tools_dir = _os.path.dirname(_fc)
+except Exception:
+    pass
+config.llvm_tools_dir = _llvm_tools_dir or "../+llvm_configure+llvm-project/llvm"
+
+config.llvm_use_sanitizer = "@LLVM_USE_SANITIZER@"
+if @ENABLE_ASSERTIONS@:
+    config.available_features.add("ASSERTIONS")
+
+if @MODULAR_PRODUCTION@:
+    config.available_features.add("production")
+
+config.mojo_version_major = @MOJO_VERSION_MAJOR@
+config.mojo_version_minor = @MOJO_VERSION_MINOR@
+config.mojo_version_patch = @MOJO_VERSION_PATCH@
+
+import lit.llvm
+lit.llvm.initialize(lit_config, config)
+lit.llvm.llvm_config.use_default_substitutions()
+
+# Setup attributes common for all top-level directories
+lit_config.load_config(config, "./bazel/internal/llvm-lit/lit.common.cfg.py")

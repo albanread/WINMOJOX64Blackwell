@@ -1,0 +1,34 @@
+diff --git a/absl/container/BUILD.bazel b/absl/container/BUILD.bazel
+index 68a9008..b0e3669 100644
+--- a/absl/container/BUILD.bazel
++++ b/absl/container/BUILD.bazel
+@@ -617,6 +617,13 @@ cc_library(
+         "//absl/time",
+         "//absl/utility",
+     ],
++    # alwayslink for PE/COFF. The weak definitions in this target exist to be
++    # linked in unconditionally, but a weak *definition* inside an archive does
++    # not cause the linker to pull that member: only a strong undefined
++    # reference does. ELF tolerates the result, resolving an unresolved weak
++    # reference to zero, whereas lld-link reports it as an undefined symbol.
++    # Linking the whole archive is what makes the definitions present.
++    alwayslink = 1,
+ )
+ 
+ cc_test(
+diff --git a/absl/synchronization/BUILD.bazel b/absl/synchronization/BUILD.bazel
+index 9a1aa83..9540e22 100644
+--- a/absl/synchronization/BUILD.bazel
++++ b/absl/synchronization/BUILD.bazel
+@@ -152,6 +152,11 @@ cc_library(
+     ] + select({
+         "//conditions:default": [],
+     }),
++    # alwayslink for PE/COFF: per_thread_sem.cc holds weak definitions of the
++    # AbslInternalPerThreadSem* symbols, and a weak definition in an archive
++    # does not pull its member in. ELF resolves the leftover weak reference to
++    # zero; lld-link reports an undefined symbol instead.
++    alwayslink = 1,
+ )
+ 
+ cc_test(

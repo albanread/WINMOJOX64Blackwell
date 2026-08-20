@@ -1,0 +1,17 @@
+diff --git a/crypto/hrss/hrss.c b/crypto/hrss/hrss.c
+index 572e981..773616c 100644
+--- a/crypto/hrss/hrss.c
++++ b/crypto/hrss/hrss.c
+@@ -187,7 +187,11 @@ static inline vec_t vec_broadcast_bit(vec_t a) {
+ // compiler requires that |i| be a compile-time constant.)
+ #define vec_get_word(v, i) _mm_extract_epi16(v, i)
+ 
+-#elif (defined(OPENSSL_ARM) || defined(OPENSSL_AARCH64)) && defined(__ARM_NEON)
++// Not on Windows: uint16x8_t resolves to MSVC's __n128, which is a union, so
++// the arithmetic in vec_add and vec_sub below fails with "invalid operands to
++// binary expression ('vec_t' (aka 'union __n128') and 'vec_t')". HRSS falls
++// back to its portable implementation.
++#elif (defined(OPENSSL_ARM) || defined(OPENSSL_AARCH64)) &&     defined(__ARM_NEON) && !defined(_WIN32)
+ 
+ #define HRSS_HAVE_VECTOR_UNIT
+ typedef uint16x8_t vec_t;

@@ -1,0 +1,25 @@
+diff --git a/BUILD.bazel b/BUILD.bazel
+--- a/BUILD.bazel
++++ b/BUILD.bazel
+@@ -118,11 +118,15 @@
+     copts = select({
+         "@platforms//os:windows": [
+-            "/wd4127",  # conditional expression is constant
+-            "/wd4131",  # old-style declarator
+-            "/wd4244",  # possible loss of data
+-            "/wd4245",  # signed/unsigned mismatch
+-            "/wd4267",  # conversion from size_t
+-            "/wd4996",  # deprecated functions
++            # These were MSVC /wd#### warning numbers, which only the clang-cl
++            # driver understands. This fork targets aarch64-pc-windows-msvc with
++            # the ordinary clang driver, where a leading slash is read as a
++            # file path and the compile fails with "no such file or directory".
++            # The GNU-style spellings below cover the diagnostics that matter;
++            # the remainder were MSVC-only warnings with no clang equivalent.
++            "-std=c11",
++            "-Wno-deprecated-non-prototype",
++            "-Wno-unused-variable",
++            "-Wno-implicit-function-declaration",
+         ],
+         "@platforms//os:macos": [
+             "-std=c11",

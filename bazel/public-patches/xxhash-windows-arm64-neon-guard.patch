@@ -1,0 +1,18 @@
+diff --git a/xxhash.h b/xxhash.h
+index 78fc2e8..896ec7a 100644
+--- a/xxhash.h
++++ b/xxhash.h
+@@ -2530,7 +2530,12 @@ static void* XXH_memcpy(void* dest, const void* src, size_t size)
+ 
+ /* Specifically for NEON vectors which use the "w" constraint, on
+  * Clang. */
+-#if defined(__clang__) && defined(__ARM_ARCH) && !defined(__wasm__)
++/* Not on Windows: clang's aarch64-pc-windows-msvc backend rejects the "+w"
++ * NEON constraint with "inline asm not supported yet: don't know how to handle
++ * tied indirect register inputs". The guard exists only to stop the optimiser
++ * spilling or constant-folding a vector, so falling through to the ((void)0)
++ * definition below costs codegen quality, never correctness. */
++#if defined(__clang__) && defined(__ARM_ARCH) && !defined(__wasm__) && !defined(_WIN32)
+ #  define XXH_COMPILER_GUARD_CLANG_NEON(var) __asm__("" : "+w" (var))
+ #else
+ #  define XXH_COMPILER_GUARD_CLANG_NEON(var) ((void)0)

@@ -1,0 +1,88 @@
+load("@rules_cc//cc/toolchains:args.bzl", "cc_args")
+load("@rules_cc//cc/toolchains:feature.bzl", "cc_feature")
+load("@rules_cc//cc/toolchains:feature_set.bzl", "cc_feature_set")
+
+cc_feature_set(
+    name = "interface-libraries",
+    all_of = [
+        ":build_interface_libraries",
+        ":dynamic_library_linker_tool",
+        ":has_configured_linker_path",
+        ":supports_interface_shared_libraries",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# TODO: https://github.com/bazelbuild/rules_cc/pull/678
+cc_feature(
+    name = "has_configured_linker_path",
+    feature_name = "has_configured_linker_path",
+)
+
+# TODO: Move to capabilities https://github.com/bazelbuild/rules_cc/pull/679
+cc_feature(
+    name = "supports_interface_shared_libraries",
+    feature_name = "supports_interface_shared_libraries",
+)
+
+cc_feature(
+    name = "dynamic_library_linker_tool",  # Make sure legacy toolchain feature isn't added
+    overrides = "@rules_cc//cc/toolchains/features/legacy:dynamic_library_linker_tool",
+)
+
+cc_feature(
+    name = "build_interface_libraries",
+    args = [
+        ":enabled_env",
+        ":input_arg",
+        ":output_arg",
+    ],
+    overrides = "@rules_cc//cc/toolchains/features/legacy:build_interface_libraries",
+)
+
+cc_args(
+    name = "enabled_env",
+    actions = ["@rules_cc//cc/toolchains/actions:dynamic_library_link_actions"],
+    data = ["@llvm-ifs"],
+    env = {
+        "BUILD_IFS": "{generate_interface_library}",
+    } | select({
+        "@platforms//os:macos": {"MACOS": "true"},
+        "//conditions:default": {},
+    }),
+    format = {"generate_interface_library": "@rules_cc//cc/toolchains/variables:generate_interface_library"},
+    requires_any_of = [":supports_interface_shared_libraries"],
+    requires_not_none = "@rules_cc//cc/toolchains/variables:generate_interface_library",
+)
+
+# --modular-ifs-* are not compiler flags: linker-driver.sh strips them and runs
+# llvm-ifs to synthesise an interface library. Windows has no use for that. The
+# import library that lld-link emits alongside a DLL *is* the interface library,
+# so the output path is handed straight to the linker with /IMPLIB: and the
+# input path is not needed at all, since the linker already knows what it is
+# producing. Doing this in the args rather than in a wrapper matters: link
+# actions deliberately bypass the .bat wrapper to escape cmd.exe's 8191
+# character limit.
+cc_args(
+    name = "input_arg",
+    actions = ["@rules_cc//cc/toolchains/actions:dynamic_library_link_actions"],
+    args = select({
+        "@platforms//os:windows": [],
+        "//conditions:default": ["--modular-ifs-input={interface_library_input_path}"],
+    }),
+    format = {"interface_library_input_path": "@rules_cc//cc/toolchains/variables:interface_library_input_path"},
+    requires_any_of = [":supports_interface_shared_libraries"],
+    requires_not_none = "@rules_cc//cc/toolchains/variables:interface_library_input_path",
+)
+
+cc_args(
+    name = "output_arg",
+    actions = ["@rules_cc//cc/toolchains/actions:dynamic_library_link_actions"],
+    args = select({
+        "@platforms//os:windows": ["-Wl,/IMPLIB:{interface_library_output_path}"],
+        "//conditions:default": ["--modular-ifs-output={interface_library_output_path}"],
+    }),
+    format = {"interface_library_output_path": "@rules_cc//cc/toolchains/variables:interface_library_output_path"},
+    requires_any_of = [":supports_interface_shared_libraries"],
+    requires_not_none = "@rules_cc//cc/toolchains/variables:interface_library_output_path",
+)

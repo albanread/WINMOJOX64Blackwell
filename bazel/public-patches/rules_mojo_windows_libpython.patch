@@ -1,0 +1,19 @@
+--- a/mojo/private/mojo_binary_test.bzl	2026-08-19 17:42:37.214699600 +0100
++++ b/mojo/private/mojo_binary_test.bzl	2026-08-19 17:42:38.229180800 +0100
+@@ -265,6 +265,16 @@
+             libpython = file.short_path
+             break  # if there are multiple any of them should work and they are likely symlinks to each other
+ 
++        # Windows CPython ships its runtime as pythonXY.dll rather than
++        # libpython*. python3.dll is excluded: it is the stable-ABI forwarding
++        # stub, while the full API needed for embedding lives in e.g.
++        # python312.dll.
++        if (file.basename.startswith("python3") and
++            file.basename.endswith(".dll") and
++            file.basename != "python3.dll"):
++            libpython = file.short_path
++            break
++
+     if not libpython:
+         fail("failed to find libpython, please report this at https://github.com/modular/rules_mojo/issues")
+ 

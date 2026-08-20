@@ -1,0 +1,18 @@
+diff --git a/build_defs/cpp_opts.bzl b/build_defs/cpp_opts.bzl
+index c0116bd..79a92c2 100644
+--- a/build_defs/cpp_opts.bzl
++++ b/build_defs/cpp_opts.bzl
+@@ -41,9 +41,11 @@ LINK_OPTS = select({
+         "-framework CoreFoundation",
+     ],
+     "@platforms//os:windows": [
++        # No -lpthread or -lm here. This branch was written for MinGW, which
++        # ships those as real import libraries; against the MSVC ABI there is no
++        # pthread.lib or m.lib, since threading and the math functions both live
++        # in the CRT, and lld-link fails with "could not open 'm.lib'".
+         "-ldbghelp",
+-        "-lpthread",
+-        "-lm",
+     ],
+     "//conditions:default": [
+         "-lpthread",

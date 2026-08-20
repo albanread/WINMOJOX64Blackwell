@@ -1,0 +1,24 @@
+diff --git a/utils/bazel/llvm-project-overlay/llvm/BUILD.bazel b/utils/bazel/llvm-project-overlay/llvm/BUILD.bazel
+index 4213cf1..2b5a70b 100644
+--- a/utils/bazel/llvm-project-overlay/llvm/BUILD.bazel
++++ b/utils/bazel/llvm-project-overlay/llvm/BUILD.bazel
+@@ -317,10 +317,18 @@ config_setting(
+     flag_values = {"@rules_cc//cc/compiler:compiler": "clang-cl"},
+ )
+ 
++# Upstream keys this on the compiler being msvc-cl, because it assumes clang on
++# Windows means a MinGW target. This fork targets aarch64-pc-windows-msvc with
++# the ordinary clang driver, so the ABI is MSVC while the toolchain reports its
++# compiler as "clang", and neither is_windows_msvc nor
++# is_x86_64_windows_clang_mingw matched. Everything then fell through to the
++# Unix default and the link failed on -lm, -lpthread and -ldl.
++#
++# This fork never targets MinGW, so matching on the OS alone is correct here and
++# fixes all four uses of this setting at once.
+ config_setting(
+     name = "is_windows_msvc",
+     constraint_values = ["@platforms//os:windows"],
+-    flag_values = {"@rules_cc//cc/compiler:compiler": "msvc-cl"},
+ )
+ 
+ config_setting(

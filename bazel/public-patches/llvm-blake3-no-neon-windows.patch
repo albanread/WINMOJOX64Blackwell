@@ -1,0 +1,19 @@
+diff --git a/llvm/lib/Support/BLAKE3/blake3_impl.h b/llvm/lib/Support/BLAKE3/blake3_impl.h
+index dd71e72..7db796b 100644
+--- a/llvm/lib/Support/BLAKE3/blake3_impl.h
++++ b/llvm/lib/Support/BLAKE3/blake3_impl.h
+@@ -58,7 +58,13 @@ enum blake3_flags {
+ #if !defined(BLAKE3_USE_NEON) 
+   // If BLAKE3_USE_NEON not manually set, autodetect based on AArch64ness
+   #if defined(IS_AARCH64)
+-    #if defined(__ARM_BIG_ENDIAN)
++    // blake3_neon.c calls __builtin_shufflevector on the results of
++    // vreinterpretq_*, which resolve to MSVC's __n128 union rather than a clang
++    // vector type on aarch64-pc-windows-msvc, so the compile fails with "first
++    // two arguments to '__builtin_shufflevector' must be vectors". Gate it here
++    // rather than in the Bazel select: os:windows and cpu:aarch64 both match on
++    // this platform, and Bazel rejects that as an ambiguous select.
++    #if defined(__ARM_BIG_ENDIAN) || defined(_WIN32)
+       #define BLAKE3_USE_NEON 0
+     #else
+       #define BLAKE3_USE_NEON 1

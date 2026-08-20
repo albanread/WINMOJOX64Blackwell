@@ -1,0 +1,15 @@
+diff --git a/build_defs/cpp_opts.bzl b/build_defs/cpp_opts.bzl
+index 79a92c2..6df29b6 100644
+--- a/build_defs/cpp_opts.bzl
++++ b/build_defs/cpp_opts.bzl
+@@ -46,6 +46,10 @@ LINK_OPTS = select({
+         # pthread.lib or m.lib, since threading and the math functions both live
+         # in the CRT, and lld-link fails with "could not open 'm.lib'".
+         "-ldbghelp",
++        # CommandLineToArgvW. The config_msvc branch above already lists
++        # Shell32.lib, but that branch keys on a compiler of msvc-cl and so
++        # never matches a clang driver targeting the MSVC ABI.
++        "-lshell32",
+     ],
+     "//conditions:default": [
+         "-lpthread",

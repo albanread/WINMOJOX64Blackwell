@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+readonly version="1.27.0"
+
+arch="$(uname -m)"
+if [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
+  readonly bazel_arch="arm64"
+else
+  readonly bazel_arch="amd64"
+fi
+
+if [[ $OSTYPE == darwin* ]]; then
+  readonly platform=darwin-arm64
+  readonly sha="8bf08c894ccc19ef37f286e58184c3942c58cb08da955e990522703526ddb720"
+  readonly sha_cmd="shasum"
+  readonly exe_suffix=""
+elif [[ $OSTYPE == linux* ]]; then
+  readonly sha_cmd="sha256sum"
+  readonly platform=linux-"$bazel_arch"
+  readonly exe_suffix=""
+  if [[ "$bazel_arch" == "amd64" ]]; then
+    readonly sha="e1508323f347ad1465a887bc5d2bfb91cffc232d11e8e997b623227c6b32fb76"
+  else
+    readonly sha="bb608519a440d45d10304eb684a73a2b6bb7699c5b0e5434361661b25f113a5d"
+  fi
+elif [[ $OSTYPE == msys* || $OSTYPE == cygwin* ]]; then
+  readonly sha_cmd="sha256sum"
+  readonly exe_suffix=".exe"
+  # Do not trust "$arch" here. Git-Bash on Windows ARM64 is itself an x86
+  # process, so both `uname -m` and $PROCESSOR_ARCHITECTURE report x86_64/AMD64
+  # even on an ARM64 machine. Only `uname -s` carries the true machine
+  # architecture, e.g. MINGW64_NT-10.0-26200-ARM64.
+  if [[ "$(uname -s)" == *ARM64* ]]; then
+    readonly platform=windows-arm64
+    readonly sha="46d97f32458cd88dd4c2c6ad1c597e02d38ee3a1d07b07715c5a9e1b0c09a6dc"
+  else
+    readonly platform=windows-amd64
+    readonly sha="d4b5e1cea61fcdb0bed60f8868c2e37684221b65feae898d1124482cd39ec89e"
+  fi
+else
+  echo "error: unsupported platform $OSTYPE" >&2
+  exit 1
+fi
+
+readonly url="https://github.com/bazelbuild/bazelisk/releases/download/v$version/bazelisk-$platform$exe_suffix"
+script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly executable="$script_root/build/bazelisk-$version-$platform$exe_suffix"
+
+if [[ ! -x "$executable" ]]; then
+  echo "Installing bazelisk..." >&2
+  mkdir -p "$(dirname "$executable")"
+
+  download_bazelisk() {
+    curl --fail -L --retry 5 --retry-connrefused --silent --progress-bar \
+      --output "$executable" "$url"
+  }
+
+  download_bazelisk || download_bazelisk
+  if echo "$sha  $executable" | $sha_cmd --check --status; then
+    chmod +x "$executable"
+  else
+    echo "error: bazelisk sha mismatch" >&2
+    rm -f "$executable"
+    exit 1
+  fi
+fi
+
+# Set BAZEL to the executable path so the rules_go dependency can reference it.
+# Without this, rules_go will likely fail in CI with the following error:
+#   exec: "bazel": executable file not found in $PATH
+export BAZEL="$executable"
+
+exec "$executable" "$@"

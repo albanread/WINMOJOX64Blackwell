@@ -1,0 +1,37 @@
+diff --git a/utils/bazel/llvm-project-overlay/llvm/BUILD.bazel b/utils/bazel/llvm-project-overlay/llvm/BUILD.bazel
+index e437972..0ead825 100644
+--- a/utils/bazel/llvm-project-overlay/llvm/BUILD.bazel
++++ b/utils/bazel/llvm-project-overlay/llvm/BUILD.bazel
+@@ -85,6 +85,15 @@ config_setting(
+     visibility = ["//visibility:public"],
+ )
+ 
++config_setting(
++    name = "windows_arm64",
++    constraint_values = [
++        "@platforms//os:windows",
++        "@platforms//cpu:aarch64",
++    ],
++    visibility = ["//visibility:public"],
++)
++
+ config_setting(
+     name = "linux_ppc64le",
+     constraint_values = [
+diff --git a/utils/bazel/llvm-project-overlay/llvm/config.bzl b/utils/bazel/llvm-project-overlay/llvm/config.bzl
+index d592f9e..8adda17 100644
+--- a/utils/bazel/llvm-project-overlay/llvm/config.bzl
++++ b/utils/bazel/llvm-project-overlay/llvm/config.bzl
+@@ -106,6 +106,11 @@ llvm_config_defines = os_defines + builtin_thread_pointer + select({
+     Label("//llvm:linux_ppc64le"): native_arch_defines("PowerPC", "powerpc64le-unknown-linux-gnu"),
+     Label("//llvm:linux_riscv64"): native_arch_defines("RISCV", "riscv64-unknown-linux-gnu"),
+     Label("//llvm:linux_s390x"): native_arch_defines("SystemZ", "systemz-unknown-linux_gnu"),
++    # Before the generic Windows entry, which hardcodes X86. Without this a
++    # Windows ARM64 build gets LLVM_NATIVE_ARCH=X86 and a default triple of
++    # x86_64-pc-win32, so clang builds an X86 TargetInfo and rejects every
++    # AArch64 CPU name it is given, including "generic".
++    Label("//llvm:windows_arm64"): native_arch_defines("AArch64", "aarch64-pc-windows-msvc"),
+-    "@platforms//os:windows": native_arch_defines("X86", "x86_64-pc-win32"),
++    "@platforms//os:windows": native_arch_defines("X86", "x86_64-pc-windows-msvc"),
+     "//conditions:default": native_arch_defines("X86", "x86_64-unknown-linux-gnu"),
+ }) + [

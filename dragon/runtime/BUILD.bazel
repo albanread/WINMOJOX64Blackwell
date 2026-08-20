@@ -1,0 +1,44 @@
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("//bazel:api.bzl", "modular_cc_library", "modular_cc_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# The DragonMax device runtime: the accelerator half of the AsyncRT device
+# ABI, implemented over OpenCL for the Adreno. Upstream's max package binds
+# these symbols from @modular_wheel -- a prebuilt that does not exist for
+# Windows ARM64 and that this fork's licensing bright line forbids anyway.
+# This target is the substitute: the same C symbols, from source, built by
+# the hermetic toolchain with the dynamic CRT (the runbook's `cl /LD` recipe
+# defaulted to the static CRT, which violates this port's one-heap law).
+#
+# OpenCL.dll is LoadLibrary'd at first use, so there is no build-time
+# dependency on any GPU SDK.
+modular_cc_library(
+    name = "dragonrt",
+    srcs = ["dragonrt.cpp"],
+    target_compatible_with = ["@platforms//os:windows"],
+)
+
+# The runtime's own smoke test: device discovery, buffer round-trip, and a
+# kernel launch, all without Mojo. If this passes, the runtime and the GPU
+# are fine and any later failure is above them.
+modular_cc_test(
+    name = "test_dragonrt",
+    srcs = ["test_dragonrt.c"],
+    tags = ["gpu"],
+    target_compatible_with = ["@platforms//os:windows"],
+    deps = [":dragonrt"],
+)
+
+# The same runtime as a DLL. Two consumers need this shape: test_dragonrt
+# LoadLibrary's "dragonrt.dll" (and has been failing with error 126 under
+# Bazel, which only built the static .lib), and `mojo run -Xlinker
+# dragonrt.dll` loads it into the JIT session, where a static archive is
+# invisible. Naming the target with the extension is Bazel's way of pinning
+# the output filename.
+cc_binary(
+    name = "dragonrt.dll",
+    srcs = ["dragonrt.cpp"],
+    linkshared = True,
+    target_compatible_with = ["@platforms//os:windows"],
+)

@@ -1,0 +1,18 @@
+diff --git a/util/util.bzl b/util/util.bzl
+index 5028af6..b8a3de0 100644
+--- a/util/util.bzl
++++ b/util/util.bzl
+@@ -79,7 +79,12 @@ boringssl_copts_cxx = boringssl_copts_common + select({
+ # for our code or the headers we include, so configure the C version inside the
+ # library. If Bazel's C/C++ version handling improves, we may reconsider this.
+ boringssl_copts_c = boringssl_copts_common + select({
+-    "@platforms//os:windows": ["/std:c11"],
++    # /std:c11 is the MSVC spelling and only clang-cl accepts it. This fork
++    # targets aarch64-pc-windows-msvc with the ordinary clang driver, where a
++    # leading slash is read as a file path, so every C translation unit failed
++    # with "no such file or directory: '/std:c11'". The GNU spelling selects the
++    # same language version.
++    "@platforms//os:windows": ["-std=c11"],
+     "//conditions:default": ["-std=c11"] + gcc_copts_c,
+ })
+ 

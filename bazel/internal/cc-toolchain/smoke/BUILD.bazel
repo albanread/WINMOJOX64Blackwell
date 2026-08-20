@@ -1,0 +1,10 @@
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+
+# Deliberately plain rules_cc rather than the modular_* macros: this target
+# exists to test the toolchain alone, so a failure here is unambiguously a
+# toolchain problem rather than a repo-convention one.
+cc_binary(
+    name = "smoke",
+    srcs = ["smoke.cc"],
+    tags = ["manual"],
+)

@@ -1,0 +1,98 @@
+diff --git a/absl/base/BUILD.bazel b/absl/base/BUILD.bazel
+index 2b380e6..1649d41 100644
+--- a/absl/base/BUILD.bazel
++++ b/absl/base/BUILD.bazel
+@@ -960,6 +960,12 @@ cc_library(
+         "//absl/base:config",
+         "//absl/base:core_headers",
+     ],
++    # alwayslink for PE/COFF: this target carries ABSL_ATTRIBUTE_WEAK
++    # definitions. A weak definition inside an archive does not pull its
++    # member in, since only a strong undefined reference does, and ELF then
++    # resolves the leftover weak reference to zero. lld-link instead reports
++    # an undefined symbol, so the whole archive has to participate.
++    alwayslink = 1,
+ )
+ 
+ cc_library(
+diff --git a/absl/debugging/BUILD.bazel b/absl/debugging/BUILD.bazel
+index 56f25fa..451d54d 100644
+--- a/absl/debugging/BUILD.bazel
++++ b/absl/debugging/BUILD.bazel
+@@ -61,6 +61,12 @@ cc_library(
+         "//absl/base:malloc_internal",
+         "//absl/base:raw_logging_internal",
+     ],
++    # alwayslink for PE/COFF: this target carries ABSL_ATTRIBUTE_WEAK
++    # definitions. A weak definition inside an archive does not pull its
++    # member in, since only a strong undefined reference does, and ELF then
++    # resolves the leftover weak reference to zero. lld-link instead reports
++    # an undefined symbol, so the whole archive has to participate.
++    alwayslink = 1,
+ )
+ 
+ cc_test(
+@@ -371,6 +377,12 @@ cc_library(
+         "//absl/base:config",
+         "//absl/base:core_headers",
+     ],
++    # alwayslink for PE/COFF: this target carries ABSL_ATTRIBUTE_WEAK
++    # definitions. A weak definition inside an archive does not pull its
++    # member in, since only a strong undefined reference does, and ELF then
++    # resolves the leftover weak reference to zero. lld-link instead reports
++    # an undefined symbol, so the whole archive has to participate.
++    alwayslink = 1,
+ )
+ 
+ cc_test(
+diff --git a/absl/flags/BUILD.bazel b/absl/flags/BUILD.bazel
+index 532721d..506e489 100644
+--- a/absl/flags/BUILD.bazel
++++ b/absl/flags/BUILD.bazel
+@@ -95,6 +95,12 @@ cc_library(
+         "//absl/strings",
+         "//absl/synchronization",
+     ],
++    # alwayslink for PE/COFF: this target carries ABSL_ATTRIBUTE_WEAK
++    # definitions. A weak definition inside an archive does not pull its
++    # member in, since only a strong undefined reference does, and ELF then
++    # resolves the leftover weak reference to zero. lld-link instead reports
++    # an undefined symbol, so the whole archive has to participate.
++    alwayslink = 1,
+ )
+ 
+ cc_library(
+diff --git a/absl/log/internal/BUILD.bazel b/absl/log/internal/BUILD.bazel
+index 005861f..afd017f 100644
+--- a/absl/log/internal/BUILD.bazel
++++ b/absl/log/internal/BUILD.bazel
+@@ -213,6 +213,12 @@ cc_library(
+         "//absl/time",
+         "//absl/types:span",
+     ],
++    # alwayslink for PE/COFF: this target carries ABSL_ATTRIBUTE_WEAK
++    # definitions. A weak definition inside an archive does not pull its
++    # member in, since only a strong undefined reference does, and ELF then
++    # resolves the leftover weak reference to zero. lld-link instead reports
++    # an undefined symbol, so the whole archive has to participate.
++    alwayslink = 1,
+ )
+ 
+ cc_library(
+diff --git a/absl/time/BUILD.bazel b/absl/time/BUILD.bazel
+index b68dd85..6d7621d 100644
+--- a/absl/time/BUILD.bazel
++++ b/absl/time/BUILD.bazel
+@@ -65,6 +65,12 @@ cc_library(
+         "//absl/time/internal/cctz:time_zone",
+         "//absl/types:optional",
+     ],
++    # alwayslink for PE/COFF: this target carries ABSL_ATTRIBUTE_WEAK
++    # definitions. A weak definition inside an archive does not pull its
++    # member in, since only a strong undefined reference does, and ELF then
++    # resolves the leftover weak reference to zero. lld-link instead reports
++    # an undefined symbol, so the whole archive has to participate.
++    alwayslink = 1,
+ )
+ 
+ cc_library(

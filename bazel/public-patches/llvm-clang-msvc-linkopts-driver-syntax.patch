@@ -1,0 +1,15 @@
+diff --git a/utils/bazel/llvm-project-overlay/clang/BUILD.bazel b/utils/bazel/llvm-project-overlay/clang/BUILD.bazel
+index 8262a78..bee1f3f 100644
+--- a/utils/bazel/llvm-project-overlay/clang/BUILD.bazel
++++ b/utils/bazel/llvm-project-overlay/clang/BUILD.bazel
+@@ -1702,7 +1702,9 @@ cc_library(
+     linkopts = select({
+         "//llvm:is_windows_clang_mingw": ["-lversion"],
+         "//llvm:is_windows_clang_cl": ["version.lib"],
+-        "//llvm:is_windows_msvc": ["version.lib"],
++        # -lversion, not version.lib: this fork reaches the MSVC ABI through the
++        # ordinary clang driver, which reads a bare .lib name as an input file.
++        "//llvm:is_windows_msvc": ["-lversion"],
+         "//conditions:default": [],
+     }),
+     textual_hdrs = glob([

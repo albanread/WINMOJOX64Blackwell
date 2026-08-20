@@ -1,0 +1,19 @@
+diff --git a/upb/port/def.inc b/upb/port/def.inc
+index cd1eed6..49c3b76 100644
+--- a/upb/port/def.inc
++++ b/upb/port/def.inc
+@@ -392,7 +392,13 @@ Error, UINTPTR_MAX is undefined
+ #define UPB_PRESERVE_NONE
+ #endif
+ 
+-#if defined(__aarch64__) && (defined(__GNUC__) || defined(__clang__))
++/* Excluded on Windows: encode_longvarint's hand-written AArch64 assembly leaves
++ * LLVM unable to size the function for SEH unwind info, and the compile dies
++ * with "error in backend: Failed to evaluate function length in SEH unwind
++ * info". Windows ARM64 requires unwind data for every function, so this cannot
++ * simply be dropped. upb already carries a portable C implementation behind the
++ * matching #else, which is what Windows uses instead. */
++#if defined(__aarch64__) && (defined(__GNUC__) || defined(__clang__)) &&     !defined(_WIN32)
+ #define UPB_ARM64_ASM 1
+ #else
+ #define UPB_ARM64_ASM 0

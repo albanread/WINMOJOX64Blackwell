@@ -1,0 +1,27 @@
+diff --git a/pycross/private/repo_venv_utils.bzl b/pycross/private/repo_venv_utils.bzl
+--- a/pycross/private/repo_venv_utils.bzl
++++ b/pycross/private/repo_venv_utils.bzl
+@@ -129,5 +129,23 @@
+     venv_path = rctx.path(venv_path)
+     python_exe = get_venv_python_executable(venv_path)
+     env = dict(PYTHONPATH = str(rctx.path(pip_whl)))
++
++    # Passing `environment` to rctx.execute replaces the environment outright
++    # rather than extending it. On Windows that drops SystemRoot, and without
++    # it Winsock cannot load its service providers, so any import reaching
++    # asyncio dies with WinError 10106. pip imports tenacity, which imports
++    # asyncio, so every wheel install fails. Matched case-insensitively
++    # because the casing Bazel reports for these is not guaranteed.
++    if rctx.os.name.startswith("windows"):
++        _keep = ["systemroot", "systemdrive", "temp", "tmp"]
++        _have_systemroot = False
++        for _key, _value in rctx.os.environ.items():
++            if _key.lower() in _keep:
++                env[_key] = _value
++                if _key.lower() == "systemroot":
++                    _have_systemroot = True
++        if not _have_systemroot:
++            env["SystemRoot"] = "C:\\Windows"
++
+     wheel_paths = [str(rctx.path(wheel)) for wheel in wheels]
+     result = rctx.execute([

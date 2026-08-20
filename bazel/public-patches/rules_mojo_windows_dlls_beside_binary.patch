@@ -1,0 +1,45 @@
+--- a/mojo/private/mojo_binary_test.bzl	2026-08-19 18:34:00.383922500 +0100
++++ b/mojo/private/mojo_binary_test.bzl	2026-08-19 18:34:00.496317400 +0100
+@@ -248,11 +248,32 @@
+     # Collect transitive shared libraries that must exist at runtime, including
+     # those propagated through mojo_library deps
+     transitive_libraries = []
++    windows_dlls = []
+     for linker_input in ccdeps.linking_context.linker_inputs.to_list():
+         for library in linker_input.libraries:
+             if library.dynamic_library and not library.pic_static_library and not library.static_library:
+                 transitive_libraries.append(depset([library]))
+                 transitive_runfiles.append(ctx.runfiles(transitive_files = depset([library.dynamic_library])))
++                windows_dlls.append(library.dynamic_library)
++
++    # Windows resolves a DLL through the executable's directory and PATH; the
++    # runfiles there are a manifest, not a tree, so the OS loader cannot see
++    # libraries that exist only as runfiles entries. Materialize every
++    # dependency DLL beside the binary. Keyed on the output's extension, which
++    # only the Windows cc toolchain produces.
++    def _materialize_windows_dlls(executable):
++        outputs = []
++        if executable.extension != "exe":
++            return outputs
++        seen = {}
++        for dll in windows_dlls:
++            if dll.basename in seen:
++                continue
++            seen[dll.basename] = True
++            out = ctx.actions.declare_file(dll.basename, sibling = executable)
++            ctx.actions.symlink(output = out, target_file = dll)
++            outputs.append(out)
++        return outputs
+ 
+     python_path = ""
+     for path in depset(transitive = python_imports).to_list():
+@@ -323,6 +344,9 @@
+             OutputGroupInfo(**output_group_kwargs),
+         ]
+     else:
++        transitive_runfiles.append(ctx.runfiles(
++            files = _materialize_windows_dlls(linking_outputs.executable),
++        ))
+         return [
+             DefaultInfo(
+                 executable = linking_outputs.executable,
