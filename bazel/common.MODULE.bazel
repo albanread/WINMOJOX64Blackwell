@@ -556,6 +556,13 @@ mojo.gpu_toolchains(
         "RTX 4090": "rtx4090",
         "NVIDIA GeForce RTX 5060 Ti": "rtx5060ti",
         "NVIDIA GeForce RTX 3090": "rtx3090",
+        # Desktop GA106 only. This sits below the "Laptop GPU" entry
+        # deliberately: nvidia-smi calls the mobile part "NVIDIA GeForce RTX
+        # 3060 Laptop GPU", which contains this key, and matching stops at the
+        # first hit in insertion order. Leaving it here keeps laptop parts
+        # ignored the way every other mobile GPU is. Move it above "Laptop GPU"
+        # only if a mobile 3060 should be picked up as sm_86 as well.
+        "NVIDIA GeForce RTX 3060": "rtx3060",
         "NVIDIA GeForce GTX 1080 Ti": "gtx1080ti",
         "NVIDIA GeForce GTX 1060": "gtx1060",
         "NVIDIA GeForce GTX 970": "gtx970",
@@ -599,6 +606,9 @@ mojo.gpu_toolchains(
         "mi325": "amdgpu:gfx942",
         "mi355": "amdgpu:gfx950",
         "rtx3090": "nvidia:sm_86",
+        # GA106. Same target as the 3090 and A10; Ampere predates the
+        # arch-specific `a` suffix.
+        "rtx3060": "nvidia:sm_86",
         "gtx970": "nvidia:sm_52",
         "gtx1080ti": "nvidia:sm_61",
         "gtx1060": "nvidia:sm_61",

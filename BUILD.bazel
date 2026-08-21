@@ -99,6 +99,23 @@ platform(
     visibility = ["//visibility:public"],
 )
 
+# Ampere GA106, compute capability 8.6. Unlike the T1000 this clears
+# _is_sm_8x_or_newer(), so cp.async, mbarrier, bf16 and tensor cores are all
+# available; only the sm_90+ tier (TMA, clusters, wgmma) and sm_100+ tcgen05
+# remain out of reach. NOT hardware-tested: the card lives in a machine that
+# has not been powered up for this, so treat it as compile-verified only.
+platform(
+    name = "windows_x86_64_nvidia_rtx3060",
+    constraint_values = [
+        "@mojo_gpu_toolchains//:has_gpu",
+        "@mojo_gpu_toolchains//:nvidia_gpu",
+        "@mojo_gpu_toolchains//:rtx3060_gpu",
+        "@platforms//cpu:x86_64",
+        "@platforms//os:windows",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 [
     alias(
         name = "{}_gpu".format(gpu),

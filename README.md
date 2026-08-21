@@ -200,9 +200,16 @@ That comparison, not the frame rate, is the number worth keeping.
 | Card | Arch | GPU ms/frame | CPU 1 core | Speedup | Pixels differing |
 | --- | --- | --- | --- | --- | --- |
 | T1000 8GB | `sm_75` | 1 | 152 ms | 97x | 0 of 691,200 |
+| RTX 3060 (desktop) | `sm_86` | *not measured* | | | |
 | RTX PRO 2000 Blackwell Laptop 8GB | `sm_120a` | 1 | 136 ms | 117.2x | 0 of 691,200 |
 
 Grid 960x720 at `max_iter 512`, about 73M iterations.
+
+Both measured cards report 1 ms, so this benchmark does not separate them: the
+difference in the speedup column is almost entirely the CPU denominator, and
+the workload is too small to load either GPU. Ranking cards would need a larger
+grid or sub-millisecond timing. What the table does establish is the last
+column, identical across five architecture generations.
 
 The Blackwell row is the median of six warm process runs on the reference
 Core Ultra 9 285H laptop with NVIDIA driver 573.14, measured on 21 August
@@ -236,12 +243,24 @@ Blackwell features.
 
 The compiler and runtime now recognize Windows NVIDIA architectures and append
 the architecture-specific `a` suffix for the known targets that require it.
-Two cards are registered: the RTX PRO 2000 Blackwell Generation (`sm_120a`)
-and the T1000 (`sm_75`, Turing). Registering a third takes two lines in
-`bazel/common.MODULE.bazel`, an `nvidia-smi` name substring in `gpu_mapping`
-and an accelerator in `supported_gpus`. Add a `platform` in `BUILD.bazel` and
-a `--config` in `bazel/internal/common.bazelrc` as well if the card should be
-selectable from a machine that does not have it installed.
+Three cards are registered: the RTX PRO 2000 Blackwell Generation (`sm_120a`),
+the RTX 3060 (`sm_86`, Ampere), and the T1000 (`sm_75`, Turing). Registering a
+fourth takes two lines in `bazel/common.MODULE.bazel`, an `nvidia-smi` name
+substring in `gpu_mapping` and an accelerator in `supported_gpus`. Add a
+`platform` in `BUILD.bazel` and a `--config` in
+`bazel/internal/common.bazelrc` as well if the card should be selectable from a
+machine that does not have it installed.
+
+Watch the ordering in `gpu_mapping`: matching stops at the first substring hit
+in insertion order, and the `"Laptop GPU": ""` entry deliberately ignores
+mobile parts. A desktop key placed after it, as `"NVIDIA GeForce RTX 3060"` is,
+will not pick up the mobile variant of the same chip.
+
+These three span every feature gate that matters. `sm_86` clears
+`_is_sm_8x_or_newer()`, so `cp.async`, `mbarrier`, bf16 and tensor cores are
+available on the 3060 but not the T1000; `sm_120a` additionally clears the
+`sm_90`+ tier that brings TMA and clusters. A kernel that compiles for all
+three has been checked against the whole span the port supports.
 
 A future general release should still contain multiple PTX targets, or select
 one at installation or run time, rather than ship a single machine's
@@ -285,6 +304,7 @@ not have:
 |---|---|---|
 | *(none)* | the installed card | detected |
 | `--config=windows-nvidia-blackwell` | RTX PRO 2000 Blackwell | `sm_120a` |
+| `--config=windows-nvidia-rtx3060` | RTX 3060 (desktop) | `sm_86` |
 | `--config=windows-nvidia-t1000` | T1000 | `sm_75` |
 
 Each selection is a distinct platform and so gets distinct output paths, which

@@ -40,6 +40,7 @@ common --host_platform=@mojo_host_platform
 # have -- each box compiling for the other's GPU.
 build:windows-nvidia-blackwell --platforms=//:windows_x86_64_nvidia_blackwell
 build:windows-nvidia-t1000 --platforms=//:windows_x86_64_nvidia_t1000
+build:windows-nvidia-rtx3060 --platforms=//:windows_x86_64_nvidia_rtx3060
 
 # TODO: remove when https://github.com/bazelbuild/bazel/issues/25145 is fixed
 info --platforms=@platforms//host
