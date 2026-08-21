@@ -200,9 +200,21 @@ That comparison, not the frame rate, is the number worth keeping.
 | Card | Arch | GPU ms/frame | CPU 1 core | Speedup | Pixels differing |
 | --- | --- | --- | --- | --- | --- |
 | T1000 8GB | `sm_75` | 1 | 152 ms | 97x | 0 of 691,200 |
-| RTX PRO 2000 Blackwell | `sm_120a` | *not recorded* | | | |
+| RTX PRO 2000 Blackwell Laptop 8GB | `sm_120a` | 1 | 136 ms | 117.2x | 0 of 691,200 |
 
 Grid 960x720 at `max_iter 512`, about 73M iterations.
+
+The Blackwell row is the median of six warm process runs on the reference
+Core Ultra 9 285H laptop with NVIDIA driver 573.14, measured on 21 August
+2026. Every warm GPU sample rounded to 1 ms; the single-core CPU median was
+136 ms and speedup ranged from 95.9x to 123.7x, with a 117.2x median. All six
+runs produced exact agreement for all 691,200 pixels. The benchmark currently
+prints whole milliseconds, so the table does not imply sub-millisecond timing
+precision.
+
+The discarded cold-after-idle Blackwell sample was 3 ms, 137 ms on one CPU
+core, and 39.5x. The timed GPU interval includes both kernel execution and the
+device-to-host readback used for validation.
 
 Two cautions when adding a row. **Discard the first run after boot**: on cold
 clocks the T1000 reported 7 ms and 21x, against 1 ms and 97x on every warm run
