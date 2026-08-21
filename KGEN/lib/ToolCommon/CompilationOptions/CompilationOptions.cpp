@@ -15,12 +15,59 @@
 #include "Support/MDialect/MAttrs.h"
 #include "Target/TargetTraits.h"
 #include "llvm/Support/CodeGen.h"
+#include "llvm/Support/DynamicLibrary.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <string>
 
 using namespace M;
 using namespace KGEN;
 using namespace std::string_literals;
+
+std::string M::KGEN::getDetectedAcceleratorArchOrEmpty() {
+#if MLRT_ACCELERATOR_SUPPORT
+  std::string detected = Driver::Device::getAcceleratorArchOrEmpty();
+  if (!detected.empty() && detected != "cuda")
+    return detected;
+#endif
+
+#if defined(_WIN32)
+  std::string loadError;
+  llvm::sys::DynamicLibrary cuda =
+      llvm::sys::DynamicLibrary::getPermanentLibrary("nvcuda.dll", &loadError);
+  if (!cuda.isValid())
+    return {};
+  using InitFn = int (*)(unsigned int);
+  using DeviceGetFn = int (*)(int *, int);
+  using DeviceGetAttributeFn = int (*)(int *, int, int);
+  auto init = reinterpret_cast<InitFn>(cuda.getAddressOfSymbol("cuInit"));
+  auto deviceGet = reinterpret_cast<DeviceGetFn>(
+      cuda.getAddressOfSymbol("cuDeviceGet"));
+  auto deviceGetAttribute = reinterpret_cast<DeviceGetAttributeFn>(
+      cuda.getAddressOfSymbol("cuDeviceGetAttribute"));
+  if (!init || !deviceGet || !deviceGetAttribute || init(0) != 0)
+    return {};
+  int device = 0;
+  int major = 0;
+  int minor = 0;
+  constexpr int computeCapabilityMajor = 75;
+  constexpr int computeCapabilityMinor = 76;
+  if (deviceGet(&device, 0) != 0 ||
+      deviceGetAttribute(&major, computeCapabilityMajor, device) != 0 ||
+      deviceGetAttribute(&minor, computeCapabilityMinor, device) != 0)
+    return {};
+  std::string arch = "sm_" + std::to_string(major) + std::to_string(minor);
+  const bool hasArchitectureSpecificTarget =
+      (major == 9 && minor == 0) ||
+      (major == 10 && (minor == 0 || minor == 3)) ||
+      (major == 11 && minor == 0) ||
+      (major == 12 && (minor == 0 || minor == 1));
+  if (hasArchitectureSpecificTarget)
+    arch += 'a';
+  return arch;
+#else
+  return {};
+#endif
+}
 
 CompilationOptions::CompilationOptions(
     unsigned optimizationLevel, DebugInfoLevel debugLevel,
@@ -46,6 +93,14 @@ CompilationOptions::CompilationOptions(
   // An explicit `--target-accelerator` requires MAX; fail before any target
   // lookup.
   requireMaxForAcceleratorRequest(this->targetAccelerator);
+
+  if (this->targetAccelerator == "cuda") {
+    this->targetAccelerator = getDetectedAcceleratorArchOrEmpty();
+    if (this->targetAccelerator.empty())
+      llvm::report_fatal_error(
+          "--target-accelerator=cuda could not detect an NVIDIA GPU",
+          /*gen_crash_diag=*/false);
+  }
 
   if (this->targetCpu.empty())
     setDefaultCPU();

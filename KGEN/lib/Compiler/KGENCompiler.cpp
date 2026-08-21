@@ -270,12 +270,8 @@ static ErrorOr<CrossDeviceFunction> compileElaboratorAsm(
   compilationOptions.targetTriple = target.getTripleStr();
   compilationOptions.targetCpu = target.getArch();
   compilationOptions.targetFeatures = target.getFeatures();
-  if (compilationOptions.targetAccelerator.empty()) {
-#if MLRT_ACCELERATOR_SUPPORT
-    compilationOptions.targetAccelerator =
-        Driver::Device::getAcceleratorArchOrEmpty();
-#endif
-  }
+  if (compilationOptions.targetAccelerator.empty())
+    compilationOptions.targetAccelerator = getDetectedAcceleratorArchOrEmpty();
   compilationOptions.relocModel = target.getRelocationModel();
   StringRef targetDataLayout = target.getDataLayout().toString();
   if (!targetDataLayout.empty())
@@ -490,12 +486,9 @@ static ElaboratorCompileOffloadRetType compileOffloads(
       compilationOptions.targetTriple = target.getTripleStr();
       compilationOptions.targetCpu = target.getArch();
       compilationOptions.targetFeatures = target.getFeatures();
-      if (compilationOptions.targetAccelerator.empty()) {
-#if MLRT_ACCELERATOR_SUPPORT
+      if (compilationOptions.targetAccelerator.empty())
         compilationOptions.targetAccelerator =
-            Driver::Device::getAcceleratorArchOrEmpty();
-#endif
-      }
+            getDetectedAcceleratorArchOrEmpty();
       compilationOptions.relocModel = target.getRelocationModel();
       StringRef targetDataLayout = target.getDataLayout().toString();
       if (!targetDataLayout.empty())

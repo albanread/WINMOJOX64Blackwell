@@ -555,15 +555,19 @@ ErrorOrSuccess M::parseTargetOptions(
     }
   }
   if (!targetAccelerator.empty()) {
-    compilationOptions.targetAccelerator = targetAccelerator.str();
+    if (targetAccelerator == "cuda") {
+      compilationOptions.targetAccelerator =
+          getDetectedAcceleratorArchOrEmpty();
+      if (compilationOptions.targetAccelerator.empty())
+        return Error("--target-accelerator=cuda could not detect an NVIDIA GPU");
+    } else {
+      compilationOptions.targetAccelerator = targetAccelerator.str();
+    }
     compilationOptions.isCrossCompilation = true;
   }
-#if MLRT_ACCELERATOR_SUPPORT
   else {
-    compilationOptions.targetAccelerator =
-        M::Driver::Device::getAcceleratorArchOrEmpty();
+    compilationOptions.targetAccelerator = getDetectedAcceleratorArchOrEmpty();
   }
-#endif
 
   if (!mcmodel.empty()) {
     if (!llvm::is_contained({"small", "medium", "large"}, mcmodel)) {

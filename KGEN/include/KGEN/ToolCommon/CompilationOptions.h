@@ -288,6 +288,11 @@ bool isGPUTriple(const llvm::Triple &triple);
 bool overrideExported(const llvm::Triple &triple);
 bool overrideExported(const CompilationOptions &options);
 
+/// Returns the accelerator architecture reported by MLRT, with a direct
+/// NVIDIA Driver API fallback on Windows where the CUDA MLRT backend is not
+/// available.
+std::string getDetectedAcceleratorArchOrEmpty();
+
 } // namespace M::KGEN
 
 #endif // KGEN_TOOLCOMMON_COMPILATIONOPTIONS_H
