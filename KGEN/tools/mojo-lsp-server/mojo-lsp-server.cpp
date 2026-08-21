@@ -37,9 +37,13 @@ int main(int argc, char **argv) {
   KGEN::installOOMHandler();
 
   llvm::setBugReportMsg(
-      "Please submit a bug report to https://github.com/modular/modular/issues "
-      "and include the crash backtrace along with all the relevant source "
-      "codes with the contents they had at crash time.\n");
+      "The Mojo language server crashed. This is the WINMOJO x64 fork, "
+      "which Modular does not support, so please do not report this "
+      "upstream.\n"
+      "If the fork is at fault, file it at\n"
+      "  https://github.com/albanread/WINMOJOX64Blackwell/issues\n"
+      "including the crash backtrace and the source files with the contents "
+      "they had at crash time.\n");
 
   llvm::cl::OptionCategory category{"Mojo language server options"};
 

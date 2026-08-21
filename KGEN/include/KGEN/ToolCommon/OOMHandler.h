@@ -30,8 +30,10 @@ inline void installOOMHandler() {
         << "error: the Mojo compiler ran out of memory.\n"
            "If your program has excessive compile-time computations or "
            "comptime recursion, try simplifying it.\n"
-           "If that does not help, this may be a Mojo compiler bug; please "
-           "file a report at https://github.com/modular/modular/issues\n";
+           "If that does not help, this may be a Mojo compiler bug. This is "
+           "the WINMOJO x64 fork, which Modular does not support, so please "
+           "do not report it upstream; file it at\n"
+           "  https://github.com/albanread/WINMOJOX64Blackwell/issues\n";
     exit(1);
   });
 }

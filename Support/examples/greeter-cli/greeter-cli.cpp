@@ -53,9 +53,11 @@ int main(int argc, char **argv) {
   // First, set up LLVM.
   llvm::InitLLVM initLLVM(argc, argv);
   llvm::setBugReportMsg(
-      "This example program shouldn't be crashing. Please submit an issue to "
-      "https://github.com/modular/max/issues and include the crash "
-      "backtrace. Thanks!\n");
+      "This example program shouldn't be crashing. This is the WINMOJO x64 "
+      "fork, which Modular does not support, so please do not report this "
+      "upstream; file it at\n"
+      "  https://github.com/albanread/WINMOJOX64Blackwell/issues\n"
+      "including the crash backtrace. Thanks!\n");
 
   // Collect the command line arguments for parsing.
   SmallVector<const char *, 256> argvStorage(argv, argv + argc);

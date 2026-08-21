@@ -77,9 +77,11 @@ int main(int argc, char **argv) {
   KGEN::installOOMHandler();
 
   llvm::setBugReportMsg(
-      "Please submit a bug report to https://github.com/modular/modular/issues "
-      "and include the crash backtrace along with all the relevant source "
-      "codes.\n");
+      "The Mojo compiler crashed. This is the WINMOJO x64 fork, which "
+      "Modular does not support, so please do not report this upstream.\n"
+      "If the fork is at fault, file it at\n"
+      "  https://github.com/albanread/WINMOJOX64Blackwell/issues\n"
+      "including the crash backtrace and the source that triggered it.\n");
 
   // Store command line arguments and record the program name.
   SmallVector<const char *, 256> argvStorage(argv, argv + argc);

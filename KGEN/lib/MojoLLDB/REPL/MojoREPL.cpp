@@ -503,8 +503,9 @@ debugging commands is also available as described below.
 
 Type "< path" to read in code from a text file "path".
 
-Finally, we encourage you to submit feature requests and error reports in
-https://github.com/modular/modular/issues.
+This is the WINMOJO x64 fork, which Modular does not support. Please do not
+report its behaviour upstream; feature requests and error reports belong in
+https://github.com/albanread/WINMOJOX64Blackwell/issues.
 )";
 }
 

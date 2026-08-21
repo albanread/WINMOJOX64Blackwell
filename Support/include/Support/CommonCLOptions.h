@@ -81,9 +81,11 @@ public:
     options.programName = argv[0];
 
     static constexpr StringLiteral bugReportMsg =
-        "PLEASE submit a bug report to "
-        "https://github.com/modular/modular/issues and include the crash "
-        "backtrace.\n";
+        "This is the WINMOJO x64 fork, which Modular does not support, so "
+        "please do not report this upstream.\n"
+        "If the fork is at fault, file it at\n"
+        "  https://github.com/albanread/WINMOJOX64Blackwell/issues\n"
+        "including the crash backtrace.\n";
 
     llvm::setBugReportMsg(bugReportMsg.data());
   }

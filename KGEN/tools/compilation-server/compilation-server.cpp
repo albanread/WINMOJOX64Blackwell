@@ -34,10 +34,12 @@ int main(int argc, char **argv) {
 
   llvm::PrettyStackTraceProgram x(argc, argv);
   llvm::setBugReportMsg(
-      "Compilation server has encountered an internal error. "
-      "Please submit a Modular internal bug report "
-      "and include the crash backtrace along with your command line"
-      "invocation.\n");
+      "Compilation server has encountered an internal error. This is the "
+      "WINMOJO x64 fork, which Modular does not support, so this is not a "
+      "Modular internal bug and should not be filed as one.\n"
+      "If the fork is at fault, file it at\n"
+      "  https://github.com/albanread/WINMOJOX64Blackwell/issues\n"
+      "including the crash backtrace and your command line invocation.\n");
 
   llvm::cl::opt<JSONStreamStyle> inputStyle{
       "input-style",
