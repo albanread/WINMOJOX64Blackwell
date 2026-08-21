@@ -176,3 +176,45 @@ mojo/docs/releases/nightly.md
 # commits. Re-include them.
 !KGEN/**/Target/
 !KGEN/**/Target/**
+
+# WINMOJO x64: machine-local tools and editor state
+/.codex/
+/.vs/
+/.idea/
+*.suo
+*.user
+*.VC.db
+*.opendb
+
+# Windows compiler, linker, debugger, and crash output. Bazel output lives
+# under /bazel-* above; these cover direct local builds and diagnostics.
+*.obj
+*.pdb
+*.ilk
+*.tlog
+*.lastbuildstate
+*.dmp
+*.stackdump
+*.tmp
+*.bak
+*~
+
+# Mojo JIT/compiler caches and standalone runtime state
+.mojo_cache/
+/cache/
+/crashdb/
+/release-output/
+/mojo_release/
+/compile_commands.json
+
+# Root-level ad-hoc compiler and GPU diagnostics. Keep these root-scoped so
+# LLVM/MLIR fixtures with the same extensions elsewhere remain visible.
+/*.exe
+/*.dll
+/*.lib
+/*.exp
+/*.ptx
+/*.cubin
+/*.fatbin
+/*.ll
+/*.asm
