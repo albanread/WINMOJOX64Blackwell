@@ -27,7 +27,7 @@ from std.os import abort
 from std.atomic import Ordering, fence
 from std.sys import is_amd_gpu, is_apple_gpu, is_nvidia_gpu, llvm_intrinsic
 from std.sys._assembly import inlined_assembly
-from std.sys.info import CompilationTarget, _is_amd_cdna
+from std.sys.info import CompilationTarget, _is_amd_cdna, _is_sm_8x_or_newer
 from std.sys.defines import get_defined_bool
 
 from std.gpu.intrinsics import Scope
@@ -537,6 +537,31 @@ def _mbarrier_noinc_impl[
 
 
 @always_inline("nodebug")
+def _check_mbarrier_supported():
+    """Compile-time constraint: mbarrier needs Ampere or newer.
+
+    The mbarrier instructions were introduced in PTX ISA 7.0 and have no
+    encoding on older NVIDIA hardware. Without this check the intrinsic reaches
+    the NVPTX backend, which cannot select it and aborts the whole compilation
+    with "LLVM ERROR: Cannot select: intrinsic %llvm.nvvm.mbarrier.init.shared"
+    -- an internal-error crash rather than a diagnostic, which tells the user
+    nothing about the actual cause.
+
+    Only the architecture is checked here. Callers keep their own
+    `is_nvidia_gpu()` branch so that a non-NVIDIA target still gets the more
+    specific vendor message.
+    """
+    comptime if is_nvidia_gpu():
+        comptime assert _is_sm_8x_or_newer(), (
+            "this GPU is too old for mbarrier. It requires NVIDIA compute"
+            " capability 8.0 (Ampere) or newer; the target here is older, for"
+            " example Turing (sm_75), where the instruction does not exist."
+            " Guard the call site with _is_sm_8x_or_newer() and provide a"
+            " fallback path for older cards."
+        )
+
+
+@always_inline("nodebug")
 def async_copy_arrive[
     type: AnyType, address_space: AddressSpace, *, noinc: Bool = False
 ](address: Pointer[mut=True, type, _, address_space=address_space]):
@@ -559,6 +584,8 @@ def async_copy_arrive[
     Args:
         address: Pointer to the memory barrier object location.
     """
+
+    _check_mbarrier_supported()
 
     comptime if is_nvidia_gpu():
         comptime if noinc:
@@ -592,6 +619,8 @@ def mbarrier_init[
         num_threads: Number of threads that will synchronize on this barrier.
     """
 
+    _check_mbarrier_supported()
+
     comptime if is_nvidia_gpu():
         llvm_intrinsic["llvm.nvvm.mbarrier.init.shared", NoneType](
             shared_mem, num_threads
@@ -623,6 +652,8 @@ def mbarrier_arrive[
     Returns:
         An integer representing the current state of the memory barrier.
     """
+
+    _check_mbarrier_supported()
 
     comptime if is_nvidia_gpu():
         return llvm_intrinsic["llvm.nvvm.mbarrier.arrive.shared", Int](
@@ -658,6 +689,8 @@ def mbarrier_test_wait[
         True if all threads have arrived, False otherwise.
     """
 
+    _check_mbarrier_supported()
+
     comptime if is_nvidia_gpu():
         return llvm_intrinsic["llvm.nvvm.mbarrier.test.wait.shared", Bool](
             shared_mem, state
@@ -665,7 +698,7 @@ def mbarrier_test_wait[
     else:
         CompilationTarget.unsupported_target_error[
             operation=__get_current_function_name(),
-            note="mbarrier_test_wair() is only supported when targeting NVIDIA GPUs",
+            note="mbarrier_test_wait() is only supported when targeting NVIDIA GPUs",
         ]()
 
 
@@ -688,6 +721,8 @@ def mbarrier_arrive_expect_tx_shared[
         addr: Pointer to the shared memory barrier.
         tx_count: Number of expected transactions to track.
     """
+
+    _check_mbarrier_supported()
 
     comptime if is_nvidia_gpu():
         _ = __mlir_op.`nvvm.mbarrier.arrive.expect_tx`[_type=__mlir_type.i64](
@@ -743,6 +778,8 @@ def mbarrier_arrive_expect_tx_relaxed[
             " same if space is cluster."
         )
 
+    _check_mbarrier_supported()
+
     comptime if is_nvidia_gpu():
         comptime asm = (
             """mbarrier.arrive.expect_tx.relaxed."""
@@ -785,6 +822,8 @@ def mbarrier_try_wait_parity_shared[
         phase: Phase number to wait for.
         ticks: Timeout period in nanoseconds.
     """
+
+    _check_mbarrier_supported()
 
     comptime if is_nvidia_gpu():
         __mlir_op.`nvvm.mbarrier.try_wait.parity`(

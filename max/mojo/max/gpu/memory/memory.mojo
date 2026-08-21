@@ -45,6 +45,7 @@ from std.sys import (
 from std.sys._assembly import inlined_assembly
 from std.sys.info import (
     CompilationTarget,
+    _is_sm_8x_or_newer,
     _is_sm_9x_or_newer,
     _is_sm_100x_or_newer,
     is_apple_gpu,
@@ -549,6 +550,21 @@ def async_copy[
             comptime for i in range(n_scalars):
                 dst.unsafe_store(i, src.unsafe_load(i))
         return
+
+    # Everything below emits cp.async, which was introduced in PTX ISA 7.0 and
+    # has no encoding before Ampere. Without this check the instruction reaches
+    # the NVPTX backend, which cannot select it and aborts the compilation with
+    # an internal LLVM error naming an intrinsic rather than the real cause.
+    # AMD and Apple returned above through the synchronous fallback; an older
+    # NVIDIA card has no such fallback here and has to be told plainly.
+    comptime assert not is_nvidia_gpu() or _is_sm_8x_or_newer(), (
+        "this GPU is too old for cp.async. It requires NVIDIA compute"
+        " capability 8.0 (Ampere) or newer; the target here is older, for"
+        " example Turing (sm_75), where the instruction does not exist. Guard"
+        " the call site with _is_sm_8x_or_newer() and copy synchronously on"
+        " older cards."
+    )
+
     # Cache always: cache data in L1 first, then copy to shared memory.
     # Cache global: bypass L1 cache
     # We always do the latter.
