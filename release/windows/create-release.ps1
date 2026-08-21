@@ -1,11 +1,50 @@
 [CmdletBinding()]
 param(
-    [string]$Destination = 'C:\projects\mojo_release'
+    [string]$Destination = 'C:\projects\mojo_release',
+    [string]$OutputBase
 )
 
 $ErrorActionPreference = 'Stop'
 
 $repository = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
+
+# Almost every artifact below is reached through the repo-relative bazel-bin
+# symlink, which works wherever the output base happens to live. windows_api.db
+# is the exception: it comes from an external repository, which sits in the
+# output base itself. That path used to be hardcoded to C:\b\w -- one machine's
+# --output_base -- so packaging failed anywhere else with a missing-artifact
+# error naming a directory the user had never configured.
+function Get-BazelOutputBase {
+    param([string]$Repository)
+
+    # Prefer the convenience symlink: no Bazel server needed, and the layout
+    # <output_base>\execroot\<workspace>\bazel-out is stable.
+    $marker = Join-Path $Repository 'bazel-out'
+    if (Test-Path -LiteralPath $marker) {
+        $target = (Get-Item -LiteralPath $marker -Force).Target
+        if ($target) {
+            if ($target -is [array]) { $target = $target[0] }
+            $probe = [System.IO.Path]::GetFullPath($target)
+            for ($i = 0; $i -lt 3; $i++) { $probe = Split-Path -Parent $probe }
+            if ($probe -and (Test-Path -LiteralPath (Join-Path $probe 'external'))) {
+                return $probe
+            }
+        }
+    }
+
+    # Otherwise ask Bazel directly.
+    $bazelw = Join-Path $Repository 'bazelw.cmd'
+    if (Test-Path -LiteralPath $bazelw) {
+        $reported = & $bazelw info output_base 2>$null | Select-Object -Last 1
+        if ($LASTEXITCODE -eq 0 -and $reported) { return $reported.Trim() }
+    }
+
+    throw "Could not determine the Bazel output base. Build the tree first, or pass -OutputBase."
+}
+
+if (-not $OutputBase) { $OutputBase = Get-BazelOutputBase -Repository $repository }
+$OutputBase = $OutputBase.TrimEnd('\', '/')
+Write-Host "Bazel output base: $OutputBase"
 $destinationPath = [System.IO.Path]::GetFullPath($Destination).TrimEnd('\')
 if ($destinationPath -eq [System.IO.Path]::GetPathRoot($destinationPath)) {
     throw "Refusing to package a release into a drive root: $destinationPath"
@@ -33,7 +72,7 @@ $artifacts = [ordered]@{
     'lib\nvptxrt.lib' = 'bazel-bin\nvptx\runtime\nvptxrt.lib'
     'lib\std.mojoc' = 'bazel-bin\mojo\stdlib\std\std.mojoc'
     'lib\max.mojoc' = 'bazel-bin\max\mojo\max\max.mojoc'
-    'lib\windows_api.db' = 'C:\b\w\external\+http_archive+winkb\windows_api.db'
+    'lib\windows_api.db' = (Join-Path $OutputBase 'external\+http_archive+winkb\windows_api.db')
     'examples\nvidia_mandelbrot.mojo' = 'examples\win32\nvidia_mandelbrot.mojo'
     'examples\nvidia_mandelbrot.exe' = 'bazel-bin\examples\win32\nvidia_mandelbrot.exe'
     'examples\AsyncRTRuntimeGlobals.dll' = 'bazel-bin\AsyncRT\AsyncRTRuntimeGlobals.dll'
@@ -58,6 +97,7 @@ foreach ($entry in $artifacts.GetEnumerator()) {
 $templateFiles = @(
     'README.md',
     'mojo.cmd',
+    'vsenv.cmd',
     'mojo-shell.cmd',
     'mojo-gpu-run.cmd',
     'mojo-gpu-build.cmd',
@@ -106,7 +146,12 @@ $hashLines = Get-ChildItem -LiteralPath $destinationPath -File -Recurse |
     Where-Object { $_.FullName -ne $manifestPath } |
     Sort-Object FullName |
     ForEach-Object {
-        $relativePath = [System.IO.Path]::GetRelativePath($destinationPath, $_.FullName)
+        # Not [System.IO.Path]::GetRelativePath: that is .NET Core only, so it
+        # throws MethodNotFound on Windows PowerShell 5.1, which is what ships
+        # with Windows. Every file here is under $destinationPath, which is
+        # already absolute and has no trailing separator, so trimming the
+        # prefix is exact.
+        $relativePath = $_.FullName.Substring($destinationPath.Length).TrimStart('\')
         $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
         "$hash  $relativePath"
     }

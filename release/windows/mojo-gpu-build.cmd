@@ -1,3 +1,4 @@
 @echo off
-call "%~dp0mojo.cmd" build --target-accelerator sm_120a %*
+rem See mojo-gpu-run.cmd: "cuda" resolves to the installed card.
+call "%~dp0mojo.cmd" build --target-accelerator cuda %*
 exit /b %ERRORLEVEL%
