@@ -1,0 +1,87 @@
+diff --git a/mojo/mojo_host_platform.bzl b/mojo/mojo_host_platform.bzl
+index 781004c..627616f 100644
+--- a/mojo/mojo_host_platform.bzl
++++ b/mojo/mojo_host_platform.bzl
+@@ -124,10 +124,49 @@ def _get_apple_constraint(rctx, gpu_mapping):
+ def _impl(rctx):
+     constraints = []
+ 
+-    if rctx.os.name == "linux" and (rctx.os.arch == "amd64" or rctx.os.arch == "aarch64"):
++    # An explicit override wins over detection, so one machine can build for
++    # the other's card without that card present: sm_75 kernels on the
++    # Blackwell box, sm_120a on the Turing box. Set it per machine with
++    # --repo_env=MOJO_GPU_OVERRIDE=<name> from local.bazelrc, which keeps the
++    # value declarative rather than varying with the invoking shell. The name
++    # is a key of supported_gpus, not an nvidia-smi string.
++    override = rctx.getenv("MOJO_GPU_OVERRIDE")
++
++    # Windows reaches the same nvidia-smi as Linux; only the Apple and AMD
++    # paths are genuinely POSIX-only. Without this the whole block was skipped
++    # on Windows and every build silently configured itself CPU-only, with no
++    # diagnostic, because having no GPU is a legitimate state here.
++    is_smi_host = rctx.os.name == "linux" or rctx.os.name.startswith("windows")
++
++    if override:
++        _verbose_log(rctx, "GPU detection overridden by MOJO_GPU_OVERRIDE: {}".format(override))
++        constraints.extend([
++            "@mojo_gpu_toolchains//:nvidia_gpu",
++            "@mojo_gpu_toolchains//:has_gpu",
++            "@mojo_gpu_toolchains//:{}_gpu".format(override),
++        ])
++
++    elif is_smi_host and (rctx.os.arch == "amd64" or rctx.os.arch == "aarch64"):
+         # A system may have both rocm-smi and nvidia-smi installed, check both.
+         nvidia_smi = rctx.which("nvidia-smi")
+ 
++        if not nvidia_smi:
++            nvidia_smi = rctx.which("nvidia-smi.exe")
++
++        # The driver installs nvidia-smi.exe under System32, which is on PATH
++        # for a normal process but not necessarily inside a repository rule:
++        # --experimental_strict_repo_env, which this repo sets, deliberately
++        # withholds the client environment. Fall back to the known locations
++        # so detection does not depend on what leaked through.
++        if not nvidia_smi and rctx.os.name.startswith("windows"):
++            for candidate in [
++                "C:/Windows/System32/nvidia-smi.exe",
++                "C:/Program Files/NVIDIA Corporation/NVSMI/nvidia-smi.exe",
++            ]:
++                if rctx.path(candidate).exists:
++                    nvidia_smi = rctx.path(candidate)
++                    break
++
+         # amd-smi supersedes rocm-smi
+         amd_smi = rctx.which("amd-smi")
+         rocm_smi = rctx.which("rocm-smi")
+@@ -136,7 +175,18 @@ def _impl(rctx):
+ 
+         # NVIDIA
+         if nvidia_smi:
+-            result = rctx.execute([nvidia_smi, "--query-gpu=gpu_name", "--format=csv,noheader"])
++            # The nvidia-smi.exe in System32 is a stub that locates the real
++            # nvml.dll under %ProgramW6432%\NVIDIA Corporation. Bazel runs
++            # repository rules with a scrubbed environment, and without this
++            # one variable the stub exits 255 with "Failed to initialize NVML:
++            # Unknown Error" -- which the caller reads as "no GPU here".
++            # Measured: ProgramW6432 alone is sufficient; SystemRoot and PATH
++            # are not.
++            smi_env = {}
++            if rctx.os.name.startswith("windows"):
++                smi_env["ProgramW6432"] = rctx.getenv("ProgramW6432") or "C:\\Program Files"
++
++            result = rctx.execute([nvidia_smi, "--query-gpu=gpu_name", "--format=csv,noheader"], environment = smi_env)
+             _log_result(rctx, nvidia_smi, result)
+             if result.return_code == 0:
+                 lines = result.stdout.splitlines()
+@@ -223,7 +273,11 @@ mojo_host_platform = repository_rule(
+     implementation = _impl,
+     configure = True,
+     environ = [
++        "MOJO_GPU_OVERRIDE",
+         "MOJO_IGNORE_UNKNOWN_GPUS",
++        # Stable system variable, so declaring it does not make the repo rule
++        # re-fetch on every shell whose environment differs.
++        "ProgramW6432",
+         "MOJO_VERBOSE_GPU_DETECT",
+     ],
+     attrs = {

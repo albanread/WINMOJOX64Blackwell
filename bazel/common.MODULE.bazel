@@ -83,6 +83,11 @@ archive_override(
         # mojo tests died at startup with STATUS_DLL_NOT_FOUND. Materialize
         # each dependency DLL beside the test executable.
         "//bazel/public-patches:rules_mojo_windows_dlls_beside_binary.patch",
+        # GPU detection was gated to Linux and macOS, so every Windows build
+        # configured itself CPU-only with no diagnostic. Adds the Windows
+        # nvidia-smi path, plus MOJO_GPU_OVERRIDE to select a target GPU that
+        # is not the one installed.
+        "//bazel/public-patches:rules_mojo_windows_gpu_detect.patch",
     ],
     strip_prefix = "rules_mojo-47643a3b441c20c3a351b8807e37c547338557c8",
     urls = [
