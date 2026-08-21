@@ -192,6 +192,29 @@ GPU tests in this tree, so the hardware tests above were run directly with the
 newly built `mojo.exe`. Focused Bazel build targets are used to compile the
 compiler and runtime without invalidating thousands of cached components.
 
+### Measured baselines
+
+`nvidia_mandelbrot` prints a CPU/GPU comparison before it opens its window.
+That comparison, not the frame rate, is the number worth keeping.
+
+| Card | Arch | GPU ms/frame | CPU 1 core | Speedup | Pixels differing |
+| --- | --- | --- | --- | --- | --- |
+| T1000 8GB | `sm_75` | 1 | 152 ms | 97x | 0 of 691,200 |
+| RTX PRO 2000 Blackwell | `sm_120a` | *not recorded* | | | |
+
+Grid 960x720 at `max_iter 512`, about 73M iterations.
+
+Two cautions when adding a row. **Discard the first run after boot**: on cold
+clocks the T1000 reported 7 ms and 21x, against 1 ms and 97x on every warm run
+after it. **Ignore the frame rate**: the loop calls `Present` with an interval
+derived from the display refresh rate, so it reports 59-60 fps on any card
+fast enough to keep up, and says nothing about the GPU. During the T1000 run
+the card sampled at only ~32% utilisation, holding 59 fps with the SM clock
+idling around 1021 MHz.
+
+The pixel-agreement column is the real correctness check, since the example
+compares every pixel against a single-threaded CPU reference.
+
 ## PTX portability
 
 PTX is portable within the architecture and feature contract encoded in the
@@ -201,10 +224,16 @@ Blackwell features.
 
 The compiler and runtime now recognize Windows NVIDIA architectures and append
 the architecture-specific `a` suffix for the known targets that require it.
-Other NVIDIA cards can be supported by selecting their correct `sm_XX` or
-`sm_XXa` toolchain and rebuilding. A future general release should contain
-multiple PTX targets or select one at installation/run time rather than ship
-only this machine's `sm_120a` configuration.
+Two cards are registered: the RTX PRO 2000 Blackwell Generation (`sm_120a`)
+and the T1000 (`sm_75`, Turing). Registering a third takes two lines in
+`bazel/common.MODULE.bazel`, an `nvidia-smi` name substring in `gpu_mapping`
+and an accelerator in `supported_gpus`. Add a `platform` in `BUILD.bazel` and
+a `--config` in `bazel/internal/common.bazelrc` as well if the card should be
+selectable from a machine that does not have it installed.
+
+A future general release should still contain multiple PTX targets, or select
+one at installation or run time, rather than ship a single machine's
+configuration.
 
 ## Building from source
 
@@ -228,7 +257,6 @@ configuration for the reference machine:
 ```bazelrc
 startup --output_base=C:/b/w
 build --config=build-mojo
-build --config=windows-nvidia-blackwell
 build --compilation_mode=opt
 build --//:modular_config=production
 build --jobs=12
@@ -236,9 +264,20 @@ build --experimental_disk_cache_gc_max_size=10G
 build --experimental_disk_cache_gc_idle_delay=5s
 ```
 
-`--config=windows-nvidia-blackwell` is the important target selection. Adjust
-the job count and cache limit to the machine, but do not replace the platform
-with an unrelated host or GPU configuration.
+A GPU `--config` is no longer part of that list. Detection runs on Windows now,
+so the installed card is identified from `nvidia-smi` and selects its own
+toolchain. Name a target explicitly only to build for a card this machine does
+not have:
+
+| Config | Builds for | Accelerator |
+|---|---|---|
+| *(none)* | the installed card | detected |
+| `--config=windows-nvidia-blackwell` | RTX PRO 2000 Blackwell | `sm_120a` |
+| `--config=windows-nvidia-t1000` | T1000 | `sm_75` |
+
+Each selection is a distinct platform and so gets distinct output paths, which
+means two cards' artifacts coexist in the disk cache instead of invalidating
+each other. Adjust the job count and cache limit to the machine.
 
 The short output base keeps Windows path lengths under control. The disk-cache
 limit prevents Bazel from consuming the system drive indefinitely. Avoid
