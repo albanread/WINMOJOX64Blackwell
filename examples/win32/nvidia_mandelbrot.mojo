@@ -1,21 +1,21 @@
 # ===----------------------------------------------------------------------=== #
-# Mandelbrot on the Adreno X1-45, in a window, zooming.
+# Mandelbrot on an NVIDIA Blackwell GPU, in a window, zooming.
 #
-#     ./examples/win32/build.sh adreno_mandelbrot --target-accelerator adreno-x1
-#     ./bazel-bin/examples/win32/adreno_mandelbrot.exe
+#     ./bazelw.cmd build //examples/win32:nvidia_mandelbrot
+#     ./bazel-bin/examples/win32/nvidia_mandelbrot.exe
 #
 # The Julia demo was honest about cheating: the picture came out of a pixel
 # shader, so the GPU was doing the work but Mojo was only describing it in
 # HLSL. This is the other way round. Every pixel is computed by a Mojo kernel
-# compiled to SPIR-V and executed on the Adreno through OpenCL; Direct3D is
+# compiled to PTX and executed through the NVIDIA CUDA driver; Direct3D is
 # reduced to a texture upload and a fullscreen triangle, and the only HLSL
 # left is a colour ramp.
 #
 # saxpy proved the pipeline but almost nothing about the compiler: no branch,
 # no loop, every work-item identical. Mandelbrot is the opposite shape -- a
 # data-dependent loop whose trip count runs from 1 to MAX_ITER per work-item,
-# which is where work-items in a wavefront diverge and where SPIR-V's
-# structured control flow has to hold up.
+# which is where threads in a warp diverge and where NVPTX control flow has to
+# hold up.
 #
 # Before the window opens the same computation runs on the CPU and the two are
 # compared. A picture that looks right is not evidence: a Mandelbrot set is
@@ -64,9 +64,8 @@ def mandelbrot_kernel(
         var cx = center_x + (Float32(px) - Float32(WIDTH) * 0.5) * scale
         var cy = center_y + (Float32(py) - Float32(HEIGHT) * 0.5) * scale
 
-        # One loop exit, not a `break` inside the body: SPIR-V wants
-        # structured control flow, and a single condition is the shape the
-        # backend structurizes without inventing a merge block.
+        # One loop exit, not a `break` inside the body, keeps the GPU control
+        # flow simple while adjacent threads diverge at different iterations.
         var zx = Float32(0)
         var zy = Float32(0)
         var n = 0
@@ -188,7 +187,7 @@ struct DXGI_SWAP_CHAIN_DESC(Copyable, Defaultable, Movable):
 
 @fieldwise_init
 struct D3D11_TEXTURE2D_DESC(Copyable, Defaultable, Movable):
-    """The texture the Adreno's output lands in. Layout checked against winkb.
+    """The texture the GPU output lands in. Layout checked against winkb.
     """
 
     var Width: UInt32
@@ -315,7 +314,7 @@ def mojo_wndproc(hwnd: Int, message: UInt32, wparam: Int, lparam: Int) abi(
 
 
 # The only shading left: escape count in, colour out. The set itself is
-# computed on the Adreno; this just decides what it looks like.
+# computed on the NVIDIA GPU; this just decides what it looks like.
 comptime HLSL: StaticString = """
 Texture2D<float> escapes : register(t0);
 
@@ -466,7 +465,7 @@ def main() raises:
     ), "DXGI_SWAP_CHAIN_DESC does not match Windows"
 
     # ---- the accelerator ------------------------------------------------
-    var ctx = DeviceContext(api="adreno")
+    var ctx = DeviceContext(api="cuda")
     var hz_counter = performance_frequency()
 
     var center_x = Float32(-0.743643887037151)
@@ -566,8 +565,8 @@ def main() raises:
 
     print("grid          ", WIDTH, "x", HEIGHT, " max_iter", MAX_ITER)
     print("work          ", total_iters // 1000000, "M iterations,", total_iters // PIXELS, "mean per pixel")
-    print("Adreno X1-45  ", gpu_us // 1000, "ms per frame (compute + readback)")
-    print("Oryon, 1 core ", cpu_us // 1000, "ms")
+    print("NVIDIA GPU    ", gpu_us // 1000, "ms per frame (compute + readback)")
+    print("CPU, 1 core  ", cpu_us // 1000, "ms")
     if gpu_us > 0:
         print("speedup       ", cpu_us * 10 // gpu_us, "/ 10")
     print(
@@ -619,7 +618,7 @@ def main() raises:
     var hInstance = GetModuleHandleW(Int(0))
     var class_name = wide("MojoMandelbrotWindow")
     var title = wide(
-        "Mandelbrot - Mojo kernel on the Adreno X1-45 - Esc to close"
+        "Mandelbrot - Mojo kernel on NVIDIA Blackwell - Esc to close"
     )
     var proc: WndProcType = mojo_wndproc
 
@@ -733,7 +732,7 @@ def main() raises:
     ):
         raise Error("CreateRenderTargetView failed")
 
-    # ---- the texture the Adreno's output lands in ------------------------
+    # ---- the texture the NVIDIA GPU output lands in ----------------------
     # R32_FLOAT holds the escape count as computed, so nothing on the CPU
     # touches the data between the device readback and the upload -- the
     # colour mapping happens in the pixel shader, where it is free.
@@ -970,7 +969,7 @@ def main() raises:
 
     # ---- the loop --------------------------------------------------------
     print()
-    print("window open; the Adreno recomputes every frame. Esc or close to stop.")
+    print("window open; the NVIDIA GPU recomputes every frame. Esc or close to stop.")
 
     var params = List[Float32](length=4, fill=0.0)
     var msg = MSG()
@@ -1055,5 +1054,5 @@ def main() raises:
         elapsed_us // 1000,
         "ms =",
         frames * 1000000 // elapsed_us if elapsed_us > 0 else 0,
-        "fps, every frame computed on the Adreno",
+        "fps, every frame computed on the NVIDIA GPU",
     )
