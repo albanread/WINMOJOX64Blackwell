@@ -32,7 +32,9 @@
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <new>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -45,6 +47,11 @@ using CUstream = void *;
 using CUevent = void *;
 using CUmodule = void *;
 using CUfunction = void *;
+using CUgraph = void *;
+using CUgraphExec = void *;
+using CUgraphNode = void *;
+using CUarray = void *;
+using CUhostFn = void (*)(void *);
 
 struct CUlaunchAttribute {
   int id;
@@ -65,6 +72,83 @@ struct CUlaunchConfig {
   unsigned int attributeCount;
 };
 
+struct CUDAKernelNodeParams {
+  CUfunction function;
+  unsigned int gridX;
+  unsigned int gridY;
+  unsigned int gridZ;
+  unsigned int blockX;
+  unsigned int blockY;
+  unsigned int blockZ;
+  unsigned int sharedMemoryBytes;
+  void **kernelParams;
+  void **extra;
+  void *kernel;
+  CUcontext context;
+};
+
+struct CUDAMemcpy3D {
+  size_t sourceXBytes;
+  size_t sourceY;
+  size_t sourceZ;
+  size_t sourceLevel;
+  int sourceMemoryType;
+  const void *sourceHost;
+  CUdeviceptr sourceDevice;
+  CUarray sourceArray;
+  void *sourceReserved;
+  size_t sourcePitch;
+  size_t sourceHeight;
+  size_t destinationXBytes;
+  size_t destinationY;
+  size_t destinationZ;
+  size_t destinationLevel;
+  int destinationMemoryType;
+  void *destinationHost;
+  CUdeviceptr destinationDevice;
+  CUarray destinationArray;
+  void *destinationReserved;
+  size_t destinationPitch;
+  size_t destinationHeight;
+  size_t widthBytes;
+  size_t height;
+  size_t depth;
+};
+
+struct CUDAMemsetNodeParams {
+  CUdeviceptr destination;
+  size_t pitch;
+  unsigned int value;
+  unsigned int elementSize;
+  size_t width;
+  size_t height;
+};
+
+struct CUDAHostNodeParams {
+  CUhostFn function;
+  void *userData;
+};
+
+struct CUDAStreamWaitValue64Params {
+  int operation;
+  unsigned int reserved0;
+  CUdeviceptr address;
+  uint64_t value;
+  unsigned int flags;
+  unsigned int reserved1;
+  CUdeviceptr alias;
+  uint64_t reserved2;
+};
+
+struct CUDABatchMemOpNodeParams {
+  CUcontext context;
+  unsigned int count;
+  unsigned int reserved0;
+  CUDAStreamWaitValue64Params *parameters;
+  unsigned int flags;
+  unsigned int reserved1;
+};
+
 struct alignas(64) CUtensorMap {
   uint64_t opaque[16];
 };
@@ -72,12 +156,25 @@ struct alignas(64) CUtensorMap {
 static_assert(sizeof(CUlaunchAttribute) == 72,
               "CUDA launch attribute ABI mismatch");
 static_assert(sizeof(CUlaunchConfig) == 56, "CUDA launch config ABI mismatch");
+static_assert(sizeof(CUDAKernelNodeParams) == 72,
+              "CUDA kernel node ABI mismatch");
+static_assert(sizeof(CUDAMemcpy3D) == 200, "CUDA memcpy node ABI mismatch");
+static_assert(sizeof(CUDAMemsetNodeParams) == 40,
+              "CUDA memset node ABI mismatch");
+static_assert(sizeof(CUDAHostNodeParams) == 16,
+              "CUDA host node ABI mismatch");
+static_assert(sizeof(CUDAStreamWaitValue64Params) == 48,
+              "CUDA stream wait ABI mismatch");
+static_assert(sizeof(CUDABatchMemOpNodeParams) == 32,
+              "CUDA batch memory operation node ABI mismatch");
 
 constexpr CUresult CUDA_SUCCESS = 0;
 constexpr unsigned int CU_STREAM_NON_BLOCKING = 1;
 constexpr unsigned int CU_EVENT_DISABLE_TIMING = 2;
 constexpr int CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75;
 constexpr int CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR = 76;
+constexpr int CU_MEMORYTYPE_HOST = 1;
+constexpr int CU_MEMORYTYPE_DEVICE = 2;
 
 #define CUDA_API __stdcall
 #define CUDA_FUNCTION(result, name, ...)                                       \
@@ -90,6 +187,7 @@ CUDA_FUNCTION(CUresult, cuDeviceGetCount, int *);
 CUDA_FUNCTION(CUresult, cuDeviceGet, CUdevice *, int);
 CUDA_FUNCTION(CUresult, cuDeviceGetName, char *, int, CUdevice);
 CUDA_FUNCTION(CUresult, cuDeviceGetAttribute, int *, int, CUdevice);
+CUDA_FUNCTION(CUresult, cuDeviceCanAccessPeer, int *, CUdevice, CUdevice);
 CUDA_FUNCTION(CUresult, cuDeviceTotalMem, size_t *, CUdevice);
 CUDA_FUNCTION(CUresult, cuDevicePrimaryCtxRetain, CUcontext *, CUdevice);
 CUDA_FUNCTION(CUresult, cuDevicePrimaryCtxRelease, CUdevice);
@@ -99,10 +197,13 @@ CUDA_FUNCTION(CUresult, cuCtxPushCurrent, CUcontext);
 CUDA_FUNCTION(CUresult, cuCtxPopCurrent, CUcontext *);
 CUDA_FUNCTION(CUresult, cuCtxSynchronize);
 CUDA_FUNCTION(CUresult, cuCtxGetStreamPriorityRange, int *, int *);
+CUDA_FUNCTION(CUresult, cuCtxEnablePeerAccess, CUcontext, unsigned int);
 CUDA_FUNCTION(CUresult, cuMemGetInfo, size_t *, size_t *);
 CUDA_FUNCTION(CUresult, cuMemAlloc, CUdeviceptr *, size_t);
 CUDA_FUNCTION(CUresult, cuMemFree, CUdeviceptr);
 CUDA_FUNCTION(CUresult, cuMemHostAlloc, void **, size_t, unsigned int);
+CUDA_FUNCTION(CUresult, cuMemHostGetDevicePointer, CUdeviceptr *, void *,
+              unsigned int);
 CUDA_FUNCTION(CUresult, cuMemFreeHost, void *);
 CUDA_FUNCTION(CUresult, cuMemcpyHtoD, CUdeviceptr, const void *, size_t);
 CUDA_FUNCTION(CUresult, cuMemcpyDtoH, void *, CUdeviceptr, size_t);
@@ -113,6 +214,8 @@ CUDA_FUNCTION(CUresult, cuMemcpyDtoHAsync, void *, CUdeviceptr, size_t,
               CUstream);
 CUDA_FUNCTION(CUresult, cuMemcpyDtoDAsync, CUdeviceptr, CUdeviceptr, size_t,
               CUstream);
+CUDA_FUNCTION(CUresult, cuMemcpyPeerAsync, CUdeviceptr, CUcontext, CUdeviceptr,
+              CUcontext, size_t, CUstream);
 CUDA_FUNCTION(CUresult, cuMemsetD8, CUdeviceptr, unsigned char, size_t);
 CUDA_FUNCTION(CUresult, cuMemsetD16, CUdeviceptr, unsigned short, size_t);
 CUDA_FUNCTION(CUresult, cuMemsetD32, CUdeviceptr, unsigned int, size_t);
@@ -128,12 +231,13 @@ CUDA_FUNCTION(CUresult, cuStreamCreateWithPriority, CUstream *, unsigned int,
 CUDA_FUNCTION(CUresult, cuStreamDestroy, CUstream);
 CUDA_FUNCTION(CUresult, cuStreamSynchronize, CUstream);
 CUDA_FUNCTION(CUresult, cuStreamWaitEvent, CUstream, CUevent, unsigned int);
+CUDA_FUNCTION(CUresult, cuStreamWaitValue64, CUstream, CUdeviceptr, uint64_t,
+              unsigned int);
 CUDA_FUNCTION(CUresult, cuEventCreate, CUevent *, unsigned int);
 CUDA_FUNCTION(CUresult, cuEventDestroy, CUevent);
 CUDA_FUNCTION(CUresult, cuEventRecord, CUevent, CUstream);
 CUDA_FUNCTION(CUresult, cuEventSynchronize, CUevent);
 CUDA_FUNCTION(CUresult, cuEventElapsedTime, float *, CUevent, CUevent);
-using CUhostFn = void(CUDA_API *)(void *);
 CUDA_FUNCTION(CUresult, cuLaunchHostFunc, CUstream, CUhostFn, void *);
 CUDA_FUNCTION(CUresult, cuModuleLoadDataEx, CUmodule *, const void *,
               unsigned int, int *, void **);
@@ -157,6 +261,27 @@ CUDA_FUNCTION(CUresult, cuLaunchKernel, CUfunction, unsigned int, unsigned int,
               unsigned int, CUstream, void **, void **);
 CUDA_FUNCTION(CUresult, cuLaunchKernelEx, const CUlaunchConfig *, CUfunction,
               void **, void **);
+CUDA_FUNCTION(CUresult, cuGraphCreate, CUgraph *, unsigned int);
+CUDA_FUNCTION(CUresult, cuGraphAddKernelNode, CUgraphNode *, CUgraph,
+              const CUgraphNode *, size_t, const CUDAKernelNodeParams *);
+CUDA_FUNCTION(CUresult, cuGraphKernelNodeSetAttribute, CUgraphNode, int,
+              const unsigned char *);
+CUDA_FUNCTION(CUresult, cuGraphAddMemcpyNode, CUgraphNode *, CUgraph,
+              const CUgraphNode *, size_t, const CUDAMemcpy3D *, CUcontext);
+CUDA_FUNCTION(CUresult, cuGraphAddMemsetNode, CUgraphNode *, CUgraph,
+              const CUgraphNode *, size_t, const CUDAMemsetNodeParams *,
+              CUcontext);
+CUDA_FUNCTION(CUresult, cuGraphAddEmptyNode, CUgraphNode *, CUgraph,
+              const CUgraphNode *, size_t);
+CUDA_FUNCTION(CUresult, cuGraphAddHostNode, CUgraphNode *, CUgraph,
+              const CUgraphNode *, size_t, const CUDAHostNodeParams *);
+CUDA_FUNCTION(CUresult, cuGraphAddBatchMemOpNode, CUgraphNode *, CUgraph,
+              const CUgraphNode *, size_t, const CUDABatchMemOpNodeParams *);
+CUDA_FUNCTION(CUresult, cuGraphInstantiate, CUgraphExec *, CUgraph,
+              unsigned long long);
+CUDA_FUNCTION(CUresult, cuGraphLaunch, CUgraphExec, CUstream);
+CUDA_FUNCTION(CUresult, cuGraphExecDestroy, CUgraphExec);
+CUDA_FUNCTION(CUresult, cuGraphDestroy, CUgraph);
 CUDA_FUNCTION(CUresult, cuGetErrorString, CUresult, const char **);
 
 #undef CUDA_FUNCTION
@@ -164,6 +289,17 @@ CUDA_FUNCTION(CUresult, cuGetErrorString, CUresult, const char **);
 static std::once_flag cudaLoadOnce;
 static bool cudaLoaded = false;
 static char cudaLoadError[512] = {};
+static std::mutex peerAccessMutex;
+
+static std::vector<std::pair<int, int>> &enabledPeerPairs() {
+  static auto *pairs = new std::vector<std::pair<int, int>>();
+  return *pairs;
+}
+
+static std::vector<std::pair<int, CUcontext>> &retainedPeerContexts() {
+  static auto *contexts = new std::vector<std::pair<int, CUcontext>>();
+  return *contexts;
+}
 
 template <typename T>
 bool loadProc(HMODULE module, T &result, const char *name,
@@ -199,6 +335,7 @@ static void loadCUDAOnce() {
   LOAD(cuDeviceGet);
   LOAD(cuDeviceGetName);
   LOAD(cuDeviceGetAttribute);
+  LOAD(cuDeviceCanAccessPeer);
   LOAD_V2(cuDeviceTotalMem);
   LOAD(cuDevicePrimaryCtxRetain);
   LOAD_V2(cuDevicePrimaryCtxRelease);
@@ -208,10 +345,12 @@ static void loadCUDAOnce() {
   LOAD_V2(cuCtxPopCurrent);
   LOAD(cuCtxSynchronize);
   LOAD(cuCtxGetStreamPriorityRange);
+  LOAD(cuCtxEnablePeerAccess);
   LOAD_V2(cuMemGetInfo);
   LOAD_V2(cuMemAlloc);
   LOAD_V2(cuMemFree);
   LOAD(cuMemHostAlloc);
+  LOAD_V2(cuMemHostGetDevicePointer);
   LOAD(cuMemFreeHost);
   LOAD_V2(cuMemcpyHtoD);
   LOAD_V2(cuMemcpyDtoH);
@@ -219,6 +358,7 @@ static void loadCUDAOnce() {
   LOAD_V2(cuMemcpyHtoDAsync);
   LOAD_V2(cuMemcpyDtoHAsync);
   LOAD_V2(cuMemcpyDtoDAsync);
+  LOAD(cuMemcpyPeerAsync);
   LOAD_V2(cuMemsetD8);
   LOAD_V2(cuMemsetD16);
   LOAD_V2(cuMemsetD32);
@@ -230,6 +370,7 @@ static void loadCUDAOnce() {
   LOAD_V2(cuStreamDestroy);
   LOAD(cuStreamSynchronize);
   LOAD(cuStreamWaitEvent);
+  LOAD_V2(cuStreamWaitValue64);
   LOAD(cuEventCreate);
   LOAD_V2(cuEventDestroy);
   LOAD(cuEventRecord);
@@ -246,6 +387,20 @@ static void loadCUDAOnce() {
   LOAD(cuTensorMapEncodeIm2col);
   LOAD(cuLaunchKernel);
   LOAD(cuLaunchKernelEx);
+  LOAD(cuGraphCreate);
+  if (!loadProc(module, cuGraphAddKernelNode, "cuGraphAddKernelNode_v2"))
+    return;
+  LOAD(cuGraphKernelNodeSetAttribute);
+  LOAD(cuGraphAddMemcpyNode);
+  LOAD(cuGraphAddMemsetNode);
+  LOAD(cuGraphAddEmptyNode);
+  LOAD(cuGraphAddHostNode);
+  LOAD(cuGraphAddBatchMemOpNode);
+  if (!loadProc(module, cuGraphInstantiate, "cuGraphInstantiateWithFlags"))
+    return;
+  LOAD(cuGraphLaunch);
+  LOAD(cuGraphExecDestroy);
+  LOAD(cuGraphDestroy);
   LOAD(cuGetErrorString);
 
 #undef LOAD_V2
@@ -289,12 +444,16 @@ static const char *cudaError(const char *operation, CUresult status) {
 }
 
 struct NVPTXContext;
+struct NVPTXGraphBuilder;
+struct NVPTXCompletionFlag;
 
 struct NVPTXStream {
   std::atomic<int> references{1};
   CUstream stream = nullptr;
   NVPTXContext *context = nullptr;
+  std::vector<NVPTXCompletionFlag *> pendingCompletionFlags;
   bool owning = false;
+  bool transient = false;
 };
 
 struct NVPTXBuffer {
@@ -327,9 +486,54 @@ struct NVPTXContext {
   std::string arch;
   std::string api = "cuda";
   NVPTXStream *defaultStream = nullptr;
+  NVPTXGraphBuilder *recordingBuilder = nullptr;
+  int32_t recordingLastNode = -1;
   std::vector<NVPTXStream *> streams;
+  std::vector<NVPTXBuffer *> liveHostBuffers;
   std::mutex mutex;
 };
+
+struct NVPTXGraphBuilder {
+  CUgraph graph = nullptr;
+  NVPTXContext *context = nullptr;
+  std::vector<CUgraphNode> nodes;
+  std::vector<NVPTXBuffer *> buffers;
+  std::vector<NVPTXFunction *> functions;
+  std::vector<NVPTXCompletionFlag *> completionFlags;
+  std::vector<void *> outputs;
+  int64_t inputCount = 0;
+};
+
+struct NVPTXGraph {
+  std::atomic<int> references{1};
+  CUgraphExec executable = nullptr;
+  NVPTXContext *context = nullptr;
+  std::vector<NVPTXBuffer *> buffers;
+  std::vector<NVPTXFunction *> functions;
+  std::vector<NVPTXCompletionFlag *> completionFlags;
+  std::vector<void *> outputs;
+};
+
+constexpr uint64_t NVPTX_ASYNC_VALUE_MAGIC = 0x4e56505458415631ull;
+
+struct NVPTXAsyncValue {
+  uint64_t magic = NVPTX_ASYNC_VALUE_MAGIC;
+  std::atomic<int> references{1};
+  NVPTXBuffer *buffer = nullptr;
+};
+
+constexpr uint64_t NVPTX_COMPLETION_FLAG_MAGIC = 0x4e56505458434631ull;
+
+struct NVPTXCompletionFlag {
+  uint64_t magic = NVPTX_COMPLETION_FLAG_MAGIC;
+  std::atomic<int> references{1};
+  std::atomic<uint64_t> *host = nullptr;
+  CUdeviceptr device = 0;
+  NVPTXContext *context = nullptr;
+};
+
+extern "C" __declspec(dllexport) void
+AsyncRT_DeviceBuffer_release(const NVPTXBuffer *buffer);
 
 struct NVPTXEvent {
   std::atomic<int> references{1};
@@ -358,6 +562,25 @@ static NVPTXContext *rootContext(const NVPTXContext *context) {
   return context->root ? context->root : const_cast<NVPTXContext *>(context);
 }
 
+static void registerHostBuffer(NVPTXBuffer *buffer) {
+  if (!buffer || !buffer->host || !buffer->context)
+    return;
+  NVPTXContext *root = rootContext(buffer->context);
+  std::lock_guard<std::mutex> lock(root->mutex);
+  root->liveHostBuffers.push_back(buffer);
+}
+
+static void unregisterHostBuffer(NVPTXBuffer *buffer) {
+  if (!buffer || !buffer->host || !buffer->context)
+    return;
+  NVPTXContext *root = rootContext(buffer->context);
+  std::lock_guard<std::mutex> lock(root->mutex);
+  auto position = std::find(root->liveHostBuffers.begin(),
+                            root->liveHostBuffers.end(), buffer);
+  if (position != root->liveHostBuffers.end())
+    root->liveHostBuffers.erase(position);
+}
+
 static CUstream activeStream(const NVPTXContext *context) {
   return context && context->defaultStream ? context->defaultStream->stream
                                            : nullptr;
@@ -378,9 +601,40 @@ static const char *setCurrent(const NVPTXContext *context) {
                                 : cudaError("cuCtxSetCurrent", status);
 }
 
+static void releaseCompletionFlag(NVPTXCompletionFlag *flag) {
+  if (!flag || flag->magic != NVPTX_COMPLETION_FLAG_MAGIC ||
+      flag->references.fetch_sub(1) != 1)
+    return;
+  NVPTXContext *context = flag->context;
+  if (context)
+    cuCtxSetCurrent(context->context);
+  if (flag->host)
+    cuMemFreeHost(flag->host);
+  flag->magic = 0;
+  delete flag;
+  releaseContext(context);
+}
+
+static void drainStreamCompletionFlags(NVPTXStream *stream) {
+  if (!stream || !stream->context)
+    return;
+  std::vector<NVPTXCompletionFlag *> completed;
+  NVPTXContext *root = rootContext(stream->context);
+  {
+    std::lock_guard<std::mutex> lock(root->mutex);
+    completed.swap(stream->pendingCompletionFlags);
+  }
+  for (NVPTXCompletionFlag *flag : completed)
+    releaseCompletionFlag(flag);
+}
+
 static void releaseStream(NVPTXStream *stream) {
   if (!stream)
     return;
+  if (stream->stream) {
+    cuStreamSynchronize(stream->stream);
+    drainStreamCompletionFlags(stream);
+  }
   if (stream->owning && stream->stream)
     cuStreamDestroy(stream->stream);
   delete stream;
@@ -440,11 +694,186 @@ static const char *waitForContext(const NVPTXContext *context,
              : cudaError("cuEventDestroy", destroyStatus);
 }
 
+static const char *graphDependencies(const NVPTXGraphBuilder *builder,
+                                     const int32_t *ids, int64_t count,
+                                     std::vector<CUgraphNode> &result) {
+  if (!builder)
+    return errf("device graph builder is null");
+  if (count < 0)
+    return errf("device graph dependency count is negative");
+  if (count && !ids)
+    return errf("device graph dependencies are null");
+  result.clear();
+  result.reserve(static_cast<size_t>(count));
+  for (int64_t index = 0; index < count; ++index) {
+    const int32_t id = ids[index];
+    if (id < 0 || static_cast<size_t>(id) >= builder->nodes.size())
+      return errf("device graph dependency id %d is invalid", id);
+    result.push_back(builder->nodes[static_cast<size_t>(id)]);
+  }
+  return nullptr;
+}
+
+static void retainGraphBuffer(NVPTXGraphBuilder *builder,
+                              NVPTXBuffer *buffer) {
+  if (!builder || !buffer ||
+      std::find(builder->buffers.begin(), builder->buffers.end(), buffer) !=
+          builder->buffers.end())
+    return;
+  buffer->references.fetch_add(1);
+  builder->buffers.push_back(buffer);
+}
+
+static void retainGraphHostPointer(NVPTXGraphBuilder *builder,
+                                   const void *pointer) {
+  if (!builder || !builder->context || !pointer)
+    return;
+  NVPTXContext *root = rootContext(builder->context);
+  std::lock_guard<std::mutex> lock(root->mutex);
+  for (NVPTXBuffer *buffer : root->liveHostBuffers) {
+    if (buffer->host == pointer) {
+      retainGraphBuffer(builder, buffer);
+      return;
+    }
+  }
+}
+
+static void retainGraphFunction(NVPTXGraphBuilder *builder,
+                                NVPTXFunction *function) {
+  if (!builder || !function ||
+      std::find(builder->functions.begin(), builder->functions.end(),
+                function) != builder->functions.end())
+    return;
+  function->references.fetch_add(1);
+  builder->functions.push_back(function);
+}
+
+static void retainGraphCompletionFlag(NVPTXGraphBuilder *builder,
+                                      NVPTXCompletionFlag *flag) {
+  if (!builder || !flag ||
+      std::find(builder->completionFlags.begin(), builder->completionFlags.end(),
+                flag) != builder->completionFlags.end())
+    return;
+  flag->references.fetch_add(1);
+  builder->completionFlags.push_back(flag);
+}
+
+static const char *addRecordedHostFunction(NVPTXContext *context,
+                                           CUhostFn function,
+                                           void *userData) {
+  if (!context || !context->recordingBuilder)
+    return errf("recorded host function: invalid recording context");
+  NVPTXGraphBuilder *builder = context->recordingBuilder;
+  const int32_t dependency = context->recordingLastNode;
+  std::vector<CUgraphNode> dependencies;
+  if (const char *error = graphDependencies(
+          builder, dependency >= 0 ? &dependency : nullptr,
+          dependency >= 0 ? 1 : 0, dependencies))
+    return error;
+  CUDAHostNodeParams parameters = {function, userData};
+  CUgraphNode node = nullptr;
+  CUresult status = cuGraphAddHostNode(&node, builder->graph,
+                                       dependencies.data(), dependencies.size(),
+                                       &parameters);
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuGraphAddHostNode", status);
+  builder->nodes.push_back(node);
+  context->recordingLastNode =
+      static_cast<int32_t>(builder->nodes.size() - 1);
+  return nullptr;
+}
+
+static const char *addRecordedWaitOnHostValue(NVPTXContext *context,
+                                              NVPTXCompletionFlag *flag,
+                                              uint64_t value) {
+  if (!context || !context->recordingBuilder || !flag)
+    return errf("recorded host-value wait: invalid argument");
+  NVPTXGraphBuilder *builder = context->recordingBuilder;
+  const int32_t dependency = context->recordingLastNode;
+  std::vector<CUgraphNode> dependencies;
+  if (const char *error = graphDependencies(
+          builder, dependency >= 0 ? &dependency : nullptr,
+          dependency >= 0 ? 1 : 0, dependencies))
+    return error;
+  constexpr int CU_STREAM_MEM_OP_WAIT_VALUE_64 = 4;
+  CUDAStreamWaitValue64Params wait = {
+      CU_STREAM_MEM_OP_WAIT_VALUE_64, 0, flag->device, value, 0, 0, 0, 0};
+  CUDABatchMemOpNodeParams parameters = {
+      builder->context->context, 1, 0, &wait, 0, 0};
+  CUgraphNode node = nullptr;
+  CUresult status = cuGraphAddBatchMemOpNode(
+      &node, builder->graph, dependencies.data(), dependencies.size(),
+      &parameters);
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuGraphAddBatchMemOpNode", status);
+  builder->nodes.push_back(node);
+  context->recordingLastNode =
+      static_cast<int32_t>(builder->nodes.size() - 1);
+  retainGraphCompletionFlag(builder, flag);
+  return nullptr;
+}
+
+static void releaseAsyncValue(void *value) {
+  if (!value)
+    return;
+  auto *nvptxValue = static_cast<NVPTXAsyncValue *>(value);
+  if (nvptxValue->magic == NVPTX_ASYNC_VALUE_MAGIC) {
+    if (nvptxValue->references.fetch_sub(1) != 1)
+      return;
+    NVPTXBuffer *buffer = nvptxValue->buffer;
+    delete nvptxValue;
+    if (buffer)
+      AsyncRT_DeviceBuffer_release(buffer);
+    return;
+  }
+  HMODULE module = GetModuleHandleW(L"AsyncRTRuntimeGlobals.dll");
+  if (!module)
+    return;
+  using ReleaseFn = void (*)(void *);
+  auto release = reinterpret_cast<ReleaseFn>(
+      GetProcAddress(module, "AsyncRT_AsyncValue_release"));
+  if (release)
+    release(value);
+}
+
 static bool isCudaKind(const char *api) {
   if (!api || !*api)
     return true;
   return strcmp(api, "cuda") == 0 || strcmp(api, "nvidia") == 0 ||
          strcmp(api, "gpu") == 0;
+}
+
+static bool peerAccessEnabledLocked(int device, int peerDevice) {
+  auto &pairs = enabledPeerPairs();
+  return std::find(pairs.begin(), pairs.end(),
+                   std::make_pair(device, peerDevice)) !=
+         pairs.end();
+}
+
+static void markPeerAccessEnabledLocked(int device, int peerDevice) {
+  if (!peerAccessEnabledLocked(device, peerDevice))
+    enabledPeerPairs().emplace_back(device, peerDevice);
+}
+
+static const char *retainedPeerContextLocked(int ordinal, CUdevice &device,
+                                             CUcontext &context) {
+  CUresult status = cuDeviceGet(&device, ordinal);
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuDeviceGet", status);
+  for (const auto &entry : retainedPeerContexts()) {
+    if (entry.first == device) {
+      context = entry.second;
+      return nullptr;
+    }
+  }
+  status = cuDevicePrimaryCtxRetain(&context, device);
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuDevicePrimaryCtxRetain", status);
+  // Keep one process-lifetime reference after enableAllPeerAccess so the
+  // primary contexts (and their peer mappings) cannot be reset underneath
+  // later DeviceContext instances.
+  retainedPeerContexts().emplace_back(device, context);
+  return nullptr;
 }
 
 } // namespace
@@ -505,7 +934,12 @@ AsyncRT_DeviceContext_create(const NVPTXContext **result, const char *api,
                        device);
   context->computeCapability = major * 10 + minor;
   context->arch = "sm_" + std::to_string(major) + std::to_string(minor);
-  if (major == 12 && minor == 0)
+  const bool hasArchitectureSpecificTarget =
+      (major == 9 && minor == 0) ||
+      (major == 10 && (minor == 0 || minor == 3)) ||
+      (major == 11 && minor == 0) ||
+      (major == 12 && (minor == 0 || minor == 1));
+  if (hasArchitectureSpecificTarget)
     context->arch += "a";
 
   CUstream cudaStream = nullptr;
@@ -572,16 +1006,192 @@ AsyncRT_DeviceContext_getApiVersion(int *result, const NVPTXContext *context) {
   return nullptr;
 }
 
-NVPTXRT_EXPORT int32_t *
-AsyncRT_DeviceContext_numberOfDevices(const char *kind) {
-  static thread_local int32_t count = 0;
-  count = 0;
+NVPTXRT_EXPORT int32_t AsyncRT_DeviceContext_numberOfDevices(const char *kind) {
   if (!isCudaKind(kind) || !loadCUDA())
-    return &count;
+    return 0;
   int cudaCount = 0;
   if (cuDeviceGetCount(&cudaCount) == CUDA_SUCCESS)
-    count = cudaCount;
-  return &count;
+    return cudaCount;
+  return 0;
+}
+
+NVPTXRT_EXPORT const char *
+AsyncRT_DeviceContext_canAccess(bool *result, const NVPTXContext *context,
+                                const NVPTXContext *peer) {
+  if (!result || !context || !peer)
+    return errf("canAccess: null argument");
+  NVPTXContext *root = rootContext(context);
+  NVPTXContext *peerRoot = rootContext(peer);
+  *result = false;
+  if (root->device == peerRoot->device)
+    return nullptr;
+  int canAccess = 0;
+  CUresult status =
+      cuDeviceCanAccessPeer(&canAccess, root->device, peerRoot->device);
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuDeviceCanAccessPeer", status);
+  *result = canAccess != 0;
+  return nullptr;
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceContext_enablePeerAccess(
+    const NVPTXContext *context, const NVPTXContext *peer) {
+  if (!context || !peer)
+    return errf("enablePeerAccess: null context");
+  NVPTXContext *root = rootContext(context);
+  NVPTXContext *peerRoot = rootContext(peer);
+  if (root->device == peerRoot->device)
+    return errf("enablePeerAccess: a device cannot be its own peer");
+
+  int canAccess = 0;
+  CUresult status =
+      cuDeviceCanAccessPeer(&canAccess, root->device, peerRoot->device);
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuDeviceCanAccessPeer", status);
+  if (!canAccess)
+    return errf("CUDA device %d cannot access peer device %d", root->id,
+                peerRoot->id);
+  if (const char *error = setCurrent(root))
+    return error;
+  status = cuCtxEnablePeerAccess(peerRoot->context, 0);
+  constexpr CUresult CUDA_ERROR_PEER_ACCESS_ALREADY_ENABLED = 704;
+  if (status != CUDA_SUCCESS &&
+      status != CUDA_ERROR_PEER_ACCESS_ALREADY_ENABLED)
+    return cudaError("cuCtxEnablePeerAccess", status);
+  {
+    std::lock_guard<std::mutex> lock(peerAccessMutex);
+    markPeerAccessEnabledLocked(root->device, peerRoot->device);
+  }
+  return nullptr;
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceContext_enableAllPeerAccess() {
+  if (!loadCUDA())
+    return errf("%s", cudaLoadError);
+  int count = 0;
+  CUresult status = cuDeviceGetCount(&count);
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuDeviceGetCount", status);
+  if (count < 2)
+    return nullptr;
+
+  CUcontext previous = nullptr;
+  status = cuCtxGetCurrent(&previous);
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuCtxGetCurrent", status);
+
+  std::lock_guard<std::mutex> lock(peerAccessMutex);
+  std::vector<CUdevice> devices(static_cast<size_t>(count));
+  std::vector<CUcontext> contexts(static_cast<size_t>(count));
+  for (int ordinal = 0; ordinal < count; ++ordinal) {
+    if (const char *error = retainedPeerContextLocked(
+            ordinal, devices[static_cast<size_t>(ordinal)],
+            contexts[static_cast<size_t>(ordinal)])) {
+      cuCtxSetCurrent(previous);
+      return error;
+    }
+  }
+
+  constexpr CUresult CUDA_ERROR_PEER_ACCESS_ALREADY_ENABLED = 704;
+  for (int ordinal = 0; ordinal < count; ++ordinal) {
+    for (int peerOrdinal = 0; peerOrdinal < count; ++peerOrdinal) {
+      if (ordinal == peerOrdinal)
+        continue;
+      int canAccess = 0;
+      status = cuDeviceCanAccessPeer(
+          &canAccess, devices[static_cast<size_t>(ordinal)],
+          devices[static_cast<size_t>(peerOrdinal)]);
+      if (status != CUDA_SUCCESS || !canAccess) {
+        cuCtxSetCurrent(previous);
+        if (status != CUDA_SUCCESS)
+          return cudaError("cuDeviceCanAccessPeer", status);
+        return errf("CUDA device %d cannot access peer device %d", ordinal,
+                    peerOrdinal);
+      }
+      status = cuCtxSetCurrent(contexts[static_cast<size_t>(ordinal)]);
+      if (status == CUDA_SUCCESS)
+        status = cuCtxEnablePeerAccess(
+            contexts[static_cast<size_t>(peerOrdinal)], 0);
+      if (status != CUDA_SUCCESS &&
+          status != CUDA_ERROR_PEER_ACCESS_ALREADY_ENABLED) {
+        cuCtxSetCurrent(previous);
+        return cudaError("cuCtxEnablePeerAccess", status);
+      }
+      markPeerAccessEnabledLocked(devices[static_cast<size_t>(ordinal)],
+                                  devices[static_cast<size_t>(peerOrdinal)]);
+    }
+  }
+  status = cuCtxSetCurrent(previous);
+  return status == CUDA_SUCCESS ? nullptr : cudaError("cuCtxSetCurrent", status);
+}
+
+NVPTXRT_EXPORT const char *
+AsyncRT_DeviceContext_allPeerAccessEnabled(bool *result) {
+  if (!result)
+    return errf("allPeerAccessEnabled: result is null");
+  *result = false;
+  if (!loadCUDA())
+    return errf("%s", cudaLoadError);
+  int count = 0;
+  CUresult status = cuDeviceGetCount(&count);
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuDeviceGetCount", status);
+  if (count < 2)
+    return nullptr;
+
+  std::vector<CUdevice> devices(static_cast<size_t>(count));
+  for (int ordinal = 0; ordinal < count; ++ordinal) {
+    status = cuDeviceGet(&devices[static_cast<size_t>(ordinal)], ordinal);
+    if (status != CUDA_SUCCESS)
+      return cudaError("cuDeviceGet", status);
+  }
+  std::lock_guard<std::mutex> lock(peerAccessMutex);
+  for (int ordinal = 0; ordinal < count; ++ordinal)
+    for (int peerOrdinal = 0; peerOrdinal < count; ++peerOrdinal)
+      if (ordinal != peerOrdinal &&
+          !peerAccessEnabledLocked(devices[static_cast<size_t>(ordinal)],
+                                   devices[static_cast<size_t>(peerOrdinal)]))
+        return nullptr;
+  *result = true;
+  return nullptr;
+}
+
+NVPTXRT_EXPORT const char *
+AsyncRT_DeviceContext_supportsMulticast(bool *result,
+                                        const NVPTXContext *context) {
+  if (!result || !context)
+    return errf("supportsMulticast: null argument");
+  // CUDA multicast objects require the fabric/NVSwitch virtual-memory APIs.
+  // This Windows driver-only backend does not expose them yet.
+  *result = false;
+  return nullptr;
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceMulticastBuffer_allocate(
+    void **result, size_t, const NVPTXContext **, size_t, size_t) {
+  if (result)
+    *result = nullptr;
+  return errf("CUDA multicast memory is not supported by nvptxrt on Windows");
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceMulticastBuffer_unicastBufferFor(
+    const NVPTXBuffer **result, void **devicePointer, const void *,
+    const NVPTXContext *) {
+  if (result)
+    *result = nullptr;
+  if (devicePointer)
+    *devicePointer = nullptr;
+  return errf("CUDA multicast memory is not supported by nvptxrt on Windows");
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceMulticastBuffer_multicastBufferFor(
+    const NVPTXBuffer **result, void **devicePointer, const void *,
+    const NVPTXContext *) {
+  if (result)
+    *result = nullptr;
+  if (devicePointer)
+    *devicePointer = nullptr;
+  return errf("CUDA multicast memory is not supported by nvptxrt on Windows");
 }
 
 NVPTXRT_EXPORT const char *
@@ -591,9 +1201,13 @@ AsyncRT_DeviceContext_setAsCurrent(const NVPTXContext *context) {
 
 NVPTXRT_EXPORT const char *
 AsyncRT_DeviceContext_synchronize(const NVPTXContext *context) {
+  if (context && context->recordingBuilder)
+    return errf("synchronize is unavailable while recording a device graph");
   if (const char *error = setCurrent(context))
     return error;
   CUresult status = cuStreamSynchronize(activeStream(context));
+  if (status == CUDA_SUCCESS && context && context->defaultStream)
+    drainStreamCompletionFlags(context->defaultStream);
   return status == CUDA_SUCCESS ? nullptr
                                 : cudaError("cuStreamSynchronize", status);
 }
@@ -776,6 +1390,7 @@ NVPTXRT_EXPORT const char *AsyncRT_DeviceContext_createHostBuffer(
   buffer->context = const_cast<NVPTXContext *>(context);
   buffer->hostPinned = true;
   AsyncRT_DeviceContext_retain(context);
+  registerHostBuffer(buffer);
   if (result)
     *result = buffer;
   if (devicePointer)
@@ -842,6 +1457,8 @@ NVPTXRT_EXPORT const char *AsyncRT_DeviceBuffer_createSubBuffer(
   }
   AsyncRT_DeviceBuffer_retain(buffer);
   retainContext(subBuffer->context);
+  if (subBuffer->host)
+    registerHostBuffer(subBuffer);
   *result = subBuffer;
   return nullptr;
 }
@@ -855,10 +1472,12 @@ NVPTXRT_EXPORT void AsyncRT_DeviceBuffer_release(const NVPTXBuffer *buffer) {
   if (!buffer)
     return;
   auto *mutableBuffer = const_cast<NVPTXBuffer *>(buffer);
-  if (mutableBuffer->references.fetch_sub(1) != 1)
+  const int previousReferences = mutableBuffer->references.fetch_sub(1);
+  if (previousReferences != 1)
     return;
   NVPTXContext *context = mutableBuffer->context;
   NVPTXBuffer *parent = mutableBuffer->parent;
+  unregisterHostBuffer(mutableBuffer);
   if (mutableBuffer->host && mutableBuffer->owning) {
     if (mutableBuffer->hostPinned) {
       cuCtxSetCurrent(context->context);
@@ -874,6 +1493,24 @@ NVPTXRT_EXPORT void AsyncRT_DeviceBuffer_release(const NVPTXBuffer *buffer) {
   if (parent)
     AsyncRT_DeviceBuffer_release(parent);
   AsyncRT_DeviceContext_release(context);
+}
+
+NVPTXRT_EXPORT NVPTXAsyncValue *
+AsyncRT_AsyncValue_createFromDeviceBuffer(NVPTXBuffer *buffer) {
+  if (!buffer)
+    return nullptr;
+  auto *value = new NVPTXAsyncValue();
+  value->buffer = buffer;
+  return value;
+}
+
+NVPTXRT_EXPORT void AsyncRT_AsyncValue_retain(NVPTXAsyncValue *value) {
+  if (value && value->magic == NVPTX_ASYNC_VALUE_MAGIC)
+    value->references.fetch_add(1);
+}
+
+NVPTXRT_EXPORT void AsyncRT_AsyncValue_release(NVPTXAsyncValue *value) {
+  releaseAsyncValue(value);
 }
 
 NVPTXRT_EXPORT const char *
@@ -980,9 +1617,50 @@ static const char *copyBuffersAsync(const NVPTXContext *context,
     status = cuMemcpyDtoHAsync(destination->host, source->device, bytes,
                                activeStream(context));
   } else {
-    operation = "cuMemcpyDtoDAsync";
-    status = cuMemcpyDtoDAsync(destination->device, source->device, bytes,
-                               activeStream(context));
+    NVPTXContext *destinationContext = rootContext(destination->context);
+    NVPTXContext *sourceContext = rootContext(source->context);
+    if (destinationContext->context != sourceContext->context) {
+      int canAccessPeer = 0;
+      CUresult peerStatus = cuDeviceCanAccessPeer(
+          &canAccessPeer, destinationContext->device, sourceContext->device);
+      if (peerStatus == CUDA_SUCCESS && canAccessPeer) {
+        if (const char *error = setCurrent(destinationContext))
+          return error;
+        peerStatus = cuCtxEnablePeerAccess(sourceContext->context, 0);
+        (void)peerStatus;
+      }
+      if (const char *error = setCurrent(context))
+        return error;
+      operation = "cuMemcpyPeerAsync";
+      status = cuMemcpyPeerAsync(
+          destination->device, destinationContext->context, source->device,
+          sourceContext->context, bytes, activeStream(context));
+      if (status != CUDA_SUCCESS) {
+        // Some Windows/WDDM combinations expose multiple devices without a
+        // peer path. Preserve correctness with a synchronous pinned-host
+        // staging copy when the driver rejects the direct transfer.
+        std::vector<unsigned char> staging(bytes);
+        if (const char *error = setCurrent(sourceContext))
+          return error;
+        CUresult sourceStatus =
+            cuStreamSynchronize(activeStream(source->context));
+        if (sourceStatus == CUDA_SUCCESS)
+          sourceStatus = cuMemcpyDtoH(staging.data(), source->device, bytes);
+        if (sourceStatus != CUDA_SUCCESS)
+          return cudaError("cross-device cuMemcpyDtoH", sourceStatus);
+        if (const char *error = setCurrent(destinationContext))
+          return error;
+        CUresult destinationStatus =
+            cuMemcpyHtoD(destination->device, staging.data(), bytes);
+        return destinationStatus == CUDA_SUCCESS
+                   ? nullptr
+                   : cudaError("cross-device cuMemcpyHtoD", destinationStatus);
+      }
+    } else {
+      operation = "cuMemcpyDtoDAsync";
+      status = cuMemcpyDtoDAsync(destination->device, source->device, bytes,
+                                 activeStream(context));
+    }
   }
   return status == CUDA_SUCCESS ? nullptr : cudaError(operation, status);
 }
@@ -1148,6 +1826,15 @@ AsyncRT_DeviceContext_stream(const NVPTXStream **result,
     return errf("stream: null context");
   if (!result)
     return errf("stream: null result");
+  if (context->recordingBuilder) {
+    auto *view = new NVPTXStream();
+    view->stream = activeStream(context);
+    view->context = const_cast<NVPTXContext *>(context);
+    view->transient = true;
+    retainContext(context);
+    *result = view;
+    return nullptr;
+  }
   auto *stream = context->defaultStream;
   stream->references.fetch_add(1);
   retainContext(stream->context);
@@ -1171,16 +1858,23 @@ NVPTXRT_EXPORT void AsyncRT_DeviceStream_release(const NVPTXStream *stream) {
     mutableStream->references.fetch_add(1);
     return;
   }
-  releaseContext(stream->context);
+  NVPTXContext *context = mutableStream->context;
+  if (mutableStream->transient && oldReferences == 1)
+    delete mutableStream;
+  releaseContext(context);
 }
 
 NVPTXRT_EXPORT const char *
 AsyncRT_DeviceStream_synchronize(const NVPTXStream *stream) {
   if (!stream)
     return errf("stream synchronize: null stream");
+  if (stream->context && stream->context->recordingBuilder)
+    return errf("stream synchronize is unavailable while recording a device graph");
   if (const char *error = setCurrent(stream->context))
     return error;
   CUresult status = cuStreamSynchronize(stream->stream);
+  if (status == CUDA_SUCCESS)
+    drainStreamCompletionFlags(const_cast<NVPTXStream *>(stream));
   return status == CUDA_SUCCESS ? nullptr
                                 : cudaError("cuStreamSynchronize", status);
 }
@@ -1297,12 +1991,98 @@ AsyncRT_DeviceStream_enqueueHostFunc(const NVPTXStream *stream,
                                      void (*function)(void *), void *userData) {
   if (!stream || !function)
     return errf("enqueueHostFunc: null argument");
+  if (stream->context && stream->context->recordingBuilder)
+    return addRecordedHostFunction(stream->context,
+                                   reinterpret_cast<CUhostFn>(function),
+                                   userData);
   if (const char *error = setCurrent(stream->context))
     return error;
   CUresult status = cuLaunchHostFunc(
       stream->stream, reinterpret_cast<CUhostFn>(function), userData);
   return status == CUDA_SUCCESS ? nullptr
                                 : cudaError("cuLaunchHostFunc", status);
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_CompletionFlag_create(
+    NVPTXCompletionFlag **result, const NVPTXContext *context) {
+  if (!result || !context)
+    return errf("CompletionFlag_create: null argument");
+  if (const char *error = setCurrent(context))
+    return error;
+  void *allocation = nullptr;
+  constexpr unsigned int CU_MEMHOSTALLOC_DEVICEMAP = 0x02;
+  CUresult status = cuMemHostAlloc(&allocation, sizeof(uint64_t),
+                                   CU_MEMHOSTALLOC_DEVICEMAP);
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuMemHostAlloc", status);
+  CUdeviceptr device = 0;
+  status = cuMemHostGetDevicePointer(&device, allocation, 0);
+  if (status != CUDA_SUCCESS) {
+    cuMemFreeHost(allocation);
+    return cudaError("cuMemHostGetDevicePointer", status);
+  }
+  auto *flag = new NVPTXCompletionFlag();
+  flag->host = new (allocation) std::atomic<uint64_t>(0);
+  flag->device = device;
+  flag->context = rootContext(context);
+  retainContext(flag->context);
+  *result = flag;
+  return nullptr;
+}
+
+NVPTXRT_EXPORT void
+AsyncRT_CompletionFlag_retain(NVPTXCompletionFlag *flag) {
+  if (flag && flag->magic == NVPTX_COMPLETION_FLAG_MAGIC)
+    flag->references.fetch_add(1);
+}
+
+NVPTXRT_EXPORT void
+AsyncRT_CompletionFlag_release(NVPTXCompletionFlag *flag) {
+  releaseCompletionFlag(flag);
+}
+
+NVPTXRT_EXPORT void AsyncRT_CompletionFlag_signal(NVPTXCompletionFlag *flag,
+                                                  uint64_t value) {
+  if (flag && flag->magic == NVPTX_COMPLETION_FLAG_MAGIC && flag->host)
+    flag->host->store(value, std::memory_order_release);
+}
+
+NVPTXRT_EXPORT void AsyncRT_CompletionFlag_reset(NVPTXCompletionFlag *flag) {
+  AsyncRT_CompletionFlag_signal(flag, 0);
+}
+
+NVPTXRT_EXPORT uint64_t
+AsyncRT_CompletionFlag_load(const NVPTXCompletionFlag *flag) {
+  return flag && flag->magic == NVPTX_COMPLETION_FLAG_MAGIC && flag->host
+             ? flag->host->load(std::memory_order_acquire)
+             : 0;
+}
+
+NVPTXRT_EXPORT uint64_t
+AsyncRT_CompletionFlag_devicePtr(const NVPTXCompletionFlag *flag) {
+  return flag && flag->magic == NVPTX_COMPLETION_FLAG_MAGIC ? flag->device : 0;
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceStream_enqueueWaitOnHostValue(
+    const NVPTXStream *stream, NVPTXCompletionFlag *flag, uint64_t value) {
+  if (!stream || !flag || flag->magic != NVPTX_COMPLETION_FLAG_MAGIC)
+    return errf("enqueueWaitOnHostValue: invalid argument");
+  if (rootContext(stream->context) != rootContext(flag->context))
+    return errf("enqueueWaitOnHostValue: flag belongs to another context");
+  if (stream->context && stream->context->recordingBuilder)
+    return addRecordedWaitOnHostValue(stream->context, flag, value);
+  if (const char *error = setCurrent(stream->context))
+    return error;
+  CUresult status = cuStreamWaitValue64(stream->stream, flag->device, value, 0);
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuStreamWaitValue64", status);
+  flag->references.fetch_add(1);
+  NVPTXContext *root = rootContext(stream->context);
+  {
+    std::lock_guard<std::mutex> lock(root->mutex);
+    const_cast<NVPTXStream *>(stream)->pendingCompletionFlags.push_back(flag);
+  }
+  return nullptr;
 }
 
 NVPTXRT_EXPORT const char *
@@ -1551,6 +2331,16 @@ NVPTXRT_EXPORT const char *AsyncRT_cuda_tensorMapEncodeIm2col(
                                 : cudaError("cuTensorMapEncodeIm2col", status);
 }
 
+NVPTXRT_EXPORT const char *AsyncRT_DeviceGraphBuilder_addFunctionDirect(
+    NVPTXGraphBuilder *builder, NVPTXFunction *function, int64_t gridX,
+    int64_t gridY, int64_t gridZ, int64_t blockX, int64_t blockY,
+    int64_t blockZ, int64_t sharedMemoryBytes, void *attributes,
+    int64_t attributeCount, void **arguments, uint32_t argumentCount,
+    uint64_t *argumentSizes, const int32_t *dependencyIds,
+    int64_t dependencyCount);
+NVPTXRT_EXPORT int32_t AsyncRT_DeviceGraphBuilder_lastNodeIdOrNone(
+    NVPTXGraphBuilder *builder);
+
 static const char *launchFunctionDirect(
     const NVPTXContext *context, CUstream stream, const NVPTXFunction *function,
     uint32_t gridX, uint32_t gridY, uint32_t gridZ, uint32_t blockX,
@@ -1595,6 +2385,19 @@ NVPTXRT_EXPORT const char *AsyncRT_DeviceContext_enqueueFunctionDirect(
     uint32_t blockZ, uint32_t sharedMemoryBytes, void *attributes,
     uint32_t attributeCount, void **arguments, uint32_t argumentCount,
     uint64_t *argumentSizes) {
+  if (context && context->recordingBuilder) {
+    const int32_t dependency = context->recordingLastNode;
+    const char *error = AsyncRT_DeviceGraphBuilder_addFunctionDirect(
+        context->recordingBuilder, const_cast<NVPTXFunction *>(function),
+        gridX, gridY, gridZ, blockX, blockY, blockZ, sharedMemoryBytes,
+        attributes, attributeCount, arguments, argumentCount, argumentSizes,
+        dependency >= 0 ? &dependency : nullptr, dependency >= 0 ? 1 : 0);
+    if (!error)
+      const_cast<NVPTXContext *>(context)->recordingLastNode =
+          AsyncRT_DeviceGraphBuilder_lastNodeIdOrNone(
+              context->recordingBuilder);
+    return error;
+  }
   return launchFunctionDirect(context, activeStream(context), function, gridX,
                               gridY, gridZ, blockX, blockY, blockZ,
                               sharedMemoryBytes, attributes, attributeCount,
@@ -1609,10 +2412,438 @@ NVPTXRT_EXPORT const char *AsyncRT_DeviceStream_enqueueFunctionDirect(
     uint64_t *argumentSizes) {
   if (!stream)
     return errf("enqueueFunctionDirect: null stream");
+  if (stream->context && stream->context->recordingBuilder) {
+    NVPTXContext *context = stream->context;
+    const int32_t dependency = context->recordingLastNode;
+    const char *error = AsyncRT_DeviceGraphBuilder_addFunctionDirect(
+        context->recordingBuilder, const_cast<NVPTXFunction *>(function),
+        gridX, gridY, gridZ, blockX, blockY, blockZ, sharedMemoryBytes,
+        attributes, attributeCount, arguments, argumentCount, argumentSizes,
+        dependency >= 0 ? &dependency : nullptr, dependency >= 0 ? 1 : 0);
+    if (!error)
+      context->recordingLastNode =
+          AsyncRT_DeviceGraphBuilder_lastNodeIdOrNone(
+              context->recordingBuilder);
+    return error;
+  }
   return launchFunctionDirect(stream->context, stream->stream, function, gridX,
                               gridY, gridZ, blockX, blockY, blockZ,
                               sharedMemoryBytes, attributes, attributeCount,
                               arguments, argumentCount, argumentSizes);
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceContext_createGraphBuilder(
+    NVPTXGraphBuilder **result, NVPTXContext *context) {
+  if (!result || !context)
+    return errf("createGraphBuilder: null argument");
+  if (const char *error = setCurrent(context))
+    return error;
+  CUgraph graph = nullptr;
+  CUresult status = cuGraphCreate(&graph, 0);
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuGraphCreate", status);
+  auto *builder = new NVPTXGraphBuilder();
+  builder->graph = graph;
+  builder->context = rootContext(context);
+  retainContext(builder->context);
+  *result = builder;
+  return nullptr;
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceGraphBuilder_recordingContext(
+    NVPTXContext **result, NVPTXGraphBuilder *builder, int32_t seedNodeId) {
+  if (!result || !builder || !builder->context)
+    return errf("recordingContext: null argument");
+  if (seedNodeId < -1 ||
+      (seedNodeId >= 0 &&
+       static_cast<size_t>(seedNodeId) >= builder->nodes.size()))
+    return errf("recordingContext: invalid seed node id %d", seedNodeId);
+  NVPTXContext *root = rootContext(builder->context);
+  auto *view = new NVPTXContext();
+  view->root = root;
+  view->device = root->device;
+  view->context = root->context;
+  view->id = root->id;
+  view->computeCapability = root->computeCapability;
+  view->driverVersion = root->driverVersion;
+  view->name = root->name;
+  view->arch = root->arch;
+  view->api = root->api;
+  view->defaultStream = root->defaultStream;
+  view->recordingBuilder = builder;
+  view->recordingLastNode = seedNodeId;
+  retainContext(root);
+  *result = view;
+  return nullptr;
+}
+
+NVPTXRT_EXPORT void
+AsyncRT_DeviceGraphBuilder_release(NVPTXGraphBuilder *builder) {
+  if (!builder)
+    return;
+  if (builder->context)
+    cuCtxSetCurrent(builder->context->context);
+  if (builder->graph)
+    cuGraphDestroy(builder->graph);
+  for (NVPTXFunction *function : builder->functions)
+    AsyncRT_DeviceFunction_release(function);
+  for (NVPTXBuffer *buffer : builder->buffers)
+    AsyncRT_DeviceBuffer_release(buffer);
+  for (NVPTXCompletionFlag *flag : builder->completionFlags)
+    releaseCompletionFlag(flag);
+  for (void *output : builder->outputs)
+    releaseAsyncValue(output);
+  NVPTXContext *context = builder->context;
+  delete builder;
+  releaseContext(context);
+}
+
+NVPTXRT_EXPORT int32_t AsyncRT_DeviceGraphBuilder_lastNodeIdOrNone(
+    NVPTXGraphBuilder *builder) {
+  if (!builder || builder->nodes.empty())
+    return -1;
+  return static_cast<int32_t>(builder->nodes.size() - 1);
+}
+
+NVPTXRT_EXPORT int64_t
+AsyncRT_DeviceGraphBuilder_numInputs(NVPTXGraphBuilder *builder) {
+  return builder ? builder->inputCount : 0;
+}
+
+NVPTXRT_EXPORT int64_t
+AsyncRT_DeviceGraphBuilder_numOutputs(NVPTXGraphBuilder *builder) {
+  return builder ? static_cast<int64_t>(builder->outputs.size()) : 0;
+}
+
+NVPTXRT_EXPORT void AsyncRT_DeviceGraphBuilder_addInput(
+    NVPTXGraphBuilder *builder, NVPTXBuffer *input) {
+  if (!builder || !input)
+    return;
+  retainGraphBuffer(builder, input);
+  ++builder->inputCount;
+}
+
+NVPTXRT_EXPORT void
+AsyncRT_DeviceGraphBuilder_addInPlaceInput(NVPTXGraphBuilder *builder) {
+  if (builder)
+    ++builder->inputCount;
+}
+
+NVPTXRT_EXPORT void AsyncRT_DeviceGraphBuilder_addOutput(
+    NVPTXGraphBuilder *builder, void *output) {
+  if (builder && output)
+    builder->outputs.push_back(output);
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceGraphBuilder_addEmpty(
+    NVPTXGraphBuilder *builder, const int32_t *dependencyIds,
+    int64_t dependencyCount) {
+  std::vector<CUgraphNode> dependencies;
+  if (const char *error = graphDependencies(builder, dependencyIds,
+                                             dependencyCount, dependencies))
+    return error;
+  CUgraphNode node = nullptr;
+  CUresult status = cuGraphAddEmptyNode(
+      &node, builder->graph, dependencies.data(), dependencies.size());
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuGraphAddEmptyNode", status);
+  builder->nodes.push_back(node);
+  return nullptr;
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceGraphBuilder_addFunctionDirect(
+    NVPTXGraphBuilder *builder, NVPTXFunction *function, int64_t gridX,
+    int64_t gridY, int64_t gridZ, int64_t blockX, int64_t blockY,
+    int64_t blockZ, int64_t sharedMemoryBytes, void *attributes,
+    int64_t attributeCount, void **arguments, uint32_t argumentCount,
+    uint64_t *argumentSizes, const int32_t *dependencyIds,
+    int64_t dependencyCount) {
+  if (!builder || !function)
+    return errf("addFunctionDirect: null argument");
+  if (rootContext(function->context) != rootContext(builder->context))
+    return errf("addFunctionDirect: function belongs to another context");
+  constexpr int64_t uintMax = std::numeric_limits<uint32_t>::max();
+  if (gridX <= 0 || gridY <= 0 || gridZ <= 0 || blockX <= 0 || blockY <= 0 ||
+      blockZ <= 0 || gridX > uintMax || gridY > uintMax || gridZ > uintMax ||
+      blockX > uintMax || blockY > uintMax || blockZ > uintMax ||
+      sharedMemoryBytes < 0 || sharedMemoryBytes > uintMax)
+    return errf("addFunctionDirect: invalid launch dimensions");
+  if (attributeCount < 0 || (attributeCount && !attributes))
+    return errf("addFunctionDirect: invalid launch attributes");
+  if (argumentCount && !arguments)
+    return errf("addFunctionDirect: kernel arguments are null");
+  if (argumentSizes) {
+    for (uint32_t index = 0; index < argumentCount; ++index)
+      if (!argumentSizes[index])
+        return errf("addFunctionDirect: argument %u has zero size", index);
+  }
+
+  std::vector<CUgraphNode> dependencies;
+  if (const char *error = graphDependencies(builder, dependencyIds,
+                                             dependencyCount, dependencies))
+    return error;
+  CUDAKernelNodeParams params = {
+      function->function,
+      static_cast<unsigned int>(gridX),
+      static_cast<unsigned int>(gridY),
+      static_cast<unsigned int>(gridZ),
+      static_cast<unsigned int>(blockX),
+      static_cast<unsigned int>(blockY),
+      static_cast<unsigned int>(blockZ),
+      static_cast<unsigned int>(sharedMemoryBytes),
+      arguments,
+      nullptr,
+      nullptr,
+      nullptr,
+  };
+  CUgraphNode node = nullptr;
+  CUresult status = cuGraphAddKernelNode(
+      &node, builder->graph, dependencies.data(), dependencies.size(), &params);
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuGraphAddKernelNode", status);
+
+  auto *launchAttributes = static_cast<const CUlaunchAttribute *>(attributes);
+  for (int64_t index = 0; index < attributeCount; ++index) {
+    if (!launchAttributes[index].id)
+      continue;
+    status = cuGraphKernelNodeSetAttribute(
+        node, launchAttributes[index].id, launchAttributes[index].value);
+    if (status != CUDA_SUCCESS)
+      return cudaError("cuGraphKernelNodeSetAttribute", status);
+  }
+  builder->nodes.push_back(node);
+  retainGraphFunction(builder, function);
+  return nullptr;
+}
+
+static const char *addGraphMemcpyNode(
+    NVPTXGraphBuilder *builder, CUDAMemcpy3D &params,
+    const int32_t *dependencyIds, int64_t dependencyCount) {
+  std::vector<CUgraphNode> dependencies;
+  if (const char *error = graphDependencies(builder, dependencyIds,
+                                             dependencyCount, dependencies))
+    return error;
+  CUgraphNode node = nullptr;
+  CUresult status = cuGraphAddMemcpyNode(
+      &node, builder->graph, dependencies.data(), dependencies.size(), &params,
+      builder->context->context);
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuGraphAddMemcpyNode", status);
+  builder->nodes.push_back(node);
+  return nullptr;
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceGraphBuilder_addCopyHostToDevice(
+    NVPTXGraphBuilder *builder, NVPTXBuffer *destination, const void *source,
+    const int32_t *dependencyIds, int64_t dependencyCount) {
+  if (!builder || !destination || !source)
+    return errf("addCopyHostToDevice: null argument");
+  if (destination->host)
+    return errf("addCopyHostToDevice: destination is not device memory");
+  if (destination->bytes > std::numeric_limits<unsigned int>::max())
+    return errf("addCopyHostToDevice: copy exceeds CUDA graph node limit");
+  CUDAMemcpy3D params = {};
+  params.sourceMemoryType = CU_MEMORYTYPE_HOST;
+  params.sourceHost = source;
+  params.destinationMemoryType = CU_MEMORYTYPE_DEVICE;
+  params.destinationDevice = destination->device;
+  params.widthBytes = destination->bytes;
+  params.sourcePitch = params.widthBytes;
+  params.sourceHeight = 1;
+  params.destinationPitch = params.widthBytes;
+  params.destinationHeight = 1;
+  params.height = 1;
+  params.depth = 1;
+  if (const char *error = addGraphMemcpyNode(
+          builder, params, dependencyIds, dependencyCount))
+    return error;
+  retainGraphBuffer(builder, destination);
+  retainGraphHostPointer(builder, source);
+  return nullptr;
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceGraphBuilder_addCopyDeviceToHost(
+    NVPTXGraphBuilder *builder, void *destination, NVPTXBuffer *source,
+    const int32_t *dependencyIds, int64_t dependencyCount) {
+  if (!builder || !destination || !source)
+    return errf("addCopyDeviceToHost: null argument");
+  if (source->host)
+    return errf("addCopyDeviceToHost: source is not device memory");
+  if (source->bytes > std::numeric_limits<unsigned int>::max())
+    return errf("addCopyDeviceToHost: copy exceeds CUDA graph node limit");
+  CUDAMemcpy3D params = {};
+  params.sourceMemoryType = CU_MEMORYTYPE_DEVICE;
+  params.sourceDevice = source->device;
+  params.destinationMemoryType = CU_MEMORYTYPE_HOST;
+  params.destinationHost = destination;
+  params.widthBytes = source->bytes;
+  params.sourcePitch = params.widthBytes;
+  params.sourceHeight = 1;
+  params.destinationPitch = params.widthBytes;
+  params.destinationHeight = 1;
+  params.height = 1;
+  params.depth = 1;
+  if (const char *error = addGraphMemcpyNode(
+          builder, params, dependencyIds, dependencyCount))
+    return error;
+  retainGraphBuffer(builder, source);
+  retainGraphHostPointer(builder, destination);
+  return nullptr;
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceGraphBuilder_addCopyDeviceToDevice(
+    NVPTXGraphBuilder *builder, NVPTXBuffer *destination, NVPTXBuffer *source,
+    const int32_t *dependencyIds, int64_t dependencyCount) {
+  if (!builder || !destination || !source)
+    return errf("addCopyDeviceToDevice: null argument");
+  if (destination->host || source->host)
+    return errf("addCopyDeviceToDevice: buffer is not device memory");
+  if (destination->bytes < source->bytes)
+    return errf("addCopyDeviceToDevice: destination is too small");
+  if (source->bytes > std::numeric_limits<unsigned int>::max())
+    return errf("addCopyDeviceToDevice: copy exceeds CUDA graph node limit");
+  CUDAMemcpy3D params = {};
+  params.sourceMemoryType = CU_MEMORYTYPE_DEVICE;
+  params.sourceDevice = source->device;
+  params.destinationMemoryType = CU_MEMORYTYPE_DEVICE;
+  params.destinationDevice = destination->device;
+  params.widthBytes = source->bytes;
+  params.sourcePitch = params.widthBytes;
+  params.sourceHeight = 1;
+  params.destinationPitch = params.widthBytes;
+  params.destinationHeight = 1;
+  params.height = 1;
+  params.depth = 1;
+  if (const char *error = addGraphMemcpyNode(
+          builder, params, dependencyIds, dependencyCount))
+    return error;
+  retainGraphBuffer(builder, source);
+  retainGraphBuffer(builder, destination);
+  return nullptr;
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceGraphBuilder_addSetMemory(
+    NVPTXGraphBuilder *builder, NVPTXBuffer *destination, uint64_t value,
+    size_t valueSize, const int32_t *dependencyIds, int64_t dependencyCount) {
+  if (!builder || !destination)
+    return errf("addSetMemory: null argument");
+  if (destination->host)
+    return errf("addSetMemory: destination is not device memory");
+  if (valueSize == 8) {
+    if (static_cast<uint32_t>(value) != static_cast<uint32_t>(value >> 32))
+      return errf("addSetMemory: non-repeating 64-bit values are unsupported");
+    valueSize = 4;
+  }
+  if (valueSize != 1 && valueSize != 2 && valueSize != 4)
+    return errf("addSetMemory: element size must be 1, 2, 4, or 8");
+  if (destination->bytes % valueSize)
+    return errf("addSetMemory: buffer size is not element aligned");
+
+  std::vector<CUgraphNode> dependencies;
+  if (const char *error = graphDependencies(builder, dependencyIds,
+                                             dependencyCount, dependencies))
+    return error;
+  CUDAMemsetNodeParams params = {
+      destination->device,
+      0,
+      static_cast<unsigned int>(value),
+      static_cast<unsigned int>(valueSize),
+      destination->bytes / valueSize,
+      1,
+  };
+  CUgraphNode node = nullptr;
+  CUresult status = cuGraphAddMemsetNode(
+      &node, builder->graph, dependencies.data(), dependencies.size(), &params,
+      builder->context->context);
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuGraphAddMemsetNode", status);
+  builder->nodes.push_back(node);
+  retainGraphBuffer(builder, destination);
+  return nullptr;
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceGraph_createBuffer(
+    const NVPTXBuffer **result, void **devicePointer,
+    NVPTXGraphBuilder *builder, size_t length, size_t elementSize, bool isHost) {
+  if (!builder)
+    return errf("DeviceGraph_createBuffer: builder is null");
+  const char *error = isHost
+                          ? AsyncRT_DeviceContext_createHostBuffer(
+                                result, devicePointer, builder->context, length,
+                                elementSize)
+                          : AsyncRT_DeviceContext_createBuffer_async(
+                                result, devicePointer, builder->context, length,
+                                elementSize);
+  if (error)
+    return error;
+  retainGraphBuffer(builder, const_cast<NVPTXBuffer *>(*result));
+  return nullptr;
+}
+
+NVPTXRT_EXPORT void AsyncRT_DeviceGraph_release(NVPTXGraph *graph);
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceGraphBuilder_instantiate(
+    NVPTXGraph **result, NVPTXGraphBuilder *builder) {
+  if (!result || !builder || !builder->graph || !builder->context)
+    return errf("instantiate: null or consumed graph builder");
+  if (const char *error = setCurrent(builder->context))
+    return error;
+  CUgraphExec executable = nullptr;
+  CUresult status = cuGraphInstantiate(&executable, builder->graph, 0);
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuGraphInstantiateWithFlags", status);
+
+  auto *graph = new NVPTXGraph();
+  graph->executable = executable;
+  graph->context = builder->context;
+  graph->buffers = std::move(builder->buffers);
+  graph->functions = std::move(builder->functions);
+  graph->completionFlags = std::move(builder->completionFlags);
+  graph->outputs = std::move(builder->outputs);
+  builder->context = nullptr;
+  status = cuGraphDestroy(builder->graph);
+  builder->graph = nullptr;
+  if (status != CUDA_SUCCESS) {
+    AsyncRT_DeviceGraph_release(graph);
+    return cudaError("cuGraphDestroy", status);
+  }
+  *result = graph;
+  return nullptr;
+}
+
+NVPTXRT_EXPORT void AsyncRT_DeviceGraph_retain(NVPTXGraph *graph) {
+  if (graph)
+    graph->references.fetch_add(1);
+}
+
+NVPTXRT_EXPORT void AsyncRT_DeviceGraph_release(NVPTXGraph *graph) {
+  if (!graph || graph->references.fetch_sub(1) != 1)
+    return;
+  if (graph->context)
+    cuCtxSetCurrent(graph->context->context);
+  if (graph->executable)
+    cuGraphExecDestroy(graph->executable);
+  for (NVPTXFunction *function : graph->functions)
+    AsyncRT_DeviceFunction_release(function);
+  for (NVPTXBuffer *buffer : graph->buffers)
+    AsyncRT_DeviceBuffer_release(buffer);
+  for (NVPTXCompletionFlag *flag : graph->completionFlags)
+    releaseCompletionFlag(flag);
+  for (void *output : graph->outputs)
+    releaseAsyncValue(output);
+  NVPTXContext *context = graph->context;
+  delete graph;
+  releaseContext(context);
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceGraph_replay(NVPTXGraph *graph) {
+  if (!graph || !graph->context || !graph->executable)
+    return errf("DeviceGraph_replay: null graph");
+  if (const char *error = setCurrent(graph->context))
+    return error;
+  CUresult status =
+      cuGraphLaunch(graph->executable, activeStream(graph->context));
+  return status == CUDA_SUCCESS ? nullptr : cudaError("cuGraphLaunch", status);
 }
 
 #undef NVPTXRT_EXPORT

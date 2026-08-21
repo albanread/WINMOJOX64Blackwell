@@ -1952,7 +1952,7 @@ struct _DeviceGraphBuilderEnqueuer[
             num_attributes,
             args,
             arg_count,
-            arg_sizes,
+            Int(arg_sizes.value()) if arg_sizes else 0,
             dep_args.ids,
             dep_args.count,
         )

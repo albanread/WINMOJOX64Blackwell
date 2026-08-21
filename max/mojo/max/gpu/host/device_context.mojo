@@ -2578,7 +2578,7 @@ struct EventFlags(TrivialRegisterPassable):
 
 
 struct CompletionFlag(ImplicitlyCopyable):
-    """Non-owning handle to an MLRT ``CompletionFlag``.
+    """A host-visible 64-bit completion flag that a GPU stream can wait on.
 
     A ``CompletionFlag`` is an 8-byte slot in pinned host memory mapped
     into a device's address space. A CPU thread (or an AsyncRT worker
@@ -2588,19 +2588,29 @@ struct CompletionFlag(ImplicitlyCopyable):
     block on a value produced by a host thread without a second stream
     or a blocking host callback on the consumer's critical path.
 
-    This struct is intentionally non-owning. The C++
-    ``M::Driver::CompletionFlag`` it points to is allocated and
-    freed elsewhere (typically by `max.driver.CompletionFlag` on the
-    Python side), and the caller is responsible for keeping the
-    underlying allocation alive for the duration of any in-flight
-    use. Constructed from a raw pointer extracted from a graph-op
-    payload buffer; do not allocate or free through this wrapper.
+    Constructing from a `DeviceContext` allocates an owning flag through
+    AsyncRT. The raw-handle initializers remain non-owning for graph-op
+    payloads created by another host API.
 
     Currently usable only on CUDA-backed devices, matching
     `DeviceStream.wait_for_host_value`.
     """
 
     var _handle: _CompletionFlagPtr[mut=True]
+    var _owning: Bool
+
+    @always_inline
+    def __init__(out self, ctx: DeviceContext) raises:
+        """Allocates a zero-initialized flag mapped into the device address space."""
+        var result: _CompletionFlagPtr[mut=True] = {}
+        _checked(
+            external_call[
+                "AsyncRT_CompletionFlag_create",
+                _CString[],
+            ](Pointer(to=result), ctx._handle)
+        )
+        self._handle = result
+        self._owning = True
 
     @always_inline
     def __init__(out self, *, handle: _CompletionFlagPtr[mut=True]):
@@ -2613,6 +2623,7 @@ struct CompletionFlag(ImplicitlyCopyable):
                 responsibility.
         """
         self._handle = handle
+        self._owning = False
 
     @always_inline
     def __init__(out self, *, unsafe_from_address: Int):
@@ -2632,6 +2643,41 @@ struct CompletionFlag(ImplicitlyCopyable):
         """
         self._handle = Pointer[_CompletionFlagCpp, MutUntrackedOrigin](
             unsafe_from_address=unsafe_from_address
+        )
+        self._owning = False
+
+    @doc_hidden
+    def __init__(out self, *, copy: Self):
+        self._handle = copy._handle
+        self._owning = copy._owning
+        if self._owning:
+            external_call["AsyncRT_CompletionFlag_retain", NoneType](
+                self._handle
+            )
+
+    def __deinit__(deinit self):
+        if self._owning:
+            external_call["AsyncRT_CompletionFlag_release", NoneType](
+                self._handle
+            )
+
+    @always_inline
+    def signal(self, value: UInt64):
+        """Publishes `value` to the flag with release ordering."""
+        external_call["AsyncRT_CompletionFlag_signal", NoneType](
+            self._handle, value
+        )
+
+    @always_inline
+    def reset(self):
+        """Resets the flag to zero."""
+        external_call["AsyncRT_CompletionFlag_reset", NoneType](self._handle)
+
+    @always_inline
+    def load(self) -> UInt64:
+        """Loads the current value with acquire ordering."""
+        return external_call["AsyncRT_CompletionFlag_load", UInt64](
+            self._handle
         )
 
     @always_inline
@@ -6632,7 +6678,7 @@ struct DeviceContext(ImplicitlyCopyable, RegisterPassable, _FunctionEnqueuer):
         var num_devices = DeviceContext.number_of_devices()
         ```
         """
-        # int32_t *AsyncRT_DeviceContext_numberOfDevices(const char* kind)
+        # int32_t AsyncRT_DeviceContext_numberOfDevices(const char* kind)
         return Int(
             external_call[
                 "AsyncRT_DeviceContext_numberOfDevices",
