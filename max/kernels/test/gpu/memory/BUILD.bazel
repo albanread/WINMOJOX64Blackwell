@@ -193,12 +193,20 @@ mojo_test(
     ],
 )
 
-mojo_filecheck_test(
+mojo_test(
     name = "test_tma.mojo.test",
     srcs = ["test_tma.mojo"],
     copts = IGNORED_POINTER_DEPRECATIONS_COPTS,
+    exec_properties = {"test.resources:gpu-memory": "1"},
     tags = ["gpu"],
-    target_compatible_with = ["//:h100_gpu"],
+    target_compatible_with = select({
+        "//:h100_gpu": [],
+        "//:b200_gpu": [],
+        "//:rtx5060ti_gpu": [],
+        "//:rtx5090_gpu": [],
+        "//:rtxpro2000blackwell_gpu": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
     deps = [
         "//max:layout",
         "//max:linalg",

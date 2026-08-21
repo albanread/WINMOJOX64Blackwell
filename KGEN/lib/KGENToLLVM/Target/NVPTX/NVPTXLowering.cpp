@@ -82,10 +82,11 @@ public:
 
     mlir::Builder builder(func->getContext());
     argAttrs.set(attr.getName(), builder.getUnitAttr());
-    // Match CUDA's grid-constant kernel ABI until Mojo can carry an explicit
-    // alignment for the annotation.
+    // CUDA's kernel-parameter ABI lowers a grid-constant CUtensorMap to an
+    // 8-byte-aligned 128-byte parameter even though the host-side object must
+    // be 64-byte aligned while it is populated by cuTensorMapEncode*.
     argAttrs.set(mlir::LLVM::LLVMDialect::getAlignAttrName(),
-                 builder.getI32IntegerAttr(64));
+                 builder.getI32IntegerAttr(8));
   }
 
 protected:

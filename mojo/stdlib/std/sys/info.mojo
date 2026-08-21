@@ -157,7 +157,19 @@ struct CompilationTarget[value: _TargetType = _current_target()](
 
         comptime if is_triple["nvptx64-nvidia-cuda", Self.value]():
             # TODO: use `is_nvidia_gpu` when moved to into this struct.
-            return "nvptx-short-ptr=true"
+            comptime if (
+                Self._is_arch["sm_120"]()
+                or Self._is_arch["sm_120a"]()
+                or Self._is_arch["sm_121"]()
+                or Self._is_arch["sm_121a"]()
+            ):
+                # Grid-constant tensor-map parameters need a 64-bit generic
+                # address on Blackwell consumer GPUs. LLVM's shortptr ABI
+                # makes entry-parameter pointers 32-bit, truncating the TMA
+                # descriptor address before cp.async.bulk.tensor uses it.
+                return "nvptx-short-ptr=false"
+            else:
+                return "nvptx-short-ptr=true"
         else:
             return ""
 

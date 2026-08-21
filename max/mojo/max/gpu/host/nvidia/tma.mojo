@@ -342,7 +342,7 @@ def create_tma_descriptor[
     l2_promotion: TensorMapL2Promotion = TensorMapL2Promotion.NONE,
     unpack_fp4: Bool = False,
 ](
-    global_buf: DeviceBuffer[dtype],
+    ref global_buf: DeviceBuffer[dtype],
     global_shape: IndexList[rank],
     global_strides: IndexList[rank],
     shared_mem_shape: IndexList[rank],
