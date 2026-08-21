@@ -35,9 +35,11 @@ common --incompatible_disallow_empty_glob
 common --platforms=@mojo_host_platform
 common --host_platform=@mojo_host_platform
 
-# rules_mojo's host GPU detector is Linux/macOS-only.  This explicit Windows
-# platform selects the source-built sm_120a toolchain and CUDA driver runtime.
+# Explicit Windows GPU targets. The default above auto-detects the installed
+# card, so these are only needed to build for a card this machine does not
+# have -- each box compiling for the other's GPU.
 build:windows-nvidia-blackwell --platforms=//:windows_x86_64_nvidia_blackwell
+build:windows-nvidia-t1000 --platforms=//:windows_x86_64_nvidia_t1000
 
 # TODO: remove when https://github.com/bazelbuild/bazel/issues/25145 is fixed
 info --platforms=@platforms//host

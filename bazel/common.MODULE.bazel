@@ -559,6 +559,8 @@ mojo.gpu_toolchains(
         "NVIDIA GeForce GTX 1080 Ti": "gtx1080ti",
         "NVIDIA GeForce GTX 1060": "gtx1060",
         "NVIDIA GeForce GTX 970": "gtx970",
+        # Matches both the 8GB and 4GB TU117 workstation parts.
+        "T1000": "t1000",
         "GB10": "gb10",
         "MI300A": "mi300a",
         "MI300X": "mi300x",
@@ -600,6 +602,8 @@ mojo.gpu_toolchains(
         "gtx970": "nvidia:sm_52",
         "gtx1080ti": "nvidia:sm_61",
         "gtx1060": "nvidia:sm_61",
+        # Turing predates the arch-specific `a` suffix, so plain sm_75.
+        "t1000": "nvidia:sm_75",
         "rtx4090": "nvidia:sm_89",
         "rtx5060ti": "nvidia:sm_120a",
         "rtx5090": "nvidia:sm_120a",

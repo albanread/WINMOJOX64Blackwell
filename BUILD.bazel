@@ -60,16 +60,39 @@ alias(
     tags = [ALLOW_UNUSED_TAG],
 )
 
-# rules_mojo currently probes GPUs only on Linux and macOS, so its generated
-# @mojo_host_platform has no accelerator constraints on Windows.  Keep a
-# source-controlled platform for this port's native x86-64 Blackwell target;
-# it selects both the NVPTX compiler toolchain and the Windows CUDA runtime.
+# Source-controlled platforms for this port's native x86-64 NVIDIA targets.
+# Each selects both the NVPTX compiler toolchain and the Windows CUDA runtime.
+#
+# rules_mojo probed GPUs only on Linux and macOS, which is why these exist;
+# bazel/public-patches/rules_mojo_windows_gpu_detect.patch now extends that to
+# Windows, so @mojo_host_platform identifies the installed card on its own and
+# the default build needs no --config at all. These remain the explicit form:
+# naming one builds for that card whether or not it is present, which is how
+# each machine cross-compiles for the other's GPU. Distinct platforms get
+# distinct output paths, so both stay warm in the disk cache side by side
+# rather than invalidating each other.
 platform(
     name = "windows_x86_64_nvidia_blackwell",
     constraint_values = [
         "@mojo_gpu_toolchains//:has_gpu",
         "@mojo_gpu_toolchains//:nvidia_gpu",
         "@mojo_gpu_toolchains//:rtxpro2000blackwell_gpu",
+        "@platforms//cpu:x86_64",
+        "@platforms//os:windows",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# Turing TU117, compute capability 7.5 — five generations below the Blackwell
+# part. No bf16, no cp.async, and no tensor cores at all, so this is the
+# portability check rather than a performance target: a kernel that compiles
+# and runs on both ends of that span is portable in a way one card cannot show.
+platform(
+    name = "windows_x86_64_nvidia_t1000",
+    constraint_values = [
+        "@mojo_gpu_toolchains//:has_gpu",
+        "@mojo_gpu_toolchains//:nvidia_gpu",
+        "@mojo_gpu_toolchains//:t1000_gpu",
         "@platforms//cpu:x86_64",
         "@platforms//os:windows",
     ],
