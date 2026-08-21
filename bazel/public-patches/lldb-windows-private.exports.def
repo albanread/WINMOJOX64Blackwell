@@ -25,7 +25,20 @@ EXPORTS
   ??0FileSpec@lldb_private@@QEAA@XZ
   ??0SymbolContext@lldb_private@@QEAA@AEBV01@@Z
   ??1CommandReturnObject@lldb_private@@QEAA@XZ
-  ??1DumpValueObjectOptions@lldb_private@@QEAA@XZ
+; ??1DumpValueObjectOptions@lldb_private@@QEAA@XZ
+;   Deliberately not exported. Unlike the other destructors here,
+;   DumpValueObjectOptions declares none, so the implicit one is inline and
+;   -O2 elides it rather than emitting a standalone symbol. Naming it here
+;   makes it a link root, and the DLL then fails to link with
+;   "lld-link: error: <root>: undefined symbol" under --compilation_mode=opt,
+;   which is the mode README.md recommends. It links under dbg only because
+;   -O0 emits the inline copy.
+;
+;   Nothing needs the export: no undefined reference to it exists in any of
+;   the 112 lldb libraries or in KGEN/lib/MojoLLDB. A consumer that destroys
+;   one has the full class definition from DumpValueObjectOptions.h and emits
+;   its own inline destructor. The copy constructor above stays exported
+;   because that one is genuinely out of line.
   ??1FileSpec@lldb_private@@QEAA@XZ
   ??1ProcessLaunchInfo@lldb_private@@QEAA@XZ
   ??4ArchSpec@lldb_private@@QEAAAEAV01@AEBV01@@Z
