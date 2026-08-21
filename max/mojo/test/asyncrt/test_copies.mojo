@@ -13,6 +13,7 @@
 
 from asyncrt_test_utils import create_test_device_context
 from max.gpu.host import DeviceBuffer, DeviceContext
+from std.builtin._closure import __ownership_keepalive
 from std.testing import TestSuite, assert_equal
 
 
@@ -148,6 +149,7 @@ def _run_fake_memcpy(
 
     # Wait for the copies to be completed.
     ctx.synchronize()
+    __ownership_keepalive(out_dev)
 
     for i in range(length):
         var expected: Int
