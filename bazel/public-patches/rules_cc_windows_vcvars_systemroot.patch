@@ -1,0 +1,26 @@
+diff --git a/cc/private/toolchain/windows_cc_configure.bzl b/cc/private/toolchain/windows_cc_configure.bzl
+index cdade4b..40ac37f 100644
+--- a/cc/private/toolchain/windows_cc_configure.bzl
++++ b/cc/private/toolchain/windows_cc_configure.bzl
+@@ -119,6 +119,21 @@ def _add_system_root(repository_ctx, env):
+     """Running VCVARSALL.BAT and VCVARSQUERYREGISTRY.BAT need %SYSTEMROOT%\\\\system32 in PATH."""
+     env_key, env_value = _lookup_env_var(env, "PATH", default = "")
+     env[env_key] = env_value + ";" + _get_system_root(repository_ctx) + "\\system32"
++
++    # VCVARSALL.BAT needs SystemRoot as a variable too, not merely System32 on
++    # PATH. Callers build this dict from a fixed key list, so the only reason
++    # the variable normally reaches the subprocess is that repository_ctx
++    # .execute() merges it in from the client environment. Under
++    # --experimental_strict_repo_env there is no client environment to merge,
++    # and VCVARSALL.BAT then blocks forever rather than failing: the fetch dies
++    # at the 600s repository-rule timeout with "non-zero exit code: 256,
++    # command [./get_env.bat], stderr: (Timed out)". Setting it here rather
++    # than adding SYSTEMROOT to MSVC_ENVVARS keeps the fix on the path that
++    # actually needs it, and needs no cooperation from the caller.
++    sysroot_key, sysroot_value = _lookup_env_var(env, "SYSTEMROOT", default = "")
++    if not sysroot_value:
++        env[sysroot_key] = _get_system_root(repository_ctx)
++
+     return env
+ 
+ def find_vc_path(repository_ctx):

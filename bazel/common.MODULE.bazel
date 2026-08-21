@@ -53,6 +53,12 @@ archive_override(
         # library argument itself; the patch mirrors rules_cc's own Apple
         # -force_load mechanism.
         "//bazel/public-patches:rules_cc_windows_wholearchive.patch",
+        # VCVARSALL.BAT needs SystemRoot as a variable, which rules_cc leaves
+        # to the client environment that --experimental_strict_repo_env
+        # withholds. Without it the batch file blocks instead of failing and
+        # the winsdk fetch dies at the 600s repo-rule timeout, taking analysis
+        # of every cc target that needs rc.exe with it.
+        "//bazel/public-patches:rules_cc_windows_vcvars_systemroot.patch",
     ],
     strip_prefix = "rules_cc-ad214a9cb17d41e4e03199d61d436974a2261885",
     urls = [
