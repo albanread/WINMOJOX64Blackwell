@@ -784,15 +784,21 @@ static int linkOutput(OutputType outputType, const State &state,
     // bindings case, the exported function symbols otherwise wouldn't appeared
     // "used" by the linker, and so it would get aggressively removed.
 
-    SmallVector<StringRef> linkerInvocation{*linker, "-shared"};
+    SmallVector<StringRef> linkerInvocation{*linker};
+#if defined(_WIN32)
+    linkerInvocation.push_back("/DLL");
+#else
+    linkerInvocation.push_back("-shared");
+#endif
 
 #if defined(__APPLE__)
     linkerInvocation.push_back("-Wl,-force_load");
     linkerInvocation.push_back(archivePath);
 #elif defined(_WIN32)
-    // lld-link ignores the GNU spelling with a warning, which silently drops
-    // the force-load and strips every "unused" export from the library.
-    wholeArchiveArg = "-Wl,/WHOLEARCHIVE:" + archivePath;
+    // lld-link needs the native COFF spelling.  A compiler driver would accept
+    // the -Wl wrapper, but standalone Windows releases invoke lld-link
+    // directly.
+    wholeArchiveArg = "/WHOLEARCHIVE:" + archivePath;
     linkerInvocation.push_back(wholeArchiveArg);
 #else
     linkerInvocation.push_back("-Wl,--whole-archive");
@@ -801,13 +807,36 @@ static int linkOutput(OutputType outputType, const State &state,
 #endif
 
     linkerInvocation.push_back(compilerRTPath);
+#if !defined(_WIN32)
     linkerInvocation.push_back("-o");
     linkerInvocation.push_back(outputName);
+#endif
     return linkerInvocation;
   }();
 
-  // Add other shared libs
+  // Add other shared libs.  The configuration names DLLs because the JIT
+  // loads those files directly.  A PE/COFF link consumes their sibling import
+  // libraries instead, just like CompilerRT above.
+#if defined(_WIN32)
+  SmallVector<StringRef> configuredSharedLibraries;
+  config.appendSharedLibraryLinkArgs(configuredSharedLibraries);
+  SmallVector<std::string> configuredImportLibraries;
+  configuredImportLibraries.reserve(configuredSharedLibraries.size());
+  for (StringRef library : configuredSharedLibraries) {
+    if (library.ends_with_insensitive(".dll")) {
+      std::string importLibrary = (library.drop_back(4) + ".lib").str();
+      if (std::filesystem::exists(importLibrary, ec) && !ec) {
+        configuredImportLibraries.push_back(std::move(importLibrary));
+        continue;
+      }
+    }
+    configuredImportLibraries.push_back(library.str());
+  }
+  for (const std::string &library : configuredImportLibraries)
+    linkerArgs.emplace_back(library);
+#else
   config.appendSharedLibraryLinkArgs(linkerArgs);
+#endif
 
 #ifdef _WIN32
   std::string outputArg = ("/out:" + outputName).str();
@@ -864,11 +893,13 @@ static int linkOutput(OutputType outputType, const State &state,
 #endif
 
   // Apply options for stripping unused code.
-#if defined(__APPLE__)
+#if defined(_WIN32)
+  linkerArgs.emplace_back("/OPT:REF");
+#elif defined(__APPLE__)
   linkerArgs.emplace_back("-Wl,-dead_strip");
 #else
   linkerArgs.emplace_back("-Wl,--gc-sections");
-#endif // defined(__APPLE__)
+#endif
 
   // The Mojo standard library calls libm entry points such as `hypot` and
   // `expm1`. A C compiler driver doesn't link libm implicitly the way a C++
@@ -884,8 +915,13 @@ static int linkOutput(OutputType outputType, const State &state,
   // Propagate any user-supplied linker flags. Add these last so they take
   // precedence.
   for (const auto &extraArg : extraLinkerArgs) {
+#if defined(_WIN32)
+    // The Windows linker is invoked directly, not through a compiler driver.
+    linkerArgs.emplace_back(extraArg.c_str());
+#else
     linkerArgs.emplace_back("-Xlinker");
     linkerArgs.emplace_back(extraArg.c_str());
+#endif
   }
 
   // Print linker arguments for debugging

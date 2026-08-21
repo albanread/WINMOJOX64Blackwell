@@ -160,6 +160,15 @@ modular_cc_library(
 
 modular_cc_binary(
     name = "mojo",
+    data = [
+        "//KGEN:MojoLLDB",
+        "//KGEN:mojo-lldb",
+        "//KGEN/tools/mojo-repl-entry-point",
+        "@crashpad//:modular-crashpad-handler",
+        "@llvm-project//lld:lld",
+        "@llvm-project//lldb:lldb-argdumper",
+        "@llvm-project//llvm:llvm-symbolizer",
+    ],
     linkopts = _MOJO_LINKOPTS,
     deps = [":mojo_common"],
 )
@@ -171,6 +180,8 @@ modular_cc_binary(
         "//KGEN:gdb-server",
         "//KGEN:mojo-lldb",
         "//KGEN/tools/mojo-repl-entry-point",
+        "@crashpad//:modular-crashpad-handler",
+        "@llvm-project//lld:lld",
         "@llvm-project//lldb:lldb-argdumper",
         "@llvm-project//llvm:llvm-symbolizer",
     ],

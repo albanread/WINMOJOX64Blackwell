@@ -1,0 +1,18 @@
+diff --git a/llvm/lib/ExecutionEngine/RuntimeDyld/Targets/RuntimeDyldCOFFX86_64.h b/llvm/lib/ExecutionEngine/RuntimeDyld/Targets/RuntimeDyldCOFFX86_64.h
+index d970ba6112f0..872aab2785dd 100644
+--- a/llvm/lib/ExecutionEngine/RuntimeDyld/Targets/RuntimeDyldCOFFX86_64.h
++++ b/llvm/lib/ExecutionEngine/RuntimeDyld/Targets/RuntimeDyldCOFFX86_64.h
+@@ -109,9 +109,11 @@ public:
+       // The MemoryManager can make sure this is always true by forcing the
+       // memory layout to be: CodeSection < ReadOnlySection < ReadWriteSection.
+       const uint64_t ImageBase = getImageBase();
+       if (Value < ImageBase || ((Value - ImageBase) > UINT32_MAX))
+-        report_fatal_error("IMAGE_REL_AMD64_ADDR32NB relocation requires an "
+-                           "ordered section layout");
++        report_fatal_error(
++            Twine("IMAGE_REL_AMD64_ADDR32NB relocation requires an ordered "
++                  "section layout (value=") +
++            Twine(Value) + ", image_base=" + Twine(ImageBase) + ")");
+       else {
+         write32BitOffset(Target, RE.Addend, Value - ImageBase);
+       }

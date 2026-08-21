@@ -158,7 +158,13 @@ def _process_mojo_deps(deps):
 # buildifier: disable=unused-variable
 def modular_cc_binary(data = [], deps = [], internal_deps = [], defines = [], local_defines = [], **kwargs):
     _modular_cc_binary(
-        local_defines = _process_defines(local_defines),
+        # Executables consume the project's static libraries directly on
+        # Windows. Their source must therefore see declarations as ordinary
+        # symbols, not as imports from a DLL.
+        local_defines = _process_defines(local_defines) + select({
+            "@platforms//os:windows": ["MODULAR_NO_EXPORT"],
+            "//conditions:default": [],
+        }),
         defines = _process_defines(defines),
         **(kwargs | _process_cc_deps(
             data = data,

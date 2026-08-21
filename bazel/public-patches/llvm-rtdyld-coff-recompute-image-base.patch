@@ -1,0 +1,45 @@
+diff --git a/llvm/lib/ExecutionEngine/RuntimeDyld/Targets/RuntimeDyldCOFFX86_64.h b/llvm/lib/ExecutionEngine/RuntimeDyld/Targets/RuntimeDyldCOFFX86_64.h
+index e8f10ea5f2d5..d970ba6112f0 100644
+--- a/llvm/lib/ExecutionEngine/RuntimeDyld/Targets/RuntimeDyldCOFFX86_64.h
++++ b/llvm/lib/ExecutionEngine/RuntimeDyld/Targets/RuntimeDyldCOFFX86_64.h
+@@ -29,21 +29,18 @@ private:
+   // sections in a table until we receive a request to register all
+   // unregisteredEH frame sections with the memory manager.
+   SmallVector<SID, 2> UnregisteredEHFrameSections;
+   SmallVector<SID, 2> RegisteredEHFrameSections;
+-  uint64_t ImageBase;
+-
++
+   // Fake an __ImageBase pointer by returning the section with the lowest adress
+   uint64_t getImageBase() {
+-    if (!ImageBase) {
+-      ImageBase = std::numeric_limits<uint64_t>::max();
+-      for (const SectionEntry &Section : Sections)
+-        // The Sections list may contain sections that weren't loaded for
+-        // whatever reason: they may be debug sections, and ProcessAllSections
+-        // is false, or they may be sections that contain 0 bytes. If the
+-        // section isn't loaded, the load address will be 0, and it should not
+-        // be included in the ImageBase calculation.
+-        if (Section.getLoadAddress() != 0)
+-          ImageBase = std::min(ImageBase, Section.getLoadAddress());
+-    }
++    // mapSectionAddress() can change load addresses after the initial MCJIT
++    // relocation pass (LLDB does this when copying JIT sections into the
++    // debuggee).  Recompute the base so a second pass never uses a stale host
++    // address for image-relative COFF relocations.
++    uint64_t ImageBase = std::numeric_limits<uint64_t>::max();
++    for (const SectionEntry &Section : Sections)
++      // Ignore debug, empty, or otherwise unloaded sections.
++      if (Section.getLoadAddress() != 0)
++        ImageBase = std::min(ImageBase, Section.getLoadAddress());
+     return ImageBase;
+   }
+@@ -56,6 +53,5 @@ public:
+   RuntimeDyldCOFFX86_64(RuntimeDyld::MemoryManager &MM,
+                         JITSymbolResolver &Resolver)
+-      : RuntimeDyldCOFF(MM, Resolver, 8, COFF::IMAGE_REL_AMD64_ADDR64),
+-        ImageBase(0) {}
++      : RuntimeDyldCOFF(MM, Resolver, 8, COFF::IMAGE_REL_AMD64_ADDR64) {}
+-
++
+   Align getStubAlignment() override { return Align(1); }

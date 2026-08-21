@@ -20,6 +20,7 @@
 #include "llvm/Option/ArgList.h"
 #include "llvm/Option/OptTable.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
 #include <filesystem>
 
@@ -107,6 +108,27 @@ int M::invokeLLDB(const State &state, ArrayRef<std::string> lldbArgs,
   if (env)
     for (const auto &[name, value] : *env)
       (void)M::setProcessEnv(name, value);
+
+#ifdef _WIN32
+  // LoadLibrary searches the child executable's directory, not the directory
+  // containing a plugin passed to LLDB. Make the Mojo driver and plugin
+  // directories available so MojoLLDB's Modular runtime DLL dependencies can
+  // be resolved in Bazel runfiles and in a standalone SDK layout.
+  std::string childPath;
+  auto appendDirectory = [&](const std::filesystem::path &path) {
+    std::string directory = path.parent_path().string();
+    if (!directory.empty()) {
+      childPath.append(directory);
+      childPath.push_back(';');
+    }
+  };
+  appendDirectory(M::getProcessExecutablePath());
+  appendDirectory(*mojoLLDB);
+  appendDirectory(*lldb);
+  if (auto currentPath = llvm::sys::Process::GetEnv("PATH"))
+    childPath.append(*currentPath);
+  (void)M::setProcessEnv("PATH", childPath);
+#endif
 
   return llvm::sys::ExecuteAndWait(lldb.get(), subprocessArgs);
 }

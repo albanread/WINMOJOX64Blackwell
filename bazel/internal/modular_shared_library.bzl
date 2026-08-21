@@ -94,17 +94,65 @@ def _shared_library_impl(ctx):
         link_variables["dsym_path"] = dsym_file.path
         additional_linker_outputs.append(dsym_file)
 
+    linking_contexts_for_link = deps_linking_contexts
+    additional_linker_inputs = list(ctx.files.additional_linker_inputs)
+    if ctx.target_platform_has_constraint(ctx.attr._windows_constraint[platform_common.ConstraintValueInfo]):
+        # cc_common.link does not honor the native C++ rule's
+        # supports_param_files setting. Large shared libraries consequently
+        # expand every transitive archive on CreateProcessW's command line and
+        # exceed Windows' 32767-character limit. Put those inputs in an
+        # explicitly declared Clang response file instead.
+        linker_inputs = depset(
+            transitive = [linking_context.linker_inputs for linking_context in deps_linking_contexts],
+        ).to_list()
+        response_args = ctx.actions.args()
+        response_args.set_param_file_format("multiline")
+        seen_paths = {}
+
+        for linker_input in linker_inputs:
+            for library in linker_input.libraries:
+                library_file = (
+                    library.pic_static_library or
+                    library.static_library or
+                    library.interface_library or
+                    library.dynamic_library
+                )
+                if library_file and library_file.path not in seen_paths:
+                    seen_paths[library_file.path] = None
+                    additional_linker_inputs.append(library_file)
+                    if library.alwayslink:
+                        response_args.add("-Wl,/wholearchive:" + library_file.path)
+                    else:
+                        response_args.add(library_file.path)
+                elif not library_file:
+                    object_files = library.pic_objects or library.objects
+                    for object_file in object_files:
+                        if object_file.path not in seen_paths:
+                            seen_paths[object_file.path] = None
+                            additional_linker_inputs.append(object_file)
+                            response_args.add(object_file.path)
+
+        for linker_input in linker_inputs:
+            response_args.add_all(linker_input.user_link_flags)
+            additional_linker_inputs.extend(linker_input.additional_inputs)
+
+        response_file = ctx.actions.declare_file(ctx.label.name + ".link.params")
+        ctx.actions.write(output = response_file, content = response_args)
+        additional_linker_inputs.append(response_file)
+        linkopts.insert(0, "@" + response_file.path)
+        linking_contexts_for_link = []
+
     linking_outputs = link_hack(
         actions = ctx.actions,
         feature_configuration = feature_configuration,
         cc_toolchain = cc_toolchain,
         compilation_outputs = compilation_outputs,
-        linking_contexts = deps_linking_contexts,
+        linking_contexts = linking_contexts_for_link,
         emit_interface_shared_library = True,
         name = output_name,
         output_type = "dynamic_library",
         user_link_flags = linkopts,
-        additional_inputs = ctx.files.additional_linker_inputs,
+        additional_inputs = additional_linker_inputs,
         additional_outputs = additional_linker_outputs,
         variables_extension = link_variables,
         **link_kwargs
@@ -190,6 +238,7 @@ _shared_library = rule(
         "includes": attr.string_list(),
         "output_name": attr.string(),
         "_linux_constraint": attr.label(default = Label("@platforms//os:linux")),
+        "_windows_constraint": attr.label(default = Label("@platforms//os:windows")),
         "_link_extra_lib": attr.label(
             default = "@bazel_tools//tools/cpp:link_extra_lib",
             providers = [CcInfo],

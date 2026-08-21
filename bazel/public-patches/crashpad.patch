@@ -35,4 +35,28 @@ index b8b93cf..10e3768 100644
    std::atomic_thread_fence(std::memory_order_seq_cst);
 -#endif
  }
+
+diff --git a/snapshot/win/system_snapshot_win.cc b/snapshot/win/system_snapshot_win.cc
+index bbf74e10..f414f4b0 100644
+--- a/snapshot/win/system_snapshot_win.cc
++++ b/snapshot/win/system_snapshot_win.cc
+@@ -27,7 +27,18 @@
+ #include <utility>
+ #include <vector>
+-
++// The hermetic Windows SDK used by the source build omits this structure from
++// winnt.h. Its ABI is nevertheless required by CallNtPowerInformation with
++// ProcessorInformation and is stable across supported Windows versions.
++typedef struct _PROCESSOR_POWER_INFORMATION {
++  ULONG Number;
++  ULONG MaxMhz;
++  ULONG CurrentMhz;
++  ULONG MhzLimit;
++  ULONG MaxIdleState;
++  ULONG CurrentIdleState;
++} PROCESSOR_POWER_INFORMATION, *PPROCESSOR_POWER_INFORMATION;
++
+ #include "base/check_op.h"
+ #include "base/logging.h"
+ #include "base/notreached.h"
  

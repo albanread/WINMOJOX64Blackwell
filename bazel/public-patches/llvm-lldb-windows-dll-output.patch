@@ -1,0 +1,142 @@
+diff --git a/utils/bazel/llvm-project-overlay/lldb/BUILD.bazel b/utils/bazel/llvm-project-overlay/lldb/BUILD.bazel
+index 1a831a432671..eb634aa20538 100644
+--- a/utils/bazel/llvm-project-overlay/lldb/BUILD.bazel
++++ b/utils/bazel/llvm-project-overlay/lldb/BUILD.bazel
+@@ -970,6 +970,6 @@ genrule(
+ # binaries.
+ cc_binary(
+-    name = "lldb{}".format(PACKAGE_VERSION),
++    name = "_shared/lldb{}".format(PACKAGE_VERSION),
+     additional_linker_inputs = select({
+         "@platforms//os:linux": [
+             ":gen_exports_file_linux",
+@@ -996,12 +996,35 @@ cc_binary(
+     ],
+ )
+-
++
++alias(
++    name = "lldb{}".format(PACKAGE_VERSION),
++    actual = ":_shared/lldb{}".format(PACKAGE_VERSION),
++)
++
++genrule(
++    name = "gen_liblldb_import_library",
++    srcs = [":_shared/lldb{}".format(PACKAGE_VERSION)],
++    outs = ["_shared/lldb{}.lib".format(PACKAGE_VERSION)],
++    cmd = """
++printf 'LIBRARY lldb{version}.dll\\nEXPORTS\\n' > "$(@D)/liblldb.def"
++$(location //llvm:llvm-readobj) --coff-exports $(location :_shared/lldb{version}) \\
++  | sed -n 's/^[[:space:]]*Name: /  /p' >> "$(@D)/liblldb.def"
++$(location //llvm:llvm-dlltool) -m i386:x86-64 \\
++  -D lldb{version}.dll -d "$(@D)/liblldb.def" -l "$@"
++""".format(version = PACKAGE_VERSION),
++    tools = [
++        "//llvm:llvm-dlltool",
++        "//llvm:llvm-readobj",
++    ],
++)
++
+ # cc_binary targets using linkshared=True to build a shared library cannot be
+ # imported directly and instead need to be referenced indirectly through
+ # cc_import
+ cc_import(
+     name = "liblldb.wrapper",
+-    shared_library = "lldb{}".format(PACKAGE_VERSION),
++    interface_library = ":gen_liblldb_import_library",
++    shared_library = ":_shared/lldb{}".format(PACKAGE_VERSION),
+ )
+-
++
+ gentbl_cc_library(
+diff --git a/utils/bazel/llvm-project-overlay/lldb/BUILD.bazel b/utils/bazel/llvm-project-overlay/lldb/BUILD.bazel
+index eb634aa20538..75655f3aa40f 100644
+--- a/utils/bazel/llvm-project-overlay/lldb/BUILD.bazel
++++ b/utils/bazel/llvm-project-overlay/lldb/BUILD.bazel
+@@ -625,8 +625,11 @@ cc_library(
+             "source/Host/posix/**/*.cpp",
+         ]),
+-        "@platforms//os:windows": glob([
+-            "source/Host/windows/**/*.cpp",
+-        ]),
++        "@platforms//os:windows": glob([
++            "source/Host/windows/**/*.cpp",
++        ]) + [
++            # Despite its name, CMake includes this implementation everywhere.
++            "source/Host/posix/ConnectionFileDescriptorPosix.cpp",
++        ],
+     }) + select({
+         ":libedit_enabled": ["source/Host/common/Editline.cpp"],
+         "//conditions:default": [],
+@@ -667,6 +670,11 @@ cc_library(
+             "-Wl,-framework,CoreServices",
+             "-Wl,-framework,Security",
+         ],
++        "@platforms//os:windows": [
++            "-ldbghelp",
++            "-lrpcrt4",
++            "-lws2_32",
++        ],
+         "//conditions:default": [],
+     }) + select({
+         ":curses_enabled": [
+diff --git a/utils/bazel/llvm-project-overlay/lldb/BUILD.bazel b/utils/bazel/llvm-project-overlay/lldb/BUILD.bazel
+index 75655f3aa40f..f3e352929185 100644
+--- a/utils/bazel/llvm-project-overlay/lldb/BUILD.bazel
++++ b/utils/bazel/llvm-project-overlay/lldb/BUILD.bazel
+@@ -983,10 +983,20 @@ cc_binary(
+     linkopts = select({
+         "@platforms//os:linux": [
+             "-Wl,--export-dynamic-symbol-list=$(location :gen_exports_file_linux)",
+         ],
+         "@platforms//os:macos": [
+             "-Wl,-exported_symbols_list,$(location :gen_exports_file_macos)",
+         ],
++        "@platforms//os:windows": [
++            # LLDB_PRIVATE_EXPORT handles the private plugin ABI. Retain the
++            # MSVC CRT entry point without lld's broad MinGW auto-export mode.
++            "-Wl,/entry:_DllMainCRTStartup",
++            "-Wl,/def:$(location @//bazel/public-patches:lldb-windows-private.exports.def)",
++            # Exporting LLDB's selected C++ classes pulls two inline locale
++            # helpers also provided by MSVCP140. They are ODR-equivalent; use
++            # the DLL implementation selected by lld-link.
++            "-Wl,/force:multiple",
++        ],
+         "//conditions:default": [],
+     }),
+     linkshared = True,
+
+diff --git a/utils/bazel/llvm-project-overlay/lldb/source/Plugins/BUILD.bazel b/utils/bazel/llvm-project-overlay/lldb/source/Plugins/BUILD.bazel
+index db4ab4693ef4..18993327db11 100644
+--- a/utils/bazel/llvm-project-overlay/lldb/source/Plugins/BUILD.bazel
++++ b/utils/bazel/llvm-project-overlay/lldb/source/Plugins/BUILD.bazel
+@@ -2527,9 +2527,11 @@ cc_library(
+-
++
+ cc_library(
+     name = "PluginProcessWindowsCommon",
+-    srcs = glob(["Process/Windows/Common/*.cpp"]),
++    srcs = glob(["Process/Windows/Common/*.cpp"]) + [
++        "Process/Windows/Common/x64/RegisterContextWindows_x64.cpp",
++    ],
+     hdrs = glob([
+         "Process/Windows/Common/*.h",
+         "Process/Windows/Common/**/*.h",
+     ]),
+-    includes = [".."],
++    includes = ["..", "Process/Windows/Common"],
+
+diff --git a/utils/bazel/llvm-project-overlay/lldb/BUILD.bazel b/utils/bazel/llvm-project-overlay/lldb/BUILD.bazel
+index f3e352929185..b68c1888ce6f 100644
+--- a/utils/bazel/llvm-project-overlay/lldb/BUILD.bazel
++++ b/utils/bazel/llvm-project-overlay/lldb/BUILD.bazel
+@@ -983,6 +983,9 @@ cc_binary(
+         "@platforms//os:macos": [
+             ":gen_exports_file_macos",
+         ],
++        "@platforms//os:windows": [
++            "@//bazel/public-patches:lldb-windows-private.exports.def",
++        ],
+         "//conditions:default": [],
+     }),
+     linkopts = select({

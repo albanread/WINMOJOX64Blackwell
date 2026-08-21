@@ -1,3 +1,6 @@
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["torch-cuda-deps.patch"])
+exports_files([
+    "lldb-windows-private.exports.def",
+    "torch-cuda-deps.patch",
+])

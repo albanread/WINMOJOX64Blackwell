@@ -25,6 +25,10 @@ modular_cc_binary(
             # Make sure this never gets stripped because it is used as a lldb breakpoint
             "-Wl,--export-dynamic-symbol=mojo_repl_main",
         ],
+        "@platforms//os:windows": [
+            "-lnormaliz",
+            "-lws2_32",
+        ],
         "//conditions:default": [],
     }),
     deps = [

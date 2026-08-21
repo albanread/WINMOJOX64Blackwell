@@ -1,0 +1,16 @@
+[mojo-max]
+package_root = @RELEASE_ROOT@
+driver_path = @RELEASE_ROOT@\bin\mojo.exe
+import_path = @RELEASE_ROOT@\lib
+compilerrt_path = @RELEASE_ROOT@\lib\KGENCompilerRTShared.dll
+winkb_path = @RELEASE_ROOT@\lib\windows_api.db
+lld_path = @RELEASE_ROOT@\bin\lld.exe
+lldb_path = @RELEASE_ROOT@\bin\mojo-lldb.exe
+lldb_plugin_path = @RELEASE_ROOT@\lib\MojoLLDB.dll
+repl_entry_point = @RELEASE_ROOT@\lib\mojo-repl-entry-point.exe
+linker_driver = @RELEASE_ROOT@\bin\lld-link.exe
+shared_libs = @RELEASE_ROOT@\lib\nvptxrt.dll,@RELEASE_ROOT@\lib\AsyncRTRuntimeGlobals.dll,@RELEASE_ROOT@\lib\MSupportGlobals.dll
+system_libs = kernel32.lib,vcruntime.lib,ucrt.lib
+
+[crash_reporting]
+handler_path = @RELEASE_ROOT@\bin\modular-crashpad-handler.exe

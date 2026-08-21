@@ -1527,6 +1527,14 @@ modular_shared_library(
     ),
     hdrs = glob(["lib/MojoLLDB/**/*.h"]),
     includes = [],
+    linkopts = select({
+        "@platforms//os:windows": [
+            "-Wl,/force:multiple",
+            "-lnormaliz",
+            "-lws2_32",
+        ],
+        "//conditions:default": [],
+    }),
     internal_deps = select({
         # Under --config=hal-device-context we don't link the full DeviceContext,
         # but we need CompilationDevice and the HAL-only CompilerDeviceArch.

@@ -23,15 +23,20 @@
 #include "llvm/Support/raw_ostream.h"
 
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <Windows.h>
+#define MOJO_REPL_EXPORT __declspec(dllexport)
+#else
+#define MOJO_REPL_EXPORT MODULAR_EXPORT
 #endif
 
 using namespace M;
 
 /// Entry point that LLDB should stop at before evaluating expressions. It's
 /// guaranteed that all required setup happens before this function is called.
-MODULAR_EXPORT LLVM_ATTRIBUTE_USED LLVM_ATTRIBUTE_NOINLINE int
+MOJO_REPL_EXPORT LLVM_ATTRIBUTE_USED LLVM_ATTRIBUTE_NOINLINE int
 mojo_repl_main() {
   return 0;
 }

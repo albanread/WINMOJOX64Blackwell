@@ -20,7 +20,7 @@ index 08501b512a2b..082c9a49b499 100644
  /// \return
  ///     The offset at which dumping ended.
 -lldb::offset_t
-+lldb::offset_t LLDB_PRIVATE_EXPORT
++LLDB_PRIVATE_EXPORT lldb::offset_t
  DumpDataExtractor(const DataExtractor &DE, Stream *s, lldb::offset_t offset,
                    lldb::Format item_format, size_t item_byte_size,
                    size_t item_count, size_t num_per_line, uint64_t base_addr,
@@ -33,14 +33,14 @@ index 6a47cf37eac6..d0ce26b03d00 100644
  
  /// Add a summary that is implemented by a C++ callback.
 -void AddCXXSummary(TypeCategoryImpl::SharedPointer category_sp,
-+void LLDB_PRIVATE_EXPORT AddCXXSummary(TypeCategoryImpl::SharedPointer category_sp,
++LLDB_PRIVATE_EXPORT void AddCXXSummary(TypeCategoryImpl::SharedPointer category_sp,
                     CXXFunctionSummaryFormat::Callback funct,
                     const char *description, llvm::StringRef type_name,
                     TypeSummaryImpl::Flags flags, bool regex = false);
  
  /// Add a synthetic that is implemented by a C++ callback.
 -void AddCXXSynthetic(TypeCategoryImpl::SharedPointer category_sp,
-+void LLDB_PRIVATE_EXPORT AddCXXSynthetic(TypeCategoryImpl::SharedPointer category_sp,
++LLDB_PRIVATE_EXPORT void AddCXXSynthetic(TypeCategoryImpl::SharedPointer category_sp,
                       CXXSyntheticChildren::CreateFrontEndCallback generator,
                       const char *description, llvm::StringRef type_name,
                       ScriptedSyntheticChildren::Flags flags,
@@ -49,7 +49,7 @@ index 6a47cf37eac6..d0ce26b03d00 100644
                 ScriptedSyntheticChildren::Flags flags, bool regex = false);
  
 -std::optional<size_t> ExtractIndexFromString(const char *item_name);
-+std::optional<size_t> LLDB_PRIVATE_EXPORT ExtractIndexFromString(const char *item_name);
++LLDB_PRIVATE_EXPORT std::optional<size_t> ExtractIndexFromString(const char *item_name);
  
  /// Prints the summary for the pointer value of a C++
  /// std::unique_ptr/std::shared_ptr/std::weak_ptr.
@@ -136,7 +136,7 @@ index 1bfefec9638a..587284161bd1 100644
  
  /// Stream the string value \a str to the stream \a s
 -Stream &operator<<(Stream &s, ConstString str);
-+Stream & LLDB_PRIVATE_EXPORT operator<<(Stream &s, ConstString str);
++LLDB_PRIVATE_EXPORT Stream &operator<<(Stream &s, ConstString str);
  
  } // namespace lldb_private
  
@@ -158,7 +158,7 @@ diff --git a/lldb/include/lldb/Utility/FileSpec.h b/lldb/include/lldb/Utility/Fi
 index c5e5151590f0..833e8f7b283f 100644
 --- a/lldb/include/lldb/Utility/FileSpec.h
 +++ b/lldb/include/lldb/Utility/FileSpec.h
-@@ -53,7 +53,7 @@ namespace lldb_private {
+@@ -53,6 +53,6 @@ namespace lldb_private {
  /// are already split up, it makes it easy for us to compare only the
  /// basenames of a lot of file specifications without having to split up the
  /// file path each time to get to the basename.
@@ -166,7 +166,6 @@ index c5e5151590f0..833e8f7b283f 100644
 +class __attribute__((visibility("default"))) FileSpec {
  public:
    using Style = llvm::sys::path::Style;
-
 diff --git a/lldb/include/lldb/Utility/LLDBAssert.h b/lldb/include/lldb/Utility/LLDBAssert.h
 index e76dac46b94f..c7bec7ce023a 100644
 --- a/lldb/include/lldb/Utility/LLDBAssert.h
@@ -226,11 +225,19 @@ diff --git a/lldb/include/lldb/lldb-forward.h b/lldb/include/lldb/lldb-forward.h
 index 67888f7d32ed..01ca34ebfcc5 100644
 --- a/lldb/include/lldb/lldb-forward.h
 +++ b/lldb/include/lldb/lldb-forward.h
-@@ -14,6 +14,107 @@
+@@ -14,6 +14,115 @@
  // lldb forward declarations
  namespace lldb_private {
  
++#if defined(_WIN32)
++#if defined(LLDB_PRIVATE_IN_LIBLLDB)
++#define LLDB_PRIVATE_EXPORT __declspec(dllexport)
++#else
++#define LLDB_PRIVATE_EXPORT __declspec(dllimport)
++#endif
++#else
 +#define LLDB_PRIVATE_EXPORT __attribute__((visibility("default")))
++#endif
 +
 +class LLDB_PRIVATE_EXPORT Address;
 +class LLDB_PRIVATE_EXPORT AddressRange;
@@ -344,8 +351,8 @@ index 9736b80ac375..48d680c3a527 100644
  
 -bool operator==(const DWARFBaseDIE &lhs, const DWARFBaseDIE &rhs);
 -bool operator!=(const DWARFBaseDIE &lhs, const DWARFBaseDIE &rhs);
-+bool LLDB_PRIVATE_EXPORT operator==(const DWARFBaseDIE &lhs, const DWARFBaseDIE &rhs);
-+bool LLDB_PRIVATE_EXPORT operator!=(const DWARFBaseDIE &lhs, const DWARFBaseDIE &rhs);
++LLDB_PRIVATE_EXPORT bool operator==(const DWARFBaseDIE &lhs, const DWARFBaseDIE &rhs);
++LLDB_PRIVATE_EXPORT bool operator!=(const DWARFBaseDIE &lhs, const DWARFBaseDIE &rhs);
  } // namespace dwarf
  } // namespace lldb_private::plugin
  
@@ -365,7 +372,7 @@ index 6e33371c3485..29219d35c5d8 100644
  namespace dwarf {
  
 -llvm::StringRef DW_TAG_value_to_name(dw_tag_t tag);
-+llvm::StringRef LLDB_PRIVATE_EXPORT DW_TAG_value_to_name(dw_tag_t tag);
++LLDB_PRIVATE_EXPORT llvm::StringRef DW_TAG_value_to_name(dw_tag_t tag);
  
  } // namespace dwarf
  } // namespace lldb_private::plugin

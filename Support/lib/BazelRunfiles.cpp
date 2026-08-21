@@ -42,12 +42,21 @@ struct RunfileMapping {
   llvm::StringLiteral libName; // Shared library name (without lib prefix/ext).
   bool searchExecroot = false; // If true, also resolvable from the execroot,
                                // which is how a build action sees its inputs.
+  bool isExecutable = false;   // If true, add the host executable extension.
 };
 
-#ifdef __APPLE__
+#ifdef _WIN32
+static constexpr llvm::StringLiteral kSharedLibPrefix = "";
+static constexpr llvm::StringLiteral kSharedLibExt = ".dll";
+static constexpr llvm::StringLiteral kExecutableExt = ".exe";
+#elif defined(__APPLE__)
+static constexpr llvm::StringLiteral kSharedLibPrefix = "lib";
 static constexpr llvm::StringLiteral kSharedLibExt = ".dylib";
+static constexpr llvm::StringLiteral kExecutableExt = "";
 #else
+static constexpr llvm::StringLiteral kSharedLibPrefix = "lib";
 static constexpr llvm::StringLiteral kSharedLibExt = ".so";
+static constexpr llvm::StringLiteral kExecutableExt = "";
 #endif
 
 // NVIDIA ships libnvptxcompiler as a static archive only, so libNVPTX.so is
@@ -60,14 +69,18 @@ static constexpr llvm::StringLiteral kNVPTXWorkspace = "nvptxcompiler_x86_64";
 
 static constexpr RunfileMapping kRunfileMappings[] = {
     {"crash_reporting.handler_path", "crashpad", "modular-crashpad-handler",
-     false, ""},
-    {"mojo-max.driver_path", "", "KGEN/tools/mojo/mojo", false, ""},
-    {"mojo-max.lld_path", "llvm-project", "lld/lld", false, ""},
-    {"mojo-max.lldb_path", "llvm-project", "lldb/lldb", false, ""},
+     false, "", false, true},
+    {"mojo-max.driver_path", "", "KGEN/tools/mojo/mojo", false, "", false,
+     true},
+    {"mojo-max.lld_path", "llvm-project", "lld/lld", false, "", false,
+     true},
+    {"mojo-max.lldb_path", "llvm-project", "lldb/lldb", false, "", false,
+     true},
     {"mojo-max.lsp_server_path", "",
-     "KGEN/tools/mojo-lsp-server/mojo-lsp-server", false, ""},
+     "KGEN/tools/mojo-lsp-server/mojo-lsp-server", false, "", false, true},
     {"mojo-max.repl_entry_point", "",
-     "KGEN/tools/mojo-repl-entry-point/mojo-repl-entry-point", false, ""},
+     "KGEN/tools/mojo-repl-entry-point/mojo-repl-entry-point", false, "",
+     false, true},
 
     // Shared libraries
     {"mojo-max.mgprt_path", "", "GraphCompiler", true, "MGPRT"},
@@ -123,9 +136,12 @@ static std::string buildRunfilePath(const RunfileMapping &mapping) {
   result += mapping.path.str();
 
   if (mapping.isSharedLibrary) {
-    result += "/lib";
+    result += "/";
+    result += kSharedLibPrefix.str();
     result += mapping.libName.str();
     result += kSharedLibExt.str();
+  } else if (mapping.isExecutable) {
+    result += kExecutableExt.str();
   }
 
   return result;

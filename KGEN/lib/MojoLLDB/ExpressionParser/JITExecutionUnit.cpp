@@ -246,6 +246,22 @@ public:
                                unsigned sectionID, StringRef sectionName,
                                bool isReadOnly) override;
 
+  /// COFF's ADDR32NB relocations are image-relative, so Windows requires the
+  /// code, read-only data, and writable data allocations to come from one
+  /// ordered reservation.  This proxy must forward the reservation calls to
+  /// the SectionMemoryManager that performs the actual allocations.
+  bool needsToReserveAllocationSpace() override {
+    return defaultMM->needsToReserveAllocationSpace();
+  }
+
+  void reserveAllocationSpace(uintptr_t codeSize, llvm::Align codeAlign,
+                              uintptr_t roDataSize, llvm::Align roDataAlign,
+                              uintptr_t rwDataSize,
+                              llvm::Align rwDataAlign) override {
+    defaultMM->reserveAllocationSpace(codeSize, codeAlign, roDataSize,
+                                      roDataAlign, rwDataSize, rwDataAlign);
+  }
+
   /// Called when object loading is complete and section page permissions
   /// can be applied. Currently unimplemented for LLDB.
   bool finalizeMemory(std::string *errMsg) override { return false; }
@@ -280,7 +296,15 @@ private:
 };
 
 JITExecutionUnit::MemoryManager::MemoryManager(JITExecutionUnit &parent)
-    : defaultMM(new llvm::SectionMemoryManager()), parent(parent) {}
+    : defaultMM(new llvm::SectionMemoryManager(
+          /*MM=*/nullptr,
+#ifdef _WIN32
+          /*ReserveAlloc=*/true
+#else
+          /*ReserveAlloc=*/false
+#endif
+          )),
+      parent(parent) {}
 
 JITExecutionUnit::MemoryManager::~MemoryManager() = default;
 
@@ -357,6 +381,17 @@ uint64_t JITExecutionUnit::MemoryManager::getSymbolAddressAndPresence(
   ConstString nameCS(namePtr);
 
   lldb::addr_t ret = parent.findSymbol(nameCS, missingWeak);
+#ifdef _WIN32
+  // oldnames.lib supplies these aliases to the AOT linker, but it cannot help
+  // MCJIT's live symbol lookup.  The Universal CRT exports `_dup`, `_write`,
+  // `_fdopen`, etc.; retry a POSIX spelling with the MSVC prefix just as the
+  // normal Windows ExecutionEngine symbol generator does.
+  if (ret == LLDB_INVALID_ADDRESS && namePtr[0] != '_') {
+    std::string msvcName = "_" + std::string(namePtr);
+    missingWeak = false;
+    ret = parent.findSymbol(ConstString(msvcName), missingWeak);
+  }
+#endif
   if (ret == LLDB_INVALID_ADDRESS) {
     LLDB_LOGF(log,
               "JITExecutionUnit::getSymbolAddress(Name=\"%s\") = <not found>",
@@ -731,6 +766,55 @@ bool JITExecutionUnit::commitOneAllocation(lldb::ProcessSP &process,
 
 bool JITExecutionUnit::commitAllocations(lldb::ProcessSP &process) {
   lldb_private::Status err;
+
+#ifdef _WIN32
+  // RuntimeDyld reapplies COFF relocations after mapSectionAddress() below.
+  // IMAGE_REL_AMD64_ADDR32NB is relative to the lowest mapped section, so
+  // allocating each target section independently can put a later section at a
+  // lower address and make the relocation impossible to represent.  Preserve
+  // the ordered host layout by copying all loadable sections into one target
+  // allocation with the same relative offsets.
+  // ProcessAllSections is enabled below, so RuntimeDyld includes even debug
+  // sections when it computes the COFF image base.  Map every allocated
+  // section into the same remote image; leaving debug sections at host
+  // addresses would mix two address spaces in that calculation.
+  auto isLoadable = [](lldb::SectionType) { return true; };
+
+  uintptr_t hostBase = std::numeric_limits<uintptr_t>::max();
+  uintptr_t hostEnd = 0;
+  uint8_t groupAlignment = 1;
+  for (const AllocationRecord &record : impl->records) {
+    if (!isLoadable(record.sectType) || !record.size)
+      continue;
+    hostBase = std::min(hostBase, record.hostAddress);
+    hostEnd = std::max(hostEnd, record.hostAddress + record.size);
+    groupAlignment = std::max<uint8_t>(
+        groupAlignment, static_cast<uint8_t>(std::min(record.alignment, 128u)));
+  }
+
+  if (hostBase == std::numeric_limits<uintptr_t>::max())
+    return true;
+
+  llvm::Expected<lldb::addr_t> processBaseOr = Malloc(
+      hostEnd - hostBase, groupAlignment,
+      lldb::ePermissionsReadable | lldb::ePermissionsWritable |
+          lldb::ePermissionsExecutable,
+      eAllocationPolicyProcessOnly, /*zero_memory=*/false,
+      /*used_policy=*/nullptr);
+  if (llvm::Error allocationError = processBaseOr.takeError()) {
+    err = Status::FromErrorString("Failed to allocate ordered COFF JIT image");
+    return false;
+  }
+
+  const lldb::addr_t processBase = processBaseOr.get();
+  for (AllocationRecord &record : impl->records) {
+    if (isLoadable(record.sectType) && record.size)
+      record.processAddress =
+          processBase + static_cast<lldb::addr_t>(record.hostAddress - hostBase);
+  }
+  return true;
+#endif
+
   if (llvm::all_of(impl->records, [&](auto &record) {
         return commitOneAllocation(process, err, record);
       }))
@@ -750,6 +834,13 @@ void JITExecutionUnit::reportAllocations(llvm::ExecutionEngine &engine) {
   impl->reportedAllocations = true;
 
   for (AllocationRecord &record : impl->records) {
+#ifdef _WIN32
+    if (std::getenv("MOJO_REPL_DEBUG_LAYOUT"))
+      llvm::errs() << "REPL section " << record.name << " host="
+                   << record.hostAddress << " process="
+                   << record.processAddress << " size=" << record.size
+                   << " id=" << record.sectionId << "\n";
+#endif
     if (record.processAddress == LLDB_INVALID_ADDRESS ||
         record.sectionId == eSectionIDInvalid)
       continue;

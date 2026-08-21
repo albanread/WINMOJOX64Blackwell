@@ -92,12 +92,15 @@ SmallVector<std::string> MojoConfig::getPluginPaths() {
 #ifdef _WIN32
 #define EXT ".dll"
 #define LIB_PREFIX ""
+#define EXE_EXT ".exe"
 #elif defined(__APPLE__)
 #define EXT ".dylib"
 #define LIB_PREFIX "lib"
+#define EXE_EXT ""
 #else
 #define EXT ".so"
 #define LIB_PREFIX "lib"
+#define EXE_EXT ""
 #endif
 
 StringRef MojoConfig::getLLDBPluginPath() {
@@ -106,7 +109,8 @@ StringRef MojoConfig::getLLDBPluginPath() {
 }
 
 StringRef MojoConfig::getLLDBPath() {
-  return getPath(STRINGIFY_MOJO_CONFIG(".lldb_path"), "bin/mojo-lldb");
+  return getPath(STRINGIFY_MOJO_CONFIG(".lldb_path"),
+                 "bin/mojo-lldb" EXE_EXT);
 }
 
 //===----------------------------------------------------------------------===//
@@ -134,7 +138,7 @@ StringRef MojoConfig::getMGPRTPath() {
 //===----------------------------------------------------------------------===//
 
 StringRef MojoConfig::getDriverPath() {
-  return getPath(STRINGIFY_MOJO_CONFIG(".driver_path"), "bin/mojo");
+  return getPath(STRINGIFY_MOJO_CONFIG(".driver_path"), "bin/mojo" EXE_EXT);
 }
 
 StringRef MojoConfig::getJupyterPath() {
@@ -144,16 +148,17 @@ StringRef MojoConfig::getJupyterPath() {
 
 StringRef MojoConfig::getLSPServerPath() {
   return getPath(STRINGIFY_MOJO_CONFIG(".lsp_server_path"),
-                 "bin/mojo-lsp-server");
+                 "bin/mojo-lsp-server" EXE_EXT);
 }
 
 StringRef MojoConfig::getMBlackPath() {
-  return getPath(STRINGIFY_MOJO_CONFIG(".mblack_path"), "bin/mblack");
+  return getPath(STRINGIFY_MOJO_CONFIG(".mblack_path"),
+                 "bin/mblack" EXE_EXT);
 }
 
 StringRef MojoConfig::getREPLEntryPoint() {
   return getPath(STRINGIFY_MOJO_CONFIG(".repl_entry_point"),
-                 "lib/mojo-repl-entry-point");
+                 "lib/mojo-repl-entry-point" EXE_EXT);
 }
 
 StringRef MojoConfig::getLinkerDriver() {
@@ -161,7 +166,7 @@ StringRef MojoConfig::getLinkerDriver() {
 }
 
 StringRef MojoConfig::getLLDPath() {
-  return getPath(STRINGIFY_MOJO_CONFIG(".lld_path"), "bin/lld");
+  return getPath(STRINGIFY_MOJO_CONFIG(".lld_path"), "bin/lld" EXE_EXT);
 }
 
 void MojoConfig::setLLDPathOverride(StringRef path) {

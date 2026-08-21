@@ -11,6 +11,15 @@ LLVM_SHA = "7636ff70c60a2933a91362932127478b7b24a610ef1f01afa58fc2a4ecb125ed"
 
 PATCHES = [
     "//bazel/public-patches:llvm-lldb-exports.patch",
+    # LLDB remaps MCJIT sections from host to debuggee addresses and asks
+    # RuntimeDyld to relocate them again.  Do not reuse the first pass's COFF
+    # image base for the remapped image.
+    "//bazel/public-patches:llvm-rtdyld-coff-recompute-image-base.patch",
+    "//bazel/public-patches:llvm-rtdyld-coff-relocation-diagnostic.patch",
+    # On Windows the lldb driver stages its liblldb dependency beside itself.
+    # Keep the real DLL in a private output directory so that staged copy does
+    # not conflict with the link action that creates the DLL.
+    "//bazel/public-patches:llvm-lldb-windows-dll-output.patch",
     # https://github.com/llvm/llvm-project/pull/153352
     # https://linear.app/modularml/issue/MOCO-2322/llvm-upstream-change-conflicting-with-internal-code-that-addresses
     "//bazel/public-patches:llvm-machinefunction-sti-ref-to-ptr.patch",

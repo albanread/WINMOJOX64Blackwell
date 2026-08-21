@@ -788,7 +788,6 @@ cc_library(
         "snapshot/minidump/process_snapshot_minidump.cc",
         "snapshot/minidump/system_snapshot_minidump.cc",
         "snapshot/minidump/thread_snapshot_minidump.cc",
-        "snapshot/posix/timezone.cc",
         "snapshot/sanitized/memory_snapshot_sanitized.cc",
         "snapshot/sanitized/module_snapshot_sanitized.cc",
         "snapshot/sanitized/process_snapshot_sanitized.cc",
@@ -798,6 +797,7 @@ cc_library(
         "snapshot/x86/cpuid_reader.cc",
     ] + select({
         "@platforms//os:linux": [
+            "snapshot/posix/timezone.cc",
             "snapshot/crashpad_types/crashpad_info_reader.cc",
             "snapshot/elf/elf_dynamic_array_reader.cc",
             "snapshot/elf/elf_image_reader.cc",
@@ -813,6 +813,7 @@ cc_library(
             "snapshot/linux/thread_snapshot_linux.cc",
         ],
         "@platforms//os:macos": [
+            "snapshot/posix/timezone.cc",
             "snapshot/mac/cpu_context_mac.cc",
             "snapshot/mac/exception_snapshot_mac.cc",
             "snapshot/mac/mach_o_image_annotations_reader.cc",
@@ -827,12 +828,32 @@ cc_library(
             "snapshot/mac/system_snapshot_mac.cc",
             "snapshot/mac/thread_snapshot_mac.cc",
         ],
+        "@platforms//os:windows": [
+            "snapshot/crashpad_types/crashpad_info_reader.cc",
+            "snapshot/win/capture_memory_delegate_win.cc",
+            "snapshot/win/cpu_context_win.cc",
+            "snapshot/win/exception_snapshot_win.cc",
+            "snapshot/win/memory_map_region_snapshot_win.cc",
+            "snapshot/win/module_snapshot_win.cc",
+            "snapshot/win/pe_image_annotations_reader.cc",
+            "snapshot/win/pe_image_reader.cc",
+            "snapshot/win/pe_image_resource_reader.cc",
+            "snapshot/win/process_reader_win.cc",
+            "snapshot/win/process_snapshot_win.cc",
+            "snapshot/win/process_subrange_reader.cc",
+            "snapshot/win/system_snapshot_win.cc",
+            "snapshot/win/thread_snapshot_win.cc",
+        ],
     }),
     hdrs = glob(["snapshot/**/*.h"]),
     copts = [
         "-std=c++17",
         "-Wno-suggest-override",
     ],
+    linkopts = select({
+        "@platforms//os:windows": ["-lpowrprof"],
+        "//conditions:default": [],
+    }),
     textual_hdrs = glob(["snapshot/mac/process_types/*.proctype"]),
     deps = [
         ":client",
@@ -886,6 +907,10 @@ cc_binary(
             "handler/mac/exception_handler_server.h",
             "handler/mac/file_limit_annotation.cc",
             "handler/mac/file_limit_annotation.h",
+        ],
+        "@platforms//os:windows": [
+            "handler/win/crash_report_exception_handler.cc",
+            "handler/win/crash_report_exception_handler.h",
         ],
     }),
     copts = [

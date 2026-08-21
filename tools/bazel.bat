@@ -95,6 +95,31 @@ REM overridden by them.
   echo # --host_features as well: every failing link was a [for tool] target,
   echo # and --features applies only to the target configuration.
   echo build --host_features=-runtime_library_search_directories
+  echo # The LLVM overlay enables Unix libedit/curses globally. Their headers and
+  echo # libraries are not part of the Windows toolchain, and LLDB has a native
+  echo # console fallback when both optional interfaces are disabled.
+  echo build --@llvm-project//lldb:enable_libedit=false
+  echo build --@llvm-project//lldb:enable_curses=false
+  echo # LLDB's public API sources define the exported API. LLDB's source files
+  echo # also export only the private classes selected by LLDB_PRIVATE_EXPORT for
+  echo # the separately loaded MojoLLDB plugin.
+  echo build --per_file_copt=external/.*/lldb/source/API/.*@-DLLDB_IN_LIBLLDB
+  echo build --host_per_file_copt=external/.*/lldb/source/API/.*@-DLLDB_IN_LIBLLDB
+  echo # Clang is statically linked here. Scope the annotation switch to Clang
+  echo # itself and the Mojo LLDB consumer so unrelated KGEN objects keep their
+  echo # existing cache keys.
+  echo build --per_file_copt=external/.*/clang/.*@-DCLANG_BUILD_STATIC
+  echo build --host_per_file_copt=external/.*/clang/.*@-DCLANG_BUILD_STATIC
+  echo build --per_file_copt=external/.*/lldb/source/.*@-DCLANG_BUILD_STATIC
+  echo build --host_per_file_copt=external/.*/lldb/source/.*@-DCLANG_BUILD_STATIC
+  echo build --per_file_copt=external/.*/lldb/source/.*@-DLLDB_PRIVATE_IN_LIBLLDB
+  echo build --host_per_file_copt=external/.*/lldb/source/.*@-DLLDB_PRIVATE_IN_LIBLLDB
+  echo build --per_file_copt=external/.*/lldb/source/.*@-Xclang,-fno-dllexport-inlines
+  echo build --host_per_file_copt=external/.*/lldb/source/.*@-Xclang,-fno-dllexport-inlines
+  echo build --per_file_copt=KGEN/lib/MojoLLDB/.*@-DCLANG_BUILD_STATIC
+  echo build --host_per_file_copt=KGEN/lib/MojoLLDB/.*@-DCLANG_BUILD_STATIC
+  echo build --per_file_copt=KGEN/lib/MojoLLDB/.*@-Xclang,-fno-dllexport-inlines
+  echo build --host_per_file_copt=KGEN/lib/MojoLLDB/.*@-Xclang,-fno-dllexport-inlines
   echo import %%workspace%%/build/local-resources.bazelrc
 )
 
