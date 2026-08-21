@@ -1,0 +1,30 @@
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("//bazel:api.bzl", "modular_cc_library")
+
+package(default_visibility = ["//visibility:public"])
+
+# MAX's AsyncRT device ABI implemented against the NVIDIA CUDA driver API.
+# nvcuda.dll is loaded dynamically, so the compiler/runtime build has no CUDA
+# toolkit dependency; PTX is JIT-compiled by the installed Windows driver.
+modular_cc_library(
+    name = "nvptxrt",
+    srcs = ["nvptxrt.cpp"],
+    target_compatible_with = [
+        "@mojo_gpu_toolchains//:nvidia_gpu",
+        "@platforms//cpu:x86_64",
+        "@platforms//os:windows",
+    ],
+)
+
+# Shared form for `mojo run` and other JIT clients that load AsyncRT providers
+# through MODULAR_MOJO_MAX_SHARED_LIBS.
+cc_binary(
+    name = "nvptxrt.dll",
+    srcs = ["nvptxrt.cpp"],
+    linkshared = True,
+    target_compatible_with = [
+        "@mojo_gpu_toolchains//:nvidia_gpu",
+        "@platforms//cpu:x86_64",
+        "@platforms//os:windows",
+    ],
+)

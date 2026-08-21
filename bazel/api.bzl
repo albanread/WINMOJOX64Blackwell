@@ -120,17 +120,18 @@ def _process_mojo_deps(deps):
     new_deps = []
     imports_max = False
     needs_compiler_rt = False
+    needs_device_runtime = False
     for dep in deps:
         if dep in INTERNAL_PACKAGES:
             new_deps.append("@modular_wheel//:" + dep.split("/")[-1])
             imports_max = True
         elif dep == "//MLRT:Driver/DeviceContext":
             # Upstream remaps this to Modular's prebuilt wheel, which does not
-            # exist for Windows ARM64 and which this fork's licensing bright
-            # line forbids introducing regardless. The accelerator half of the
-            # device ABI comes from DragonMax's runtime instead -- the same
-            # AsyncRT_* C symbols, from source (docs/SNAPDRAGON-GPU.md, D2).
-            new_deps.append("//dragon/runtime:dragonrt")
+            # exist for native Windows and which this fork's licensing bright
+            # line forbids introducing regardless. Select an independent
+            # source-built implementation of the same AsyncRT_* ABI for each
+            # Windows accelerator family.
+            needs_device_runtime = True
         elif dep == "//KGEN:CompilerRT":
             needs_compiler_rt = True
         else:
@@ -143,6 +144,12 @@ def _process_mojo_deps(deps):
         new_deps += select({
             "//:use_prebuilt_mojo_toolchain_disabled": ["//KGEN:CompilerRT"],
             "//conditions:default": ["@modular_wheel//:CompilerRT_lib"],
+        })
+
+    if needs_device_runtime:
+        new_deps += select({
+            "@mojo_gpu_toolchains//:nvidia_gpu": ["//nvptx/runtime:nvptxrt"],
+            "//conditions:default": ["//dragon/runtime:dragonrt"],
         })
 
     return new_deps

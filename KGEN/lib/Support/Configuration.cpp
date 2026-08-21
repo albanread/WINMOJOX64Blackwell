@@ -89,15 +89,20 @@ SmallVector<std::string> MojoConfig::getPluginPaths() {
 // LLDB Configurations
 //===----------------------------------------------------------------------===//
 
-#ifdef __APPLE__
+#ifdef _WIN32
+#define EXT ".dll"
+#define LIB_PREFIX ""
+#elif defined(__APPLE__)
 #define EXT ".dylib"
+#define LIB_PREFIX "lib"
 #else
 #define EXT ".so"
+#define LIB_PREFIX "lib"
 #endif
 
 StringRef MojoConfig::getLLDBPluginPath() {
   return getPath(STRINGIFY_MOJO_CONFIG(".lldb_plugin_path"),
-                 "lib/libMojoLLDB" EXT);
+                 "lib/" LIB_PREFIX "MojoLLDB" EXT);
 }
 
 StringRef MojoConfig::getLLDBPath() {
@@ -110,7 +115,7 @@ StringRef MojoConfig::getLLDBPath() {
 
 StringRef MojoConfig::getCompilerRTPath() {
   return getPath(STRINGIFY_MOJO_CONFIG(".compilerrt_path"),
-                 "lib/libKGENCompilerRTShared" EXT);
+                 "lib/" LIB_PREFIX "KGENCompilerRTShared" EXT);
 }
 
 StringRef MojoConfig::getWinKBPath() {
@@ -120,7 +125,8 @@ StringRef MojoConfig::getWinKBPath() {
 }
 
 StringRef MojoConfig::getMGPRTPath() {
-  return getPath(STRINGIFY_MOJO_CONFIG(".mgprt_path"), "lib/libMGPRT" EXT);
+  return getPath(STRINGIFY_MOJO_CONFIG(".mgprt_path"),
+                 "lib/" LIB_PREFIX "MGPRT" EXT);
 }
 
 //===----------------------------------------------------------------------===//
@@ -133,7 +139,7 @@ StringRef MojoConfig::getDriverPath() {
 
 StringRef MojoConfig::getJupyterPath() {
   return getPath(STRINGIFY_MOJO_CONFIG(".jupyter_path"),
-                 "lib/libMojoJupyter" EXT);
+                 "lib/" LIB_PREFIX "MojoJupyter" EXT);
 }
 
 StringRef MojoConfig::getLSPServerPath() {

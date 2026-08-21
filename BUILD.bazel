@@ -60,6 +60,22 @@ alias(
     tags = [ALLOW_UNUSED_TAG],
 )
 
+# rules_mojo currently probes GPUs only on Linux and macOS, so its generated
+# @mojo_host_platform has no accelerator constraints on Windows.  Keep a
+# source-controlled platform for this port's native x86-64 Blackwell target;
+# it selects both the NVPTX compiler toolchain and the Windows CUDA runtime.
+platform(
+    name = "windows_x86_64_nvidia_blackwell",
+    constraint_values = [
+        "@mojo_gpu_toolchains//:has_gpu",
+        "@mojo_gpu_toolchains//:nvidia_gpu",
+        "@mojo_gpu_toolchains//:rtxpro2000blackwell_gpu",
+        "@platforms//cpu:x86_64",
+        "@platforms//os:windows",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 [
     alias(
         name = "{}_gpu".format(gpu),
