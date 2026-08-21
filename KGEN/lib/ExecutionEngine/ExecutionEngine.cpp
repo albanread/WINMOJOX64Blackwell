@@ -220,14 +220,15 @@ ExecutionEngine::create(ExecutionEngineOptions options,
   std::unique_ptr<llvm::orc::ExecutorProcessControl> epc =
       std::move(options.epc);
 
-  // JITLink has no COFF/AArch64 backend, so ObjectLinkingLayer rejects every
-  // object on Windows ARM64 with "Unsupported target machine architecture in
-  // COFF object : ARM64" -- after codegen has already produced a perfectly
-  // good object. RuntimeDyld has shipped RuntimeDyldCOFFAArch64 since 2019,
-  // so on that one configuration the JIT runs on the older linking layer
-  // instead. Everything above the layer (generators, StaticArchiveLayer,
-  // materialization) is written against ObjectLayer and does not care.
-  bool useRuntimeDyld = tt.isOSBinFormatCOFF() && tt.isAArch64();
+  // Use RuntimeDyld for Windows COFF objects. JITLink has no AArch64 COFF
+  // backend, and its x86-64 backend lowers .pdata ADDR32NB relocations against
+  // an unrelated process image base. Since JIT allocations commonly live
+  // above 4 GiB, that produces an out-of-range Pointer32 fixup for ordinary
+  // exception metadata. RuntimeDyld supports both COFF architectures and
+  // handles their image-relative unwind relocations. Everything above the
+  // layer (generators, StaticArchiveLayer, materialization) is written against
+  // ObjectLayer and does not care which implementation is used.
+  bool useRuntimeDyld = tt.isOSBinFormatCOFF();
 
   if (!epc) {
     auto pageSize = toModularErrorOr(llvm::sys::Process::getPageSize());
