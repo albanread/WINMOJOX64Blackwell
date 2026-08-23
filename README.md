@@ -15,7 +15,42 @@ It does not use WSL and it does not require the CUDA SDK, `nvcc`, `ptxas`,
 > [!IMPORTANT]
 > This is an experimental, unsupported fork. It is not a Modular product and
 > is not affiliated with or supported by Modular or NVIDIA. Report problems
-> with this port here, not to either vendor.
+> with this port here, not to either vendor. It does not accept contributions
+> and it is not finished — see
+> [An experiment, not a product](#an-experiment-not-a-product).
+
+## An experiment, not a product
+
+This repository is an experiment. It exists to find out how much of Mojo and
+its GPU runtime can be made to work on one Windows x64 machine with a Blackwell
+card, and to record what was actually measured. That is its whole scope.
+
+Stated plainly, so that nothing here is taken for more than it is:
+
+- **It does not accept contributions.** There is no contributor guide, no CLA,
+  no code of conduct and no review process. Pull requests will not be reviewed.
+  The upstream contribution documents that came with the fork have been deleted
+  rather than left in place to imply otherwise. A change that Mojo or MAX
+  itself should have belongs upstream at
+  [modular/modular](https://github.com/modular/modular), not here.
+- **It does not claim to be complete.** No systematic MAX kernel census has
+  been run on SM120a. Tensor-core, attention, reduction and communication paths
+  are unvalidated on consumer Blackwell. Mixed CPU/GPU AsyncRT dispatch is a
+  known unresolved gap. The release defaults to a single architecture target.
+  [Known limitations and next work](#known-limitations-and-next-work) is the
+  honest list, and it is longer than the achievements list.
+- **It does not claim to be correct beyond what was measured.** Everything in
+  [Test progress](#test-progress) was run on one reference machine, by one
+  person, and is reported as observed. Passing focused tests is not the same as
+  broad correctness, and nothing here should be read as coverage of hardware or
+  code paths that were never exercised.
+- **It is not supported and will not be.** No warranty, no roadmap, no release
+  commitment, no obligation to keep working against future drivers, Windows
+  builds, or upstream Mojo.
+
+Reading it, building it, or taking ideas from it is what the licences permit
+and you are welcome to all three. Just don't mistake it for a product, a
+distribution, or a community.
 
 ## Current target
 

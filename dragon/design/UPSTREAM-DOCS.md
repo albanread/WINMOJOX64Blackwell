@@ -55,13 +55,13 @@ rather than replacing it.
 | Doc | When | Why |
 |---|---|---|
 | `max/docs/design-docs/elementwise-ops.md` | first kernel | simplest kernel abstraction; the natural bring-up target |
-| `max/kernels/CLAUDE.md`, `CONTRIBUTING.md` | first kernel | authoring conventions to match |
+| `max/kernels/CLAUDE.md` | first kernel | authoring conventions to match |
 | `max/docs/design-docs/matmul-to-flash-attention.md` | D2 baseline | how their matmul reaches attention |
 | `max/docs/kernel-benchmarking.md`, `kernel-profiling.md` | D2 | their harness; reuse rather than invent |
 | `KGEN/docs/DesignOverview.md` (68 KB), `MojoCompilerWalkthrough.md` (68 KB) | codegen work | KGEN is open, so these are actionable, not background |
 | `KGEN/docs/manual/PassesAndIR.md` | codegen work | pass pipeline |
 | `mojo/stdlib/docs/internal/pop_dialect.md` (242 lines) | codegen work | the POP dialect |
-| `max/docs/contributing-models.md` | GOAL gate | how a model gets into MAX |
+| [`max/docs/contributing-models.md`][contrib-models] (upstream only) | GOAL gate | how a model gets into MAX |
 | `max/docs/why-bazel.md` | build friction | their rationale; relevant to WINMOJO's stated de-Bazel ambition |
 
 ## Tier 3 — vendor-specific, useful only as method
@@ -89,3 +89,5 @@ The ABI is nonetheless **fully enumerable**, because
 `max/mojo/max/gpu/host/device_context.mojo` declares every symbol it calls
 across ~7,000 lines. Extracting that into a real interface specification is
 work DragonMax has to do itself, and it is the first hard task in the plan.
+
+[contrib-models]: https://github.com/modular/modular/blob/main/max/docs/contributing-models.md
