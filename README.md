@@ -1,23 +1,78 @@
 # WINMOJO x64 — Mojo 1.1 on Windows and NVIDIA Blackwell
 
-This repository is an unofficial native Windows x64 port of the open-source
-Mojo compiler, standard library, MAX Mojo packages, and GPU runtime. Its current
-target is an Intel Windows 11 PC with an NVIDIA Blackwell GPU.
+**A personal-computer port of Mojo: the compiler and standard library, built to
+run natively on hardware we own, using the operating-system features and the
+specific accelerators that machine actually has.**
 
-The current repository is
-[albanread/WINMOJOX64Blackwell](https://github.com/albanread/WINMOJOX64Blackwell).
+Mojo's premise is that one source file should specialise to whatever silicon
+you point it at. These repositories take that premise literally and aim it at
+ordinary personal computers — not a server, not a cloud instance, not a Linux
+VM standing in for the real thing, but the machine on the desk. Each port
+targets one host, one CPU, and one accelerator, and each is described the same
+way: what runs, what does not, and what has merely been built rather than
+tested.
+
+## Acknowledgements
+
+Mojo is a serious piece of language engineering, and Modular open-sourced the
+compiler and the standard library under Apache 2.0 with LLVM exceptions — a
+patent grant, no field-of-use restriction, and no hardware limits on the
+source. That decision is what makes work like this both legal and possible:
+you can take the source, aim it at hardware its authors never targeted, and
+find out what happens. Not much of the industry gives you that.
+
+It is worth being precise about how much it bought. These ports are not
+rewrites; they are hooks into extension points that were deliberately left
+public — target registries, the elaborator, the device ABI. Against a closed
+compiler most of this would not have been a long job, it would have been an
+impossible one.
+
+Thanks to Chris Lattner and the team at Modular who designed and built Mojo,
+and to everyone who has contributed to the compiler and the standard library
+since. All original design credit is theirs. The mistakes in these ports are
+ours.
+
+Upstream is [modular/modular](https://github.com/modular/modular). If you want
+supported Mojo, use [the real thing](https://mojolang.org) on a platform
+Modular ships for.
+
+## What this is
+
+**An unofficial, unsupported fork of
+[modular/modular](https://github.com/modular/modular) that ports the Mojo
+compiler, standard library, MAX Mojo packages and GPU runtime to native
+Windows x64, targeting an NVIDIA Blackwell GPU.**
 
 It builds a native `mojo.exe`, supports both `mojo build` and `mojo run`, and
 executes ordinary Mojo GPU kernels through PTX on the installed NVIDIA driver.
-It does not use WSL and it does not require the CUDA SDK, `nvcc`, `ptxas`,
-`cudart`, cuBLAS, or cuDNN.
+It does not use WSL, and it does not require the CUDA SDK, `nvcc`, `ptxas`,
+`cudart`, cuBLAS or cuDNN.
 
 > [!IMPORTANT]
-> This is an experimental, unsupported fork. It is not a Modular product and
-> is not affiliated with or supported by Modular or NVIDIA. Report problems
-> with this port here, not to either vendor. It does not accept contributions
-> and it is not finished — see
+> This is not a Modular product and is not affiliated with or supported by
+> Modular or NVIDIA. Please report problems with this port here rather than to
+> either vendor — nothing in this tree is theirs to answer for. It carries no
+> warranty, it is not finished, and it does not accept contributions. See
 > [An experiment, not a product](#an-experiment-not-a-product).
+
+## The ports
+
+Five machines, five ports, one language. Each row is a separate
+repository. They share an ancestor and most of their tree, and differ in
+host architecture, in which accelerator runtime is active, and in how far
+each has been pushed — so the row for one is not evidence for another.
+Where a claim in this README rests on work done in a sibling repository,
+it says so.
+
+| Port | Host | Reference hardware | Accelerator path | Where it stands |
+| --- | --- | --- | --- | --- |
+| [**WINMOJO**](https://github.com/albanread/WINMOJO) | Windows 11 ARM64<br/>`aarch64-pc-windows-msvc` | Qualcomm Oryon (Snapdragon X)<br/>Adreno X1-45 | Mojo → SPIR-V → OpenCL,<br/>via `dragonrt` | `mojo build` and `mojo run` both work; lldb builds and debugs Mojo binaries; Adreno Mandelbrot at 11–13 ms/frame; 258 of 369 stdlib test targets pass |
+| [**maxdragon**](https://github.com/albanread/maxdragon) | Windows 11 ARM64<br/>`aarch64-pc-windows-msvc` | Qualcomm Oryon (Snapdragon X)<br/>Adreno X1-45 · Hexagon NPU | Mojo → SPIR-V → OpenCL,<br/>via `dragonrt`; the NPU through QNN at graph level, outside Mojo | `mojo build` works; the JIT is not enabled on this branch; the Adreno acceptance test passes and Mandelbrot runs at 16 ms/frame against 250 ms on one CPU core; the Hexagon reaches 4.1× the CPU on gigabyte-scale graphs; 258 of 369 stdlib test targets pass |
+| [**WINMOJOX64Blackwell**](https://github.com/albanread/WINMOJOX64Blackwell) ← *you are here* | Windows 11 x64<br/>`x86_64-pc-windows-msvc` | Intel Core Ultra 9 285H<br/>NVIDIA RTX PRO 2000 Blackwell (`sm_120a`) | Mojo → PTX → `nvcuda.dll`,<br/>via `nvptxrt` | `mojo build` and `mojo run` both work; TMA, CUDA graphs, completion flags and host callbacks all tested on hardware; REPL and LLDB packaged; no systematic SM120a kernel census yet |
+| [**MojoMacX64**](https://github.com/albanread/MojoMacX64) | macOS x86-64<br/>Mac Pro 2019 | Intel x86-64<br/>AMD Radeon Pro Vega II 32 GB (gfx906) | Mojo → AIR → Metal,<br/>via `MetalRT` | Cocoa apps build and run; `msg_send` materialised to C speed (3660 ns → 3 ns); a Mandelbrot at 60fps whose escape iteration *and* colour are Mojo kernels on the Vega II; wave64 matmul lands 3.4× on prefill; a Mojo editor written in Mojo |
+| [**MojoCocoa**](https://github.com/albanread/MojoCocoa) | macOS ARM64<br/>Apple Silicon | Apple M4<br/>Apple GPU, 10 cores | Mojo → AIR → Metal<br/>(ported, never compiled) | **Newest, and not working yet.** The Cocoa compiler hook and `std.objc` pass 9 of 9 spikes and the example apps build, but the Apple Silicon GPU stack is ported source that has never been through a compiler |
+
+None of these is finished, and none of them is trying to become the official port of anything.
 
 ## An experiment, not a product
 
@@ -494,15 +549,182 @@ continues; regenerate it explicitly when a new release is wanted.
    engine, pipelines, and serving stack if those components are brought into
    scope.
 
-## Attribution and licensing
+## Technical notes and journals
 
-Mojo, KGEN, the standard library, MAX sources, LLVM, MLIR, LLDB, and the other
-third-party components remain the work of their respective authors. The
-original upstream project is [modular/modular](https://github.com/modular/modular),
-and this x64 port descends from the earlier
-[WINMOJO](https://github.com/albanread/WINMOJO) Windows ARM64 work.
+This README is the summary. The working record — including the retractions —
+lives in the journals.
 
-This repository contains files under multiple licenses. Read the root
-[LICENSE](LICENSE), [Licenses](Licenses/), third-party notices, and the license
-header of each source file before redistributing a build. Nothing in this
-README is legal advice.
+### The port itself
+
+| Document | What it covers |
+| --- | --- |
+| [`PORT-JOURNAL.md`](PORT-JOURNAL.md) | The day-by-day record of the Windows and NVIDIA work: each defect, its root cause, and what was tried before the fix. |
+| [`DRAGONMAX-JOURNAL.md`](DRAGONMAX-JOURNAL.md) | The GPU journal inherited from the Snapdragon line this port descends from. |
+| [`docs/LANGUAGE-DRIFT.md`](docs/LANGUAGE-DRIFT.md) | Constructs the published documentation still teaches that this compiler version rejects. |
+| [`docs/DIALECT-NOTES.md`](docs/DIALECT-NOTES.md) | How to write what this compiler actually accepts. |
+| [`docs/win32_posix_shim.md`](docs/win32_posix_shim.md) | The POSIX shim the compiler runtime needs on Windows. |
+| [`release/windows/README.md`](release/windows/README.md) | The standalone release layout. |
+
+### NVIDIA Blackwell — the GPU device port
+
+There is no standalone design paper for the NVIDIA line yet. That is stated
+here rather than implied by an empty link: the record is the journal and the
+runtime source, and the ABI document written for the Adreno line describes the
+same contract `nvptxrt` implements.
+
+| Document | What it covers |
+| --- | --- |
+| [`nvptx/runtime/nvptxrt.cpp`](nvptx/runtime/nvptxrt.cpp) | `nvptxrt` itself: the AsyncRT device ABI implemented against the CUDA Driver API, loaded dynamically from `nvcuda.dll`, with no link-time CUDA SDK dependency. |
+| [`dragon/runtime/ABI.md`](dragon/runtime/ABI.md) | The `AsyncRT_DeviceContext_*` C ABI a device backend has to satisfy, extracted from the Mojo declarations that call it. Written for the Adreno line; the contract is the one `nvptxrt` implements. |
+| [`dragon/recon/MAX-ANATOMY.md`](dragon/recon/MAX-ANATOMY.md) | What MAX actually is, open versus closed, determined by reading the tree. |
+| [`dragon/design/OFFLOAD-FLOW.md`](dragon/design/OFFLOAD-FLOW.md) | How a compiled kernel travels from the object compiler to `loadFunction`, traced with file:line evidence. Written for SPIR-V; the carrying machinery is shared. |
+
+### The Adreno line, inherited
+
+This tree still carries the Snapdragon GPU work it descends from. It is not the
+active runtime on this branch and its numbers do not describe this hardware,
+but the design documents remain the clearest account of how a Mojo kernel
+reaches a GPU that Modular does not ship for:
+[`docs/SNAPDRAGON-GPU.md`](docs/SNAPDRAGON-GPU.md),
+[`dragon/design/ARCHITECTURE.md`](dragon/design/ARCHITECTURE.md),
+[`dragon/runtime/README.md`](dragon/runtime/README.md),
+[`dragon/probe/CAPABILITIES.md`](dragon/probe/CAPABILITIES.md).
+
+---
+
+# Anatomy of Mojo
+
+*What one large compiler binary actually contains, how a `.mojo` file becomes
+machine code, and where the runtime, standard library and MAX fit around it —
+as found in the source tree during these ports.*
+
+| | |
+| --- | --- |
+| **1** | binary: `mojo` — driver, parser, compiler, JIT, REPL, LSP |
+| **120 MB** | `mojo` itself, with LLVM + MLIR statically inside |
+| **5** | private MLIR dialects (KGEN, POP, CO, HLCF, LIT) |
+| **38** | stdlib modules, pure Mojo, zero C in the library itself |
+| **322** | stdlib test files |
+
+## Part I — What Mojo is
+
+Mojo is a systems programming language wearing Python's syntax. Functions,
+structs, traits and generics compile to native code with no interpreter and no
+GC, and ownership and borrow semantics do the memory management. Older writing
+about Mojo describes a Python-style `def` coexisting with a systems-style `fn`;
+that is no longer true at this version, which rejects `fn` with *"'fn' has been
+removed; use 'def' instead"*. It was built by Modular as the language for
+writing AI kernels — code that must run on CPUs, GPUs and accelerators from one
+source — and that origin explains its two defining traits.
+
+First, it is **MLIR-native**. Where most languages lower their AST to LLVM IR
+directly, Mojo parses into Modular's own MLIR dialects and does nearly all of
+its work — metaprogramming, generics, optimisation — as MLIR transformations.
+LLVM only sees the final, fully-specialised result.
+
+Second, **compile-time execution is the metaprogramming system**. There is no
+separate template or macro language: `@parameter` code, generic instantiation
+and constant evaluation all run in a built-in interpreter that executes the
+same IR the compiler is building. Types are values at compile time.
+
+The consequence is the unusual shape of the distribution: one large binary
+containing a full compiler stack, plus a small runtime the generated code calls
+into, plus a standard library written entirely in Mojo itself.
+
+## Part II — From source to machine code
+
+```mermaid
+flowchart LR
+    SRC([".mojo source"]) --> P
+
+    P["<b>Parse</b><br/>hand-written recursive descent<br/>AST, then initial IR<br/><i>KGEN/lib/MojoParser</i>"]
+    P --> R["<b>Raise to dialects</b><br/>ops in Modular's private MLIR<br/>dialects; types are first-class IR<br/><i>KGEN · POP · CO · HLCF · LIT</i>"]
+    R --> E["<b>Elaborate</b><br/>an interpreter executes compile-time<br/>code, instantiates generics,<br/>folds parameters<br/><i>KGEN/lib/Elaborator · Interpreter</i>"]
+    E --> L["<b>Lower</b><br/>LIT lowering, transforms,<br/>conversion to LLVM dialect<br/><i>KGEN/lib/LowerLIT · KGENToLLVM</i>"]
+    L --> V["<b>LLVM 22</b><br/>stock backend, statically linked<br/>codegen, optimization, target CPUs<br/><i>third-party/llvm-project</i>"]
+    V --> BIN(["<b>mojo build</b> — native binary<br/>linked by embedded lld against<br/>CompilerRT + AsyncRT"])
+
+    R -. "serialized before specialization" .-> PKG(["<b>mojo precompile</b> — .mojoc package<br/>pre-elaboration IR, architecture-independent;<br/>the importing compilation elaborates it for<br/>its own target — this is how the stdlib ships"])
+
+    classDef hot fill:#F5E3D7,stroke:#C2410C,stroke-width:2px,color:#1F1A16
+    classDef exit fill:#E2EAF0,stroke:#3B5F7A,color:#1F1A16
+    class E hot
+    class BIN,PKG exit
+```
+
+JIT variants of the same pipeline back `mojo run` and the REPL
+(`KGEN/lib/ExecutionEngine`).
+
+**Why the elaborator is the hot stage:** generic instantiation by compile-time
+interpretation is what lets one kernel source specialise for any target, and it
+is why a `.mojoc` is portable while a `.o` is not. It is also why the compiler
+needs its runtime present at build time — compile-time code allocates through
+the same `KGEN_CompilerRT` ABI that compiled programs use at run time.
+
+## Part III — How the repository composes
+
+```mermaid
+flowchart TB
+    D["<b>driver</b> — <i>KGEN/tools/mojo</i><br/>one CLI, subcommand per tool<br/>build · run · precompile · repl · debug · doc · format · demangle"]
+    C["<b>compiler</b> — <i>KGEN/lib</i><br/>parser, five dialects, elaborator/interpreter,<br/>lowering, JIT, LLDB and Jupyter glue<br/>the 120 MB lives here, plus LLVM"]
+    RT["<b>runtime</b> — <i>KGEN/lib/CompilerRT · AsyncRT</i><br/>what compiled programs link against:<br/>the KGEN_CompilerRT_* C ABI and async scheduler<br/>shared libraries, so <b>one allocator serves the process</b>"]
+    SL["<b>stdlib</b> — <i>mojo/stdlib/std</i><br/>38 modules of pure Mojo, shipped as one<br/>pre-elaborated std.mojoc (3.1 MB)<br/>OS access via ffi/sys, not C — why it ported unchanged"]
+    MX["<b>MAX device layer</b> — <i>max/ · nvptx/</i><br/>the AsyncRT device ABI, reimplemented from its Apache-licensed<br/>declarations by <b>nvptxrt</b>; Mojo kernels → PTX → nvcuda.dll → Blackwell.<br/>Graph engine &amp; serve: unpublished upstream, out of scope"]
+
+    D --> C --> RT
+    SL -. "compiled by" .-> C
+    SL -. "calls" .-> RT
+    MX -. "built on" .-> SL
+
+    subgraph rail ["support machinery"]
+        direction TB
+        S1["<b>Support/ · AsyncRT/</b><br/>paths, logging, random, threading, tcmalloc glue<br/>where most porting happened —<br/>host assumptions live here, not in the language"]
+        S2["<b>bazel/ · rules_mojo</b><br/>custom cc-toolchain driving hermetic clang<br/>each port adds its own sysroot rule and toolchain"]
+        S3["<b>third-party LLVM 22</b><br/>vendored and patched; MLIR, backends, lld,<br/>LLDB, compiler-rt — statically linked into mojo"]
+    end
+
+    classDef magma fill:#F5E3D7,stroke:#7C2D12,stroke-width:2px,color:#1F1A16
+    classDef hot fill:#F5E3D7,stroke:#C2410C,stroke-width:2px,color:#1F1A16
+    classDef steel fill:#E2EAF0,stroke:#3B5F7A,color:#1F1A16
+    classDef plain fill:#FFFFFF,stroke:#1F1A16,color:#1F1A16
+    class C magma
+    class RT hot
+    class MX steel
+    class D,SL plain
+    class S1,S2,S3 plain
+```
+
+**The shape every one of these ports discovered:** the language is portable and
+the *substrate* is not. The standard library reaches the OS through `ffi`/`sys`
+rather than C, which is why it moves to a new platform almost unchanged; the
+host assumptions that had to be fixed live in `Support/`, `AsyncRT/` and the
+Bazel toolchain. And the device layer is the one genuinely missing piece —
+Modular publishes the API a kernel calls and the declarations of the ABI
+underneath it, but not an implementation for hardware they do not ship for.
+Each port here writes its own.
+
+## Licence and attribution
+
+The Mojo compiler (`KGEN/`), the C++ substrate, and the standard library are
+licensed Apache 2.0 with LLVM exceptions, and this fork inherits that licence.
+Everything added here carries the same licence.
+
+This tree contains files under more than one licence. Read the root
+[LICENSE](LICENSE), the [Licenses/](Licenses/) directory, the third-party
+notices, and the licence header of each source file before redistributing a
+build.
+
+`LICENSE` and `Licenses/` are kept exactly as upstream has them, deliberately:
+almost every file here is still Modular's Apache-2.0 code, a derivative work
+has to ship the licence with it, and the same grant is what puts this fork's
+own additions on a clear footing.
+
+No Modular binary, wheel, or account has been used in this work. Everything
+here is built from the published Apache-licensed source, and where a device
+runtime was needed it was implemented against the published ABI rather than
+extracted from a binary.
+
+Upstream is [modular/modular](https://github.com/modular/modular). All
+original design credit belongs to Modular.
+
+I am not a lawyer, and nothing here is legal advice.
