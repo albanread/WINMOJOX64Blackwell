@@ -47,8 +47,9 @@ modular_run_binary_test = _modular_run_binary_test
 modular_versioned_expand_template = _modular_versioned_expand_template
 mojo_overlay_layer = _mojo_overlay_layer
 mojo_overlay_srcs = _mojo_overlay_srcs
-mojo_test = _mojo_test
-mojo_filecheck_test = _mojo_filecheck_test
+# NOTE: mojo_test and mojo_filecheck_test are NOT re-exported here. They take
+# `deps` and so must route them through _process_mojo_deps like their
+# mojo_library/mojo_binary siblings; see the wrappers further down.
 modular_sphinx_docs = _modular_sphinx_docs
 mojo_test_environment = _mojo_test_environment
 pkg_files = _pkg_files
@@ -257,6 +258,31 @@ def mojo_shared_library(deps = [], use_production_compiler_for_asan = None, **kw
 
 def mojo_binary(deps = [], **kwargs):
     _mojo_binary(
+        deps = _process_mojo_deps(deps),
+        **kwargs
+    )
+
+# mojo_test and mojo_filecheck_test were plain re-exports, which made them the
+# only dep-taking macros in this family that did NOT rewrite INTERNAL_PACKAGES.
+# A test depending on an internal-only package therefore kept the raw
+# `//Kernels/...` label, which does not exist in the open-source tree, and
+# analysis died with "no such package 'Kernels/lib/attn_res'" -- aborting any
+# `bazel test` or `cquery` over //max/kernels/test/gpu/... before a single test
+# ran. Five targets in the fuzz package hit this.
+#
+# Routing them through _process_mojo_deps rewrites the label to
+# @modular_wheel//:<name>, which on Windows resolves to :unavailable_on_windows
+# (target_compatible_with = ["@platforms//:incompatible"]), so those targets are
+# cleanly SKIPPED as unavailable rather than crashing the graph. Upstream never
+# sees this because its internal build has the real //Kernels/ packages.
+def mojo_test(deps = [], **kwargs):
+    _mojo_test(
+        deps = _process_mojo_deps(deps),
+        **kwargs
+    )
+
+def mojo_filecheck_test(deps = [], **kwargs):
+    _mojo_filecheck_test(
         deps = _process_mojo_deps(deps),
         **kwargs
     )
