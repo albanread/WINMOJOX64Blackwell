@@ -1287,7 +1287,15 @@ def _get_rtx2060_target() -> _TargetType:
         `#kgen.target<triple = "nvptx64-nvidia-cuda", `,
         `stdlib_plugin = "cuda", `,
         `arch = "sm_75", `,
-        `features = "+ptx63,+sm_75", `,
+        # +ptx63 (the upstream value) declares PTX ISA 6.3, which predates
+        # instructions the current math library emits for this target --
+        # `tanh.approx.f32` needs 7.0. The module was rejected by both ptxas
+        # and the driver's JIT (CUDA error 218), so any kernel calling tanh
+        # was unloadable on Turing. The hardware implements the instruction;
+        # only the declared version was wrong. Raised to match every
+        # non-legacy entry in this file. See albanread/oracles
+        # findings/declared-isa-version.md.
+        `features = "+ptx81,+sm_75", `,
         `tune_cpu = "sm_75", `,
         `data_layout = "e-p3:32:32-p4:32:32-p5:32:32-p6:32:32-p7:32:32-p101:32:32-i64:64-i128:128-i256:256-v16:16-v32:32-n16:32:64",`,
         `index_bit_width = 64,`,
