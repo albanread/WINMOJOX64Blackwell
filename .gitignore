@@ -12,7 +12,15 @@ local.bazelrc
 /bazel-*
 /MODULE.bazel.lock
 /external
-build/
+# Build output at the repo ROOT only (bazelisk lands in ./build, and
+# .bazelrc imports build/wrapper.bazelrc). A bare `build/` matches at any
+# depth, and macOS turns on core.ignorecase, so it also matches `Build/` --
+# which silently swallows KGEN/tools/mojo/Build/ (mojo-build.cpp + its
+# tablegen) and KGEN/test/mojo-tool/build/. This tree's copies are already
+# tracked, so nothing was lost here; anchored so a newly added file under
+# those directories cannot go missing. MojoCocoa and MojoMacX64 both lost
+# sources to exactly this.
+/build/
 develop-eggs/
 dist/
 downloads/
@@ -66,7 +74,11 @@ docs/_build/
 
 # PyBuilder
 .pybuilder/
-target/
+# Rust build directory, at the repo ROOT only. Same hazard as `build/`
+# above: a bare `target/` case-insensitively matches every KGEN and Support
+# .../Target/ SOURCE directory -- TargetTraits, TargetLowering, the Host
+# backend, the GPU backend trio.
+/target/
 
 # Jupyter Notebook
 .ipynb_checkpoints
