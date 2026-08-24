@@ -180,6 +180,8 @@ constexpr unsigned int CU_STREAM_NON_BLOCKING = 1;
 constexpr unsigned int CU_EVENT_DISABLE_TIMING = 2;
 constexpr int CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75;
 constexpr int CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR = 76;
+constexpr int CU_LIMIT_STACK_SIZE = 0;
+constexpr size_t NVPTX_MIN_THREAD_STACK_SIZE = 4096;
 constexpr int CU_MEMORYTYPE_HOST = 1;
 constexpr int CU_MEMORYTYPE_DEVICE = 2;
 
@@ -203,6 +205,8 @@ CUDA_FUNCTION(CUresult, cuCtxGetCurrent, CUcontext *);
 CUDA_FUNCTION(CUresult, cuCtxPushCurrent, CUcontext);
 CUDA_FUNCTION(CUresult, cuCtxPopCurrent, CUcontext *);
 CUDA_FUNCTION(CUresult, cuCtxSynchronize);
+CUDA_FUNCTION(CUresult, cuCtxGetLimit, size_t *, int);
+CUDA_FUNCTION(CUresult, cuCtxSetLimit, int, size_t);
 CUDA_FUNCTION(CUresult, cuCtxGetStreamPriorityRange, int *, int *);
 CUDA_FUNCTION(CUresult, cuCtxEnablePeerAccess, CUcontext, unsigned int);
 CUDA_FUNCTION(CUresult, cuMemGetInfo, size_t *, size_t *);
@@ -353,6 +357,8 @@ static void loadCUDAOnce() {
   LOAD_V2(cuCtxPushCurrent);
   LOAD_V2(cuCtxPopCurrent);
   LOAD(cuCtxSynchronize);
+  LOAD(cuCtxGetLimit);
+  LOAD(cuCtxSetLimit);
   LOAD(cuCtxGetStreamPriorityRange);
   LOAD(cuCtxEnablePeerAccess);
   LOAD_V2(cuMemGetInfo);
@@ -1116,6 +1122,25 @@ AsyncRT_DeviceContext_create(const NVPTXContext **result, const char *api,
   if (status != CUDA_SUCCESS) {
     cuDevicePrimaryCtxRelease(device);
     return cudaError("cuCtxSetCurrent", status);
+  }
+
+  // Unoptimized NVPTX deliberately retains device helper calls so debug
+  // stepping remains useful.  Their combined frames can exceed CUDA's small
+  // default per-thread stack and otherwise surface later as an illegal-memory
+  // error.  Keep the floor conservative because this limit affects the
+  // primary context's device-memory reservation.
+  size_t threadStackSize = 0;
+  status = cuCtxGetLimit(&threadStackSize, CU_LIMIT_STACK_SIZE);
+  if (status != CUDA_SUCCESS) {
+    cuDevicePrimaryCtxRelease(device);
+    return cudaError("cuCtxGetLimit(CU_LIMIT_STACK_SIZE)", status);
+  }
+  if (threadStackSize < NVPTX_MIN_THREAD_STACK_SIZE) {
+    status = cuCtxSetLimit(CU_LIMIT_STACK_SIZE, NVPTX_MIN_THREAD_STACK_SIZE);
+    if (status != CUDA_SUCCESS) {
+      cuDevicePrimaryCtxRelease(device);
+      return cudaError("cuCtxSetLimit(CU_LIMIT_STACK_SIZE)", status);
+    }
   }
 
   auto *context = new NVPTXContext();

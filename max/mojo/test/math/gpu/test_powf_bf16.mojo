@@ -71,8 +71,7 @@ def run_elementwise(exponent: BFloat16, ctx: DeviceContext) raises:
 
 
 def test_powf_bf16() raises:
-    # NOTE: This is expected to fail. Keeping this around as a negative test
-    # so we know when its fixed.
+    # Regression test for unoptimized NVPTX device-helper stack usage.
     with DeviceContext() as ctx:
         run_elementwise(0.375, ctx)
 
