@@ -217,6 +217,7 @@ mojo/docs/releases/nightly.md
 /crashdb/
 /release-output/
 /mojo_release/
+/.direct-build/
 /compile_commands.json
 
 # Root-level ad-hoc compiler and GPU diagnostics. Keep these root-scoped so
