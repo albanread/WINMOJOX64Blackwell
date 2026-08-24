@@ -225,6 +225,8 @@ CUDA_FUNCTION(CUresult, cuMemsetD16Async, CUdeviceptr, unsigned short, size_t,
               CUstream);
 CUDA_FUNCTION(CUresult, cuMemsetD32Async, CUdeviceptr, unsigned int, size_t,
               CUstream);
+CUDA_FUNCTION(CUresult, cuMemsetD2D32Async, CUdeviceptr, size_t, unsigned int,
+              size_t, size_t, CUstream);
 CUDA_FUNCTION(CUresult, cuStreamCreate, CUstream *, unsigned int);
 CUDA_FUNCTION(CUresult, cuStreamCreateWithPriority, CUstream *, unsigned int,
               int);
@@ -365,6 +367,7 @@ static void loadCUDAOnce() {
   LOAD(cuMemsetD8Async);
   LOAD(cuMemsetD16Async);
   LOAD(cuMemsetD32Async);
+  LOAD_V2(cuMemsetD2D32Async);
   LOAD(cuStreamCreate);
   LOAD(cuStreamCreateWithPriority);
   LOAD_V2(cuStreamDestroy);
@@ -490,6 +493,7 @@ struct NVPTXContext {
   int32_t recordingLastNode = -1;
   std::vector<NVPTXStream *> streams;
   std::vector<NVPTXBuffer *> liveHostBuffers;
+  std::string pendingError;
   std::mutex mutex;
 };
 
@@ -560,6 +564,33 @@ static NVPTXContext *rootContext(const NVPTXContext *context) {
   if (!context)
     return nullptr;
   return context->root ? context->root : const_cast<NVPTXContext *>(context);
+}
+
+static void recordPendingCudaError(const NVPTXContext *context,
+                                   const char *operation, CUresult status) {
+  NVPTXContext *root = rootContext(context);
+  if (!root || status == CUDA_SUCCESS)
+    return;
+  const char *allocatedError = cudaError(operation, status);
+  std::string message =
+      allocatedError ? allocatedError : "CUDA operation failed";
+  free(const_cast<char *>(allocatedError));
+  std::lock_guard<std::mutex> lock(root->mutex);
+  if (root->pendingError.empty())
+    root->pendingError = std::move(message);
+}
+
+static const char *takePendingError(const NVPTXContext *context) {
+  NVPTXContext *root = rootContext(context);
+  if (!root)
+    return nullptr;
+  std::string message;
+  {
+    std::lock_guard<std::mutex> lock(root->mutex);
+    message = std::move(root->pendingError);
+    root->pendingError.clear();
+  }
+  return message.empty() ? nullptr : errf("%s", message.c_str());
 }
 
 static void registerHostBuffer(NVPTXBuffer *buffer) {
@@ -882,6 +913,15 @@ extern "C" {
 
 #define NVPTXRT_EXPORT __declspec(dllexport)
 
+// Device-to-worker affinity is an optional MLRT hint.  The public Windows
+// build does not contain MLRT's NUMA affinity mapper, so report the ABI's
+// documented "no preferred worker" value instead of leaving the symbol
+// unresolved.
+NVPTXRT_EXPORT int32_t MLRT_TaskIdForDevice(int32_t deviceId) {
+  (void)deviceId;
+  return -1;
+}
+
 NVPTXRT_EXPORT const char *
 AsyncRT_DeviceContext_create(const NVPTXContext **result, const char *api,
                              int id) {
@@ -1199,6 +1239,26 @@ AsyncRT_DeviceContext_setAsCurrent(const NVPTXContext *context) {
   return setCurrent(context);
 }
 
+NVPTXRT_EXPORT const char *AsyncRT_DeviceContext_startMetalTraceCapture(
+    const NVPTXContext *context, const char *path) {
+  (void)context;
+  (void)path;
+  return errf("Metal trace capture is unavailable on an NVIDIA context");
+}
+
+NVPTXRT_EXPORT const char *
+AsyncRT_DeviceContext_stopMetalTraceCapture(const NVPTXContext *context) {
+  (void)context;
+  return errf("no Metal capture is in progress on an NVIDIA context");
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceContext_setMetalPrintEnabled(
+    const NVPTXContext *context, bool enabled) {
+  (void)context;
+  (void)enabled;
+  return errf("Metal GPU printing is unavailable on an NVIDIA context");
+}
+
 NVPTXRT_EXPORT const char *
 AsyncRT_DeviceContext_synchronize(const NVPTXContext *context) {
   if (context && context->recordingBuilder)
@@ -1208,8 +1268,9 @@ AsyncRT_DeviceContext_synchronize(const NVPTXContext *context) {
   CUresult status = cuStreamSynchronize(activeStream(context));
   if (status == CUDA_SUCCESS && context && context->defaultStream)
     drainStreamCompletionFlags(context->defaultStream);
-  return status == CUDA_SUCCESS ? nullptr
-                                : cudaError("cuStreamSynchronize", status);
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuStreamSynchronize", status);
+  return takePendingError(context);
 }
 
 NVPTXRT_EXPORT const char *
@@ -1480,14 +1541,18 @@ NVPTXRT_EXPORT void AsyncRT_DeviceBuffer_release(const NVPTXBuffer *buffer) {
   unregisterHostBuffer(mutableBuffer);
   if (mutableBuffer->host && mutableBuffer->owning) {
     if (mutableBuffer->hostPinned) {
-      cuCtxSetCurrent(context->context);
-      cuMemFreeHost(mutableBuffer->host);
+      CUresult status = cuCtxSetCurrent(context->context);
+      if (status == CUDA_SUCCESS)
+        status = cuMemFreeHost(mutableBuffer->host);
+      recordPendingCudaError(context, "cuMemFreeHost", status);
     } else {
       free(mutableBuffer->host);
     }
   } else if (mutableBuffer->device && mutableBuffer->owning) {
-    cuCtxSetCurrent(context->context);
-    cuMemFree(mutableBuffer->device);
+    CUresult status = cuCtxSetCurrent(context->context);
+    if (status == CUDA_SUCCESS)
+      status = cuMemFree(mutableBuffer->device);
+    recordPendingCudaError(context, "cuMemFree", status);
   }
   delete mutableBuffer;
   if (parent)
@@ -1709,6 +1774,20 @@ AsyncRT_DeviceContext_setMemory_async(const NVPTXContext *context,
     status =
         cuMemsetD32Async(destination->device, static_cast<unsigned int>(value),
                          destination->bytes / 4, activeStream(context));
+  } else if (valueSize == 8 && destination->bytes % 8 == 0) {
+    // CUDA has no 64-bit linear memset.  Fill the low and high halves as two
+    // strided 32-bit planes so arbitrary Int64/Float64 bit patterns remain
+    // asynchronous and ordered on the context's active stream.
+    const size_t elements = destination->bytes / 8;
+    status = cuMemsetD2D32Async(
+        destination->device, /*destinationPitch=*/8,
+        static_cast<unsigned int>(value), /*width=*/1, elements,
+        activeStream(context));
+    if (status == CUDA_SUCCESS)
+      status = cuMemsetD2D32Async(
+          destination->device + 4, /*destinationPitch=*/8,
+          static_cast<unsigned int>(value >> 32), /*width=*/1, elements,
+          activeStream(context));
   } else {
     std::vector<unsigned char> staging(destination->bytes);
     for (size_t offset = 0; offset < staging.size(); offset += valueSize)
@@ -1875,8 +1954,9 @@ AsyncRT_DeviceStream_synchronize(const NVPTXStream *stream) {
   CUresult status = cuStreamSynchronize(stream->stream);
   if (status == CUDA_SUCCESS)
     drainStreamCompletionFlags(const_cast<NVPTXStream *>(stream));
-  return status == CUDA_SUCCESS ? nullptr
-                                : cudaError("cuStreamSynchronize", status);
+  if (status != CUDA_SUCCESS)
+    return cudaError("cuStreamSynchronize", status);
+  return takePendingError(stream->context);
 }
 
 NVPTXRT_EXPORT const char *
