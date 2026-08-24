@@ -68,7 +68,7 @@ it says so.
 | --- | --- | --- | --- | --- |
 | [**WINMOJO**](https://github.com/albanread/WINMOJO) | Windows 11 ARM64<br/>`aarch64-pc-windows-msvc` | Qualcomm Oryon (Snapdragon X)<br/>Adreno X1-45 | Mojo → SPIR-V → OpenCL,<br/>via `dragonrt` | `mojo build` and `mojo run` both work; lldb builds and debugs Mojo binaries; Adreno Mandelbrot at 11–13 ms/frame; 258 of 369 stdlib test targets pass |
 | [**maxdragon**](https://github.com/albanread/maxdragon) | Windows 11 ARM64<br/>`aarch64-pc-windows-msvc` | Qualcomm Oryon (Snapdragon X)<br/>Adreno X1-45 · Hexagon NPU | Mojo → SPIR-V → OpenCL,<br/>via `dragonrt`; the NPU through QNN at graph level, outside Mojo | `mojo build` works; the JIT is not enabled on this branch; the Adreno acceptance test passes and Mandelbrot runs at 16 ms/frame against 250 ms on one CPU core; the Hexagon reaches 4.1× the CPU on gigabyte-scale graphs; 258 of 369 stdlib test targets pass |
-| [**WINMOJOX64Blackwell**](https://github.com/albanread/WINMOJOX64Blackwell) ← *you are here* | Windows 11 x64<br/>`x86_64-pc-windows-msvc` | Intel Core Ultra 9 285H<br/>NVIDIA RTX PRO 2000 Blackwell (`sm_120a`) | Mojo → PTX → `nvcuda.dll`,<br/>via `nvptxrt` | `mojo build` and `mojo run` both work; TMA, CUDA graphs, completion flags, host callbacks, and mixed CPU/GPU contexts tested; 63 of the 69 initial compatibility cases pass on Windows; REPL and LLDB packaged |
+| [**WINMOJOX64Blackwell**](https://github.com/albanread/WINMOJOX64Blackwell) ← *you are here* | Windows 11 x64<br/>`x86_64-pc-windows-msvc` | Intel Core Ultra 9 285H<br/>NVIDIA RTX PRO 2000 Blackwell (`sm_120a`) | Mojo → PTX → `nvcuda.dll`,<br/>via `nvptxrt` | `mojo build` and `mojo run` both work; TMA, CUDA graphs, completion flags, host callbacks, and mixed CPU/GPU contexts tested; 66 of the 69 initial compatibility cases pass on Windows; REPL and LLDB packaged |
 | [**MojoMacX64**](https://github.com/albanread/MojoMacX64) | macOS x86-64<br/>Mac Pro 2019 | Intel x86-64<br/>AMD Radeon Pro Vega II 32 GB (gfx906) | Mojo → AIR → Metal,<br/>via `MetalRT` | Cocoa apps build and run; `msg_send` materialised to C speed (3660 ns → 3 ns); a Mandelbrot at 60fps whose escape iteration *and* colour are Mojo kernels on the Vega II; wave64 matmul lands 3.4× on prefill; a Mojo editor written in Mojo |
 | [**MojoCocoa**](https://github.com/albanread/MojoCocoa) | macOS ARM64<br/>Apple Silicon | Apple M4<br/>Apple GPU, 10 cores | Mojo → AIR → Metal<br/>(ported, never compiled) | **Newest, and not working yet.** The Cocoa compiler hook and `std.objc` pass 9 of 9 spikes and the example apps build, but the Apple Silicon GPU stack is ported source that has never been through a compiler |
 
@@ -244,7 +244,7 @@ it does **not** claim universal MAX coverage.
 | Mojo-authored GPU kernels using standard NVPTX operations | Working for the tested kernels and examples. |
 | Device contexts, buffers, streams, events, launches, graphs, and host synchronization | Implemented in `nvptxrt`. |
 | SM120a TMA | Working on the reference Blackwell GPU. |
-| Initial compatibility census | 63/69 pass on Windows; 57 are matched passes against the WSL oracle. One Windows-specific regression remains. |
+| Initial compatibility census | 66/69 pass on Windows; 58 are matched passes against the WSL oracle and two more are Windows-side fixes for failures still present upstream. One Windows-specific regression remains. |
 | Broad kernel catalogue | Partial; the 69 cases are a compatibility baseline, not complete MAX kernel coverage. |
 | SM120 tensor-core/TCGen05-specific paths | Not yet systematically validated. |
 | Multi-GPU collectives and peer algorithms | Runtime foundations implemented; real multi-GPU hardware testing still required. |
@@ -267,11 +267,12 @@ separate private oracle repository, not in this public port.
 
 | Classification | Count | Meaning |
 | --- | ---: | --- |
-| Windows pass | 63/69 | Every case that exits successfully on this port, including cases where the WSL oracle is inconclusive. |
-| Matched pass | 57/69 | Windows and WSL both pass the same entry point. |
+| Windows pass | 66/69 | Every case that exits successfully on this port, including cases where the WSL oracle is inconclusive. |
+| Matched pass | 58/69 | Windows and WSL both pass the same entry point. |
+| Windows ahead of oracle | 2/69 | Both bf16 power tests now pass at `-O0`; the released WSL runtime still fails them on the same GPU. |
 | Windows regression | 1/69 | AMD cross-target compilation is not available in this NVIDIA-focused Windows build. |
 | Oracle-side or inconclusive | 6/69 | Windows passes; WSL times out, exhausts resources, or disagrees for an oracle-side reason. |
-| Shared failure | 5/69 | Both implementations fail, including two real bf16 power defects on Blackwell. |
+| Shared failure | 2/69 | Both implementations still fail the mixed-target atomic and cross-target `abs` cases. |
 
 The 13 Windows regressions fixed after the first census were the NVPTX
 short-pointer data-layout crash; invalid buffer-release error propagation;
@@ -279,6 +280,12 @@ short-pointer data-layout crash; invalid buffer-release error propagation;
 and eight CPU-context/dispatcher cases. The CPU block now uses a bounded worker
 pool, real coroutine range execution, CPU buffers and timers, and ordered
 CPU↔CUDA copies rather than a symbol-only compatibility stub.
+
+Two formerly shared bf16 power crashes were fixed by giving unoptimized NVPTX
+kernels a conservative 4 KiB CUDA thread-stack floor. At `-O0` those kernels
+retain 42 device helpers and up to 110 calls for debug visibility; the previous
+default overflowed and surfaced as CUDA error 700. The optimized path was
+already correct and remains unchanged.
 
 The following focused tests have also run successfully on the reference
 system:
@@ -291,8 +298,10 @@ system:
 | CUDA graph builder suite | 25 graph scenarios passed. |
 | Blackwell TMA tile-copy test | Passed; all 64 output values were checked on the host. |
 | Direct GPU host callback test | 1/1 passed. |
+| CUDA external-function suite | 5/5 passed on both Windows and WSL after declaring the embedded `sm_75` PTX at its actual 6.3 ISA floor. |
 | Multicast capability test | Passed by correctly reporting that multicast is unsupported. |
 | GPU copy coverage | Normal, large, sub-buffer, and non-owning alias cases passed. |
+| Unoptimized bf16 power | `pow` and `powf` pass at `-O0` with device-sync checking; the reduced reproducer also passes after the stack fix. |
 | Mixed CPU/GPU copy coverage | CPU contexts pass 64-element and 1 Mi-element transfers in both directions. |
 | CPU MAX algorithm coverage | Elementwise 4/4, parallelize 11/11, reductions 7/7, stencil 5/5, benchmark closures 2/2, and runtime initialization 1/1 passed. |
 | Windowed NVIDIA Mandelbrot | Passed as an AOT executable and through `mojo run`; every frame is recomputed on the GPU. |
