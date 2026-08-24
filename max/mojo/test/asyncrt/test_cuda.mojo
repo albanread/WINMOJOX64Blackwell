@@ -215,9 +215,11 @@ def _run_cuda_external_function_distinct_entry_points(
     ):
         pass
 
-    # One module, two entry points. Generated with `nvcc -arch=sm_75 -ptx`.
+    # One module, two entry points.  It uses only the PTX 6.3 instruction set
+    # that introduced sm_75; declaring the generator's newer ISA version makes
+    # otherwise portable PTX needlessly dependent on a newer driver.
     var ptx = """
-.version 8.8
+.version 6.3
 .target sm_75
 .address_size 64
 
