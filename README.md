@@ -68,7 +68,7 @@ it says so.
 | --- | --- | --- | --- | --- |
 | [**WINMOJO**](https://github.com/albanread/WINMOJO) | Windows 11 ARM64<br/>`aarch64-pc-windows-msvc` | Qualcomm Oryon (Snapdragon X)<br/>Adreno X1-45 | Mojo → SPIR-V → OpenCL,<br/>via `dragonrt` | `mojo build` and `mojo run` both work; lldb builds and debugs Mojo binaries; Adreno Mandelbrot at 11–13 ms/frame; 258 of 369 stdlib test targets pass |
 | [**maxdragon**](https://github.com/albanread/maxdragon) | Windows 11 ARM64<br/>`aarch64-pc-windows-msvc` | Qualcomm Oryon (Snapdragon X)<br/>Adreno X1-45 · Hexagon NPU | Mojo → SPIR-V → OpenCL,<br/>via `dragonrt`; the NPU through QNN at graph level, outside Mojo | `mojo build` works; the JIT is not enabled on this branch; the Adreno acceptance test passes and Mandelbrot runs at 16 ms/frame against 250 ms on one CPU core; the Hexagon reaches 4.1× the CPU on gigabyte-scale graphs; 258 of 369 stdlib test targets pass |
-| [**WINMOJOX64Blackwell**](https://github.com/albanread/WINMOJOX64Blackwell) ← *you are here* | Windows 11 x64<br/>`x86_64-pc-windows-msvc` | Intel Core Ultra 9 285H<br/>NVIDIA RTX PRO 2000 Blackwell (`sm_120a`) | Mojo → PTX → `nvcuda.dll`,<br/>via `nvptxrt` | `mojo build` and `mojo run` both work; TMA, CUDA graphs, completion flags and host callbacks all tested on hardware; REPL and LLDB packaged; no systematic SM120a kernel census yet |
+| [**WINMOJOX64Blackwell**](https://github.com/albanread/WINMOJOX64Blackwell) ← *you are here* | Windows 11 x64<br/>`x86_64-pc-windows-msvc` | Intel Core Ultra 9 285H<br/>NVIDIA RTX PRO 2000 Blackwell (`sm_120a`) | Mojo → PTX → `nvcuda.dll`,<br/>via `nvptxrt` | `mojo build` and `mojo run` both work; TMA, CUDA graphs, completion flags, host callbacks, and mixed CPU/GPU contexts tested; 63 of the 69 initial compatibility cases pass on Windows; REPL and LLDB packaged |
 | [**MojoMacX64**](https://github.com/albanread/MojoMacX64) | macOS x86-64<br/>Mac Pro 2019 | Intel x86-64<br/>AMD Radeon Pro Vega II 32 GB (gfx906) | Mojo → AIR → Metal,<br/>via `MetalRT` | Cocoa apps build and run; `msg_send` materialised to C speed (3660 ns → 3 ns); a Mandelbrot at 60fps whose escape iteration *and* colour are Mojo kernels on the Vega II; wave64 matmul lands 3.4× on prefill; a Mojo editor written in Mojo |
 | [**MojoCocoa**](https://github.com/albanread/MojoCocoa) | macOS ARM64<br/>Apple Silicon | Apple M4<br/>Apple GPU, 10 cores | Mojo → AIR → Metal<br/>(ported, never compiled) | **Newest, and not working yet.** The Cocoa compiler hook and `std.objc` pass 9 of 9 spikes and the example apps build, but the Apple Silicon GPU stack is ported source that has never been through a compiler |
 
@@ -88,10 +88,11 @@ Stated plainly, so that nothing here is taken for more than it is:
   rather than left in place to imply otherwise. A change that Mojo or MAX
   itself should have belongs upstream at
   [modular/modular](https://github.com/modular/modular), not here.
-- **It does not claim to be complete.** No systematic MAX kernel census has
-  been run on SM120a. Tensor-core, attention, reduction and communication paths
-  are unvalidated on consumer Blackwell. Mixed CPU/GPU AsyncRT dispatch is a
-  known unresolved gap. The release defaults to a single architecture target.
+- **It does not claim to be complete.** An initial 69-case MAX/Blackwell
+  compatibility census has been run, but that is not a complete kernel
+  catalogue. Tensor-core, attention, and communication paths remain only
+  partially covered on consumer Blackwell. The release defaults to a single
+  architecture target.
   [Known limitations and next work](#known-limitations-and-next-work) is the
   honest list, and it is longer than the achievements list.
 - **It does not claim to be correct beyond what was measured.** Everything in
@@ -191,10 +192,9 @@ execution have been verified.
 
 ## Feature coverage
 
-The tables below describe this branch at revision `34db48b` and the hardware
-tests run on 21 August 2026. “Implemented” means the required ABI and code path
-exist. “Tested” additionally means the path ran successfully on the reference
-machine.
+The tables below describe the branch and hardware tests through 24 August
+2026. “Implemented” means the required ABI and code path exist. “Tested”
+additionally means the path ran successfully on the reference machine.
 
 ### Windows host and compiler
 
@@ -228,6 +228,7 @@ machine.
 | CUDA graphs | **Implemented and tested** | Kernel, copy, memset, empty, host, and wait nodes; dependencies, regions, inputs, outputs, caching, instantiate, and replay. |
 | Completion flags | **Implemented and tested** | Mapped pinned flags, host signal/reset/load, stream wait, and graph wait. |
 | GPU host callbacks | **Implemented and tested** | Direct stream callbacks and recorded CUDA graph host nodes pass. |
+| CPU/NVIDIA context dispatch | **Implemented and tested** | `nvptxrt` dispatches both CPU and CUDA contexts, uses a bounded CPU worker pool, and passes CPU-only algorithms plus 64-element and 1 Mi-element CPU↔GPU transfers. |
 | Peer capability and enablement | **Implemented** | Per-pair and all-device APIs are present and self-access correctly reports false. |
 | Cross-device copy | **Implemented, not hardware-tested** | Uses `cuMemcpyPeerAsync`; falls back to a host-staged copy when the driver rejects direct peer access. This PC has only one GPU. |
 | Multicast/NVSwitch memory | **Not implemented** | Capability reports false and calls fail with a clear error instead of an unresolved symbol. |
@@ -243,21 +244,44 @@ it does **not** claim universal MAX coverage.
 | Mojo-authored GPU kernels using standard NVPTX operations | Working for the tested kernels and examples. |
 | Device contexts, buffers, streams, events, launches, graphs, and host synchronization | Implemented in `nvptxrt`. |
 | SM120a TMA | Working on the reference Blackwell GPU. |
-| Broad kernel catalogue | Partial; a complete Windows/SM120a test census has not yet been run. |
+| Initial compatibility census | 63/69 pass on Windows; 57 are matched passes against the WSL oracle. One Windows-specific regression remains. |
+| Broad kernel catalogue | Partial; the 69 cases are a compatibility baseline, not complete MAX kernel coverage. |
 | SM120 tensor-core/TCGen05-specific paths | Not yet systematically validated. |
 | Multi-GPU collectives and peer algorithms | Runtime foundations implemented; real multi-GPU hardware testing still required. |
 | Multicast collectives | Unsupported. |
 | Vendor-library-backed operations | Unsupported unless they have a pure Mojo fallback. |
 | Python MAX graph, engine, pipelines, and serving stack | Outside the current standalone release and not validated by this port. |
 
-The most valuable next coverage work is a systematic SM120a kernel census,
-starting with matmul/tensor-core kernels, reductions, attention primitives,
-layouts, and communication kernels. After that come real two-GPU peer tests,
-mixed CPU/GPU AsyncRT dispatch, and multi-architecture packaging.
+The most valuable next coverage work is expanding the SM120a catalogue,
+starting with matmul/tensor-core kernels, attention primitives, layouts, and
+communication kernels. After that come real two-GPU peer tests and
+multi-architecture packaging.
 
 ## Test progress
 
-The following focused tests have run successfully on the reference system:
+The initial no-Bazel compatibility census covers 69 relevant MAX and Blackwell
+cases. The Windows side uses this branch's `mojo.exe` and `nvptxrt.dll`; the
+oracle side uses the released Linux MAX toolchain under WSL on the same
+Blackwell GPU. The low-resource runner and detailed logs are maintained in the
+separate private oracle repository, not in this public port.
+
+| Classification | Count | Meaning |
+| --- | ---: | --- |
+| Windows pass | 63/69 | Every case that exits successfully on this port, including cases where the WSL oracle is inconclusive. |
+| Matched pass | 57/69 | Windows and WSL both pass the same entry point. |
+| Windows regression | 1/69 | AMD cross-target compilation is not available in this NVIDIA-focused Windows build. |
+| Oracle-side or inconclusive | 6/69 | Windows passes; WSL times out, exhausts resources, or disagrees for an oracle-side reason. |
+| Shared failure | 5/69 | Both implementations fail, including two real bf16 power defects on Blackwell. |
+
+The 13 Windows regressions fixed after the first census were the NVPTX
+short-pointer data-layout crash; invalid buffer-release error propagation;
+64-bit memory fill; missing MLRT task affinity and non-Metal control exports;
+and eight CPU-context/dispatcher cases. The CPU block now uses a bounded worker
+pool, real coroutine range execution, CPU buffers and timers, and ordered
+CPU↔CUDA copies rather than a symbol-only compatibility stub.
+
+The following focused tests have also run successfully on the reference
+system:
 
 | Test | Result |
 | --- | --- |
@@ -269,13 +293,9 @@ The following focused tests have run successfully on the reference system:
 | Direct GPU host callback test | 1/1 passed. |
 | Multicast capability test | Passed by correctly reporting that multicast is unsupported. |
 | GPU copy coverage | Normal, large, sub-buffer, and non-owning alias cases passed. |
+| Mixed CPU/GPU copy coverage | CPU contexts pass 64-element and 1 Mi-element transfers in both directions. |
+| CPU MAX algorithm coverage | Elementwise 4/4, parallelize 11/11, reductions 7/7, stencil 5/5, benchmark closures 2/2, and runtime initialization 1/1 passed. |
 | Windowed NVIDIA Mandelbrot | Passed as an AOT executable and through `mojo run`; every frame is recomputed on the GPU. |
-
-One upstream copy test also creates a CPU `DeviceContext` after finishing its
-GPU checks. Its GPU sections pass, but the final mixed CPU/GPU section currently
-stops because `nvptxrt` owns an unnamespaced `AsyncRT_DeviceContext_*` ABI and
-does not dispatch CPU context objects to the CPU provider. This is a known
-integration gap, not a failed GPU copy.
 
 Bazel's default Windows test execution toolchain is not registered for these
 GPU tests in this tree, so the hardware tests above were run directly with the
@@ -533,16 +553,16 @@ continues; regenerate it explicitly when a new release is wanted.
 
 ## Known limitations and next work
 
-1. Run a systematic MAX kernel census on SM120a and record pass/fail/unsupported
-   results rather than inferring support from the host runtime ABI.
-2. Validate tensor-core, TCGen05, attention, reduction, and communication paths
+1. Expand the initial 69-case census into a broad MAX kernel catalogue, with
+   explicit pass/fail/unsupported results for matmul, layouts, and operators.
+2. Validate tensor-core, TCGen05, attention, and communication paths
    specifically on consumer Blackwell.
 3. Test direct peer access, peer copies, and collective algorithms on a real
    multi-GPU Windows system.
 4. Add multicast/NVSwitch virtual-memory support where the Windows driver and
    hardware expose it.
-5. Resolve mixed CPU/GPU AsyncRT symbol dispatch so CPU contexts and NVIDIA
-   contexts can coexist in the same direct-JIT process.
+5. Add AMD cross-target code generation if cross-vendor compiler coverage is
+   required; it is the sole remaining Windows regression in the initial census.
 6. Package multiple NVIDIA architecture targets rather than defaulting the
    entire release to `sm_120a`.
 7. Expand validation from the Mojo kernel layer into the Python MAX graph,
