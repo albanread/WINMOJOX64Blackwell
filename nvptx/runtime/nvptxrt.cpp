@@ -25,15 +25,22 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <exception>
+#include <functional>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <new>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -495,6 +502,9 @@ struct NVPTXContext {
   std::vector<NVPTXBuffer *> liveHostBuffers;
   std::string pendingError;
   std::mutex mutex;
+  std::mutex cpuMutex;
+  std::condition_variable cpuTasksComplete;
+  size_t pendingCpuTasks = 0;
 };
 
 struct NVPTXGraphBuilder {
@@ -549,6 +559,7 @@ struct NVPTXTimer {
   CUevent start = nullptr;
   CUevent stop = nullptr;
   NVPTXContext *context = nullptr;
+  std::chrono::steady_clock::time_point cpuStart;
 };
 
 struct NVPTXContextScope {
@@ -566,6 +577,21 @@ static NVPTXContext *rootContext(const NVPTXContext *context) {
   return context->root ? context->root : const_cast<NVPTXContext *>(context);
 }
 
+static bool isCPUContext(const NVPTXContext *context) {
+  const NVPTXContext *root = rootContext(context);
+  return root && root->api == "cpu";
+}
+
+static void recordPendingError(const NVPTXContext *context,
+                               std::string message) {
+  NVPTXContext *root = rootContext(context);
+  if (!root || message.empty())
+    return;
+  std::lock_guard<std::mutex> lock(root->mutex);
+  if (root->pendingError.empty())
+    root->pendingError = std::move(message);
+}
+
 static void recordPendingCudaError(const NVPTXContext *context,
                                    const char *operation, CUresult status) {
   NVPTXContext *root = rootContext(context);
@@ -575,9 +601,7 @@ static void recordPendingCudaError(const NVPTXContext *context,
   std::string message =
       allocatedError ? allocatedError : "CUDA operation failed";
   free(const_cast<char *>(allocatedError));
-  std::lock_guard<std::mutex> lock(root->mutex);
-  if (root->pendingError.empty())
-    root->pendingError = std::move(message);
+  recordPendingError(root, std::move(message));
 }
 
 static const char *takePendingError(const NVPTXContext *context) {
@@ -624,9 +648,116 @@ static void retainContext(const NVPTXContext *context) {
 
 static void releaseContext(const NVPTXContext *context);
 
+struct CPUWorkItem {
+  NVPTXContext *context = nullptr;
+  std::function<void()> task;
+};
+
+class CPUWorkerPool {
+public:
+  CPUWorkerPool() {
+    unsigned workerCount = std::thread::hardware_concurrency();
+    workerCount = std::max(1u, std::min(workerCount, 16u));
+    workers.reserve(workerCount);
+    for (unsigned index = 0; index < workerCount; ++index)
+      workers.emplace_back([this]() { workerLoop(); });
+  }
+
+  ~CPUWorkerPool() {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      stopping = true;
+    }
+    taskAvailable.notify_all();
+    for (std::thread &worker : workers)
+      if (worker.joinable())
+        worker.join();
+  }
+
+  size_t size() const { return workers.size(); }
+
+  void enqueue(NVPTXContext *context, std::function<void()> task) {
+    retainContext(context);
+    {
+      std::lock_guard<std::mutex> lock(context->cpuMutex);
+      ++context->pendingCpuTasks;
+    }
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      tasks.push_back({context, std::move(task)});
+    }
+    taskAvailable.notify_one();
+  }
+
+private:
+  void workerLoop() {
+    for (;;) {
+      CPUWorkItem work;
+      {
+        std::unique_lock<std::mutex> lock(mutex);
+        taskAvailable.wait(lock, [this]() { return stopping || !tasks.empty(); });
+        if (stopping && tasks.empty())
+          return;
+        work = std::move(tasks.front());
+        tasks.pop_front();
+      }
+
+      try {
+        work.task();
+      } catch (const std::exception &error) {
+        recordPendingError(work.context,
+                           std::string("CPU worker failed: ") + error.what());
+      } catch (...) {
+        recordPendingError(work.context, "CPU worker failed");
+      }
+
+      {
+        std::lock_guard<std::mutex> lock(work.context->cpuMutex);
+        if (--work.context->pendingCpuTasks == 0)
+          work.context->cpuTasksComplete.notify_all();
+      }
+      releaseContext(work.context);
+    }
+  }
+
+  std::mutex mutex;
+  std::condition_variable taskAvailable;
+  std::deque<CPUWorkItem> tasks;
+  std::vector<std::thread> workers;
+  bool stopping = false;
+};
+
+static CPUWorkerPool &cpuWorkerPool() {
+  static CPUWorkerPool pool;
+  return pool;
+}
+
+static const char *enqueueCPUTask(const NVPTXContext *context,
+                                  std::function<void()> task) {
+  NVPTXContext *root = rootContext(context);
+  if (!root || !isCPUContext(root))
+    return errf("CPU task requires a CPU DeviceContext");
+  cpuWorkerPool().enqueue(root, std::move(task));
+  return nullptr;
+}
+
+static const char *synchronizeCPU(const NVPTXContext *context) {
+  NVPTXContext *root = rootContext(context);
+  if (!root || !isCPUContext(root))
+    return errf("CPU synchronize requires a CPU DeviceContext");
+  {
+    std::unique_lock<std::mutex> lock(root->cpuMutex);
+    root->cpuTasksComplete.wait(
+        lock, [root]() { return root->pendingCpuTasks == 0; });
+  }
+  return takePendingError(root);
+}
+
 static const char *setCurrent(const NVPTXContext *context) {
   if (!context)
     return errf("CUDA context is null");
+  if (isCPUContext(context))
+    return nullptr;
   CUresult status = cuCtxSetCurrent(context->context);
   return status == CUDA_SUCCESS ? nullptr
                                 : cudaError("cuCtxSetCurrent", status);
@@ -685,6 +816,11 @@ static void releaseContext(const NVPTXContext *context) {
     return;
   }
 
+  if (isCPUContext(mutableContext)) {
+    delete mutableContext;
+    return;
+  }
+
   cuCtxSetCurrent(mutableContext->context);
   for (NVPTXStream *stream : mutableContext->streams)
     releaseStream(stream);
@@ -696,8 +832,21 @@ static const char *waitForContext(const NVPTXContext *context,
                                   const NVPTXContext *other) {
   if (!context || !other)
     return errf("enqueue_wait_for_context: null context");
+  NVPTXContext *contextRoot = rootContext(context);
+  NVPTXContext *otherRoot = rootContext(other);
+  if (contextRoot == otherRoot)
+    return nullptr;
+  if (isCPUContext(otherRoot))
+    return synchronizeCPU(otherRoot);
+  if (isCPUContext(contextRoot)) {
+    if (const char *error = setCurrent(otherRoot))
+      return error;
+    CUresult status = cuStreamSynchronize(activeStream(other));
+    return status == CUDA_SUCCESS ? nullptr
+                                  : cudaError("cuStreamSynchronize", status);
+  }
   if (activeStream(context) == activeStream(other) &&
-      rootContext(context)->context == rootContext(other)->context)
+      contextRoot->context == otherRoot->context)
     return nullptr;
 
   if (const char *error = setCurrent(other))
@@ -874,6 +1023,10 @@ static bool isCudaKind(const char *api) {
          strcmp(api, "gpu") == 0;
 }
 
+static bool isCPUKind(const char *api) {
+  return api && strcmp(api, "cpu") == 0;
+}
+
 static bool peerAccessEnabledLocked(int device, int peerDevice) {
   auto &pairs = enabledPeerPairs();
   return std::find(pairs.begin(), pairs.end(),
@@ -927,6 +1080,17 @@ AsyncRT_DeviceContext_create(const NVPTXContext **result, const char *api,
                              int id) {
   if (!result)
     return errf("AsyncRT_DeviceContext_create: result is null");
+  if (isCPUKind(api)) {
+    if (id != 0)
+      return errf("CPU device %d is unavailable (device count: 1)", id);
+    auto *context = new NVPTXContext();
+    context->id = id;
+    context->name = "Windows x64 CPU";
+    context->arch = "x86_64";
+    context->api = "cpu";
+    *result = context;
+    return nullptr;
+  }
   if (!isCudaKind(api))
     return errf("nvptxrt does not implement device API '%s'", api ? api : "");
   if (!loadCUDA())
@@ -1047,6 +1211,8 @@ AsyncRT_DeviceContext_getApiVersion(int *result, const NVPTXContext *context) {
 }
 
 NVPTXRT_EXPORT int32_t AsyncRT_DeviceContext_numberOfDevices(const char *kind) {
+  if (isCPUKind(kind))
+    return 1;
   if (!isCudaKind(kind) || !loadCUDA())
     return 0;
   int cudaCount = 0;
@@ -1063,6 +1229,8 @@ AsyncRT_DeviceContext_canAccess(bool *result, const NVPTXContext *context,
   NVPTXContext *root = rootContext(context);
   NVPTXContext *peerRoot = rootContext(peer);
   *result = false;
+  if (isCPUContext(root) || isCPUContext(peerRoot))
+    return nullptr;
   if (root->device == peerRoot->device)
     return nullptr;
   int canAccess = 0;
@@ -1080,6 +1248,8 @@ NVPTXRT_EXPORT const char *AsyncRT_DeviceContext_enablePeerAccess(
     return errf("enablePeerAccess: null context");
   NVPTXContext *root = rootContext(context);
   NVPTXContext *peerRoot = rootContext(peer);
+  if (isCPUContext(root) || isCPUContext(peerRoot))
+    return errf("enablePeerAccess is only supported between CUDA contexts");
   if (root->device == peerRoot->device)
     return errf("enablePeerAccess: a device cannot be its own peer");
 
@@ -1259,10 +1429,52 @@ NVPTXRT_EXPORT const char *AsyncRT_DeviceContext_setMetalPrintEnabled(
   return errf("Metal GPU printing is unavailable on an NVIDIA context");
 }
 
+NVPTXRT_EXPORT const char *AsyncRT_DeviceContext_enqueueHostFunction(
+    const NVPTXContext *context, CUhostFn resume, CUhostFn destroy,
+    void *handle) {
+  if (!isCPUContext(context) || !resume || !destroy || !handle)
+    return errf("enqueueHostFunction: invalid CPU coroutine");
+  return enqueueCPUTask(context, [resume, destroy, handle]() {
+    resume(handle);
+    destroy(handle);
+  });
+}
+
+NVPTXRT_EXPORT const char *AsyncRT_DeviceContext_enqueueHostFunctionRange(
+    const NVPTXContext *context, CUhostFn resume, CUhostFn destroy,
+    void *const *handles, int64_t count) {
+  if (!isCPUContext(context) || !resume || !destroy || count < 0 ||
+      (count && !handles))
+    return errf("enqueueHostFunctionRange: invalid CPU coroutine range");
+  if (count == 0)
+    return nullptr;
+
+  auto ownedHandles = std::make_shared<std::vector<void *>>(
+      handles, handles + static_cast<size_t>(count));
+  const size_t taskCount =
+      std::min(static_cast<size_t>(count), cpuWorkerPool().size());
+  for (size_t task = 0; task < taskCount; ++task) {
+    const size_t begin = static_cast<size_t>(count) * task / taskCount;
+    const size_t end = static_cast<size_t>(count) * (task + 1) / taskCount;
+    if (const char *error = enqueueCPUTask(
+            context, [resume, destroy, ownedHandles, begin, end]() {
+              for (size_t index = begin; index < end; ++index) {
+                void *handle = (*ownedHandles)[index];
+                resume(handle);
+                destroy(handle);
+              }
+            }))
+      return error;
+  }
+  return nullptr;
+}
+
 NVPTXRT_EXPORT const char *
 AsyncRT_DeviceContext_synchronize(const NVPTXContext *context) {
   if (context && context->recordingBuilder)
     return errf("synchronize is unavailable while recording a device graph");
+  if (isCPUContext(context))
+    return synchronizeCPU(context);
   if (const char *error = setCurrent(context))
     return error;
   CUresult status = cuStreamSynchronize(activeStream(context));
@@ -1277,6 +1489,8 @@ NVPTXRT_EXPORT const char *
 AsyncRT_DeviceContext_isCompatible(const NVPTXContext *context) {
   if (!context)
     return errf("isCompatible: null context");
+  if (isCPUContext(context))
+    return nullptr;
   if (!loadCUDA())
     return errf("%s", cudaLoadError);
   return setCurrent(context);
@@ -1286,6 +1500,13 @@ NVPTXRT_EXPORT const char *
 AsyncRT_DeviceContext_runHealthcheck(NVPTXContext *context) {
   if (!context)
     return errf("runHealthcheck: null context");
+  if (isCPUContext(context)) {
+    constexpr uint32_t expected = 0x4d4f4a4f;
+    uint32_t actual = 0;
+    memcpy(&actual, &expected, sizeof(expected));
+    return actual == expected ? nullptr
+                              : errf("CPU healthcheck returned corrupt data");
+  }
   if (const char *error = setCurrent(context))
     return error;
 
@@ -1312,9 +1533,11 @@ AsyncRT_DeviceContextScope_create(const NVPTXContextScope **result,
                                   const NVPTXContext *context) {
   if (!result || !context)
     return errf("DeviceContextScope_create: null argument");
-  CUresult status = cuCtxPushCurrent(context->context);
-  if (status != CUDA_SUCCESS)
-    return cudaError("cuCtxPushCurrent", status);
+  if (!isCPUContext(context)) {
+    CUresult status = cuCtxPushCurrent(context->context);
+    if (status != CUDA_SUCCESS)
+      return cudaError("cuCtxPushCurrent", status);
+  }
   auto *scope = new NVPTXContextScope();
   scope->context = const_cast<NVPTXContext *>(context);
   retainContext(context);
@@ -1327,9 +1550,11 @@ AsyncRT_DeviceContextScope_release(const NVPTXContextScope *scope) {
   if (!scope)
     return;
   auto *mutableScope = const_cast<NVPTXContextScope *>(scope);
-  CUcontext popped = nullptr;
-  cuCtxPopCurrent(&popped);
   NVPTXContext *context = mutableScope->context;
+  if (!isCPUContext(context)) {
+    CUcontext popped = nullptr;
+    cuCtxPopCurrent(&popped);
+  }
   delete mutableScope;
   releaseContext(context);
 }
@@ -1339,6 +1564,8 @@ AsyncRT_DeviceContext_cuda_context(CUcontext *result,
                                    const NVPTXContext *context) {
   if (!result || !context)
     return errf("cuda_context: null argument");
+  if (isCPUContext(context))
+    return errf("cuda_context is unavailable on a CPU DeviceContext");
   *result = context->context;
   return nullptr;
 }
@@ -1361,6 +1588,18 @@ NVPTXRT_EXPORT void AsyncRT_DeviceContext_strfree(const char *pointer) {
 NVPTXRT_EXPORT const char *
 AsyncRT_DeviceContext_getMemoryInfo(const NVPTXContext *context,
                                     size_t *freeMemory, size_t *totalMemory) {
+  if (isCPUContext(context)) {
+    MEMORYSTATUSEX status = {};
+    status.dwLength = sizeof(status);
+    if (!GlobalMemoryStatusEx(&status))
+      return errf("GlobalMemoryStatusEx failed: Windows error %lu",
+                  GetLastError());
+    if (freeMemory)
+      *freeMemory = static_cast<size_t>(status.ullAvailPhys);
+    if (totalMemory)
+      *totalMemory = static_cast<size_t>(status.ullTotalPhys);
+    return nullptr;
+  }
   if (const char *error = setCurrent(context))
     return error;
   CUresult status = cuMemGetInfo(freeMemory, totalMemory);
@@ -1372,6 +1611,15 @@ AsyncRT_DeviceContext_maxSingleAllocationSize(size_t *result,
                                               const NVPTXContext *context) {
   if (!context)
     return errf("maxSingleAllocationSize: null context");
+  if (isCPUContext(context)) {
+    size_t freeMemory = 0;
+    if (const char *error =
+            AsyncRT_DeviceContext_getMemoryInfo(context, &freeMemory, nullptr))
+      return error;
+    if (result)
+      *result = freeMemory;
+    return nullptr;
+  }
   size_t total = 0;
   CUresult status = cuDeviceTotalMem(&total, context->device);
   if (status != CUDA_SUCCESS)
@@ -1387,7 +1635,7 @@ AsyncRT_DeviceContext_computeCapability(int32_t *result,
   if (!context)
     return errf("computeCapability: null context");
   if (result)
-    *result = context->computeCapability;
+    *result = isCPUContext(context) ? 0 : context->computeCapability;
   return nullptr;
 }
 
@@ -1396,6 +1644,8 @@ AsyncRT_DeviceContext_getAttribute(int *result, const NVPTXContext *context,
                                    int attribute) {
   if (!context)
     return errf("getAttribute: null context");
+  if (isCPUContext(context))
+    return errf("CUDA device attributes are unavailable on a CPU context");
   CUresult status = cuDeviceGetAttribute(result, attribute, context->device);
   return status == CUDA_SUCCESS ? nullptr
                                 : cudaError("cuDeviceGetAttribute", status);
@@ -1408,10 +1658,26 @@ NVPTXRT_EXPORT const char *AsyncRT_DeviceContext_createBuffer_async(
     return errf("createBuffer_async: null context");
   if (elementSize && length > std::numeric_limits<size_t>::max() / elementSize)
     return errf("createBuffer_async: allocation size overflow");
+  size_t bytes = length * elementSize;
+  if (isCPUContext(context)) {
+    void *allocation = malloc(std::max<size_t>(bytes, 1));
+    if (!allocation)
+      return errf("CPU buffer allocation failed for %zu bytes", bytes);
+    auto *buffer = new NVPTXBuffer();
+    buffer->host = allocation;
+    buffer->bytes = bytes;
+    buffer->context = const_cast<NVPTXContext *>(context);
+    retainContext(context);
+    registerHostBuffer(buffer);
+    if (result)
+      *result = buffer;
+    if (devicePointer)
+      *devicePointer = allocation;
+    return nullptr;
+  }
   if (const char *error = setCurrent(context))
     return error;
 
-  size_t bytes = length * elementSize;
   CUdeviceptr allocation = 0;
   CUresult status = cuMemAlloc(&allocation, std::max<size_t>(bytes, 1));
   if (status != CUDA_SUCCESS)
@@ -1437,9 +1703,25 @@ NVPTXRT_EXPORT const char *AsyncRT_DeviceContext_createHostBuffer(
     return errf("createHostBuffer: null context");
   if (elementSize && length > std::numeric_limits<size_t>::max() / elementSize)
     return errf("createHostBuffer: allocation size overflow");
+  size_t bytes = length * elementSize;
+  if (isCPUContext(context)) {
+    void *allocation = malloc(std::max<size_t>(bytes, 1));
+    if (!allocation)
+      return errf("CPU host-buffer allocation failed for %zu bytes", bytes);
+    auto *buffer = new NVPTXBuffer();
+    buffer->host = allocation;
+    buffer->bytes = bytes;
+    buffer->context = const_cast<NVPTXContext *>(context);
+    retainContext(context);
+    registerHostBuffer(buffer);
+    if (result)
+      *result = buffer;
+    if (devicePointer)
+      *devicePointer = allocation;
+    return nullptr;
+  }
   if (const char *error = setCurrent(context))
     return error;
-  size_t bytes = length * elementSize;
   void *allocation = nullptr;
   CUresult status = cuMemHostAlloc(&allocation, std::max<size_t>(bytes, 1), 0);
   if (status != CUDA_SUCCESS)
@@ -1463,12 +1745,17 @@ NVPTXRT_EXPORT void AsyncRT_DeviceContext_createBuffer_owning(
     const NVPTXBuffer **result, const NVPTXContext *context,
     void *devicePointer, size_t length, size_t elementSize, bool owning) {
   auto *buffer = new NVPTXBuffer();
-  buffer->device =
-      static_cast<CUdeviceptr>(reinterpret_cast<uintptr_t>(devicePointer));
+  if (isCPUContext(context))
+    buffer->host = devicePointer;
+  else
+    buffer->device =
+        static_cast<CUdeviceptr>(reinterpret_cast<uintptr_t>(devicePointer));
   buffer->bytes = length * elementSize;
   buffer->context = const_cast<NVPTXContext *>(context);
   buffer->owning = owning;
   AsyncRT_DeviceContext_retain(context);
+  if (buffer->host)
+    registerHostBuffer(buffer);
   if (result)
     *result = buffer;
 }
@@ -1662,13 +1949,39 @@ static const char *copyBuffersAsync(const NVPTXContext *context,
     return error;
   size_t bytes = std::min(destination->bytes, source->bytes);
   if (destination->host && source->host) {
-    if (const char *error = setCurrent(source->context))
-      return error;
-    CUresult syncStatus = cuStreamSynchronize(activeStream(source->context));
-    if (syncStatus != CUDA_SUCCESS)
-      return cudaError("cuStreamSynchronize", syncStatus);
+    if (isCPUContext(source->context)) {
+      if (rootContext(source->context) != rootContext(context))
+        if (const char *error = synchronizeCPU(source->context))
+          return error;
+    } else {
+      if (const char *error = setCurrent(source->context))
+        return error;
+      CUresult syncStatus =
+          cuStreamSynchronize(activeStream(source->context));
+      if (syncStatus != CUDA_SUCCESS)
+        return cudaError("cuStreamSynchronize", syncStatus);
+    }
     memcpy(destination->host, source->host, bytes);
     return nullptr;
+  }
+
+  if (isCPUContext(context) && source->host) {
+    if (const char *error = synchronizeCPU(source->context))
+      return error;
+    if (const char *error = setCurrent(destination->context))
+      return error;
+    CUresult status =
+        cuMemcpyHtoD(destination->device, source->host, bytes);
+    return status == CUDA_SUCCESS ? nullptr
+                                  : cudaError("cuMemcpyHtoD", status);
+  }
+  if (isCPUContext(context) && destination->host) {
+    if (const char *error = setCurrent(source->context))
+      return error;
+    CUresult status =
+        cuMemcpyDtoH(destination->host, source->device, bytes);
+    return status == CUDA_SUCCESS ? nullptr
+                                  : cudaError("cuMemcpyDtoH", status);
   }
 
   CUresult status = CUDA_SUCCESS;
@@ -2170,6 +2483,14 @@ AsyncRT_DeviceContext_startTimer(NVPTXTimer **result,
                                  const NVPTXContext *context) {
   if (!result || !context)
     return errf("startTimer: null argument");
+  if (isCPUContext(context)) {
+    auto *timer = new NVPTXTimer();
+    timer->context = rootContext(context);
+    timer->cpuStart = std::chrono::steady_clock::now();
+    retainContext(timer->context);
+    *result = timer;
+    return nullptr;
+  }
   if (const char *error = setCurrent(context))
     return error;
   auto *timer = new NVPTXTimer();
@@ -2198,6 +2519,14 @@ AsyncRT_DeviceContext_stopTimer(int64_t *elapsedNanos,
                                 const NVPTXTimer *timer) {
   if (!elapsedNanos || !context || !timer)
     return errf("stopTimer: null argument");
+  if (isCPUContext(context)) {
+    if (const char *error = synchronizeCPU(context))
+      return error;
+    *elapsedNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - timer->cpuStart)
+                        .count();
+    return nullptr;
+  }
   if (const char *error = setCurrent(context))
     return error;
   CUresult status = cuEventRecord(timer->stop, activeStream(context));
@@ -2218,11 +2547,13 @@ NVPTXRT_EXPORT void AsyncRT_DeviceTimer_release(const NVPTXTimer *timer) {
     return;
   auto *mutableTimer = const_cast<NVPTXTimer *>(timer);
   NVPTXContext *context = mutableTimer->context;
-  cuCtxSetCurrent(context->context);
-  if (mutableTimer->stop)
-    cuEventDestroy(mutableTimer->stop);
-  if (mutableTimer->start)
-    cuEventDestroy(mutableTimer->start);
+  if (!isCPUContext(context)) {
+    cuCtxSetCurrent(context->context);
+    if (mutableTimer->stop)
+      cuEventDestroy(mutableTimer->stop);
+    if (mutableTimer->start)
+      cuEventDestroy(mutableTimer->start);
+  }
   delete mutableTimer;
   releaseContext(context);
 }
