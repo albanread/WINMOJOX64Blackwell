@@ -9,6 +9,14 @@ package(default_visibility = ["//visibility:public"])
 modular_cc_library(
     name = "nvptxrt",
     srcs = ["nvptxrt.cpp"],
+    # The CPU worker pool catches exceptions escaping a queued task. The
+    # toolchain compiles the tree with -fno-exceptions
+    # (bazel/internal/cc-toolchain/args/BUILD.bazel), so without this the
+    # translation unit fails outright with "cannot use 'try' with exceptions
+    # disabled". Scoped to this target, matching how the tree already grants
+    # -fexceptions to nixl in common.bazelrc; exceptions are caught inside the
+    # worker and never cross the DLL boundary.
+    copts = ["-fexceptions"],
     target_compatible_with = [
         "@mojo_gpu_toolchains//:nvidia_gpu",
         "@platforms//cpu:x86_64",
@@ -22,6 +30,14 @@ cc_binary(
     name = "nvptxrt.dll",
     srcs = ["nvptxrt.cpp"],
     linkshared = True,
+    # The CPU worker pool catches exceptions escaping a queued task. The
+    # toolchain compiles the tree with -fno-exceptions
+    # (bazel/internal/cc-toolchain/args/BUILD.bazel), so without this the
+    # translation unit fails outright with "cannot use 'try' with exceptions
+    # disabled". Scoped to this target, matching how the tree already grants
+    # -fexceptions to nixl in common.bazelrc; exceptions are caught inside the
+    # worker and never cross the DLL boundary.
+    copts = ["-fexceptions"],
     target_compatible_with = [
         "@mojo_gpu_toolchains//:nvidia_gpu",
         "@platforms//cpu:x86_64",
