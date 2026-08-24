@@ -510,10 +510,15 @@ static LogicalResult optimizeLLVMModule(llvm::Module &module,
                                         CompilationOptions &options,
                                         AsyncRT::CPUDevice &cpuDevice,
                                         std::optional<size_t> moduleIdx) {
+  // An explicitly selected target ABI can change the TargetMachine's data
+  // layout.  NVPTX's "shortptr" ABI, for example, makes pointers in several
+  // device address spaces 32-bit.  In that case the ABI-specific machine
+  // layout must take precedence over the target attribute's baseline layout;
+  // otherwise LLVM rejects the module when it creates a MachineFunction.
   llvm::DataLayout targetDataLayout =
-      options.targetDataLayout.empty()
-          ? targetMachine.createDataLayout()
-          : llvm::DataLayout(options.targetDataLayout);
+      options.targetABI.empty() && !options.targetDataLayout.empty()
+          ? llvm::DataLayout(options.targetDataLayout)
+          : targetMachine.createDataLayout();
   module.setDataLayout(targetDataLayout);
 
   std::string saveTempsPrefix = options.saveTempsPrefix;
