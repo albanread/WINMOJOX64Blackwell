@@ -116,9 +116,18 @@ def _run_cuda_external_function(ctx: DeviceContext) raises:
 // Cuda compilation tools, release 12.6, V12.6.85
 // Based on NVVM 7.0.1
 //
+// Retargeted from the generator's `.version 8.5` / `.target sm_80`, for the
+// same reason the two-entry-point module below was lowered: the kernel is a
+// plain vector add and every instruction in it -- mad.lo.s32, setp, cvta,
+// ld.global.f32, add.f32 -- long predates sm_80. Declaring the generating
+// toolkit's architecture made a portable module refuse to load on any card
+// below Ampere, and `.target` excludes hardware in a way `.version` alone
+// does not: on a Turing part the load failed with CUDA error 218, a PTX JIT
+// compilation failure, naming nothing.
+//
 
-.version 8.5
-.target sm_80
+.version 6.3
+.target sm_75
 .address_size 64
 
 	// .globl	_Z9vectorAddPKfS0_Pfi
