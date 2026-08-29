@@ -370,6 +370,7 @@ agree on every byte.
 | C3-library | `com_tramp0..4` + `finish_state`: a COM class as a struct + small factory | `s11` rebuilds the IDropTarget as a `DropTarget` struct with raising methods, no raw fn pointers | **DONE** |
 | C3-keyword | `class Name(IFace):` compiles down to the library form | `s12` writes the IDropTarget as a plain `class` and it dispatches through the metadata slots; `f07`/`f08` refuse two interfaces and a missing one | **DONE** |
 | C4-interfaces | several interfaces on one object: per-interface vtable cells, IID-routed QI, shared refcount | `s13` checks the three COM identity rules (distinct pointers, symmetric QI, one IUnknown); `s14` is the same as a `class` over two interfaces; `f07` refuses an ambiguous method name | **DONE** |
+| C4-hardening | the defects the class suite did not reach: state destroyed at refcount zero, implementation-side arity/width checks, helper methods allowed, unfilled slots named, inherited interfaces answered, class-grammar edges | `s15`-`s19`, `f09`-`f12`; see `compiler_fixes_stability.md` for the register and what each cost | **DONE** |
 | C5 | `IDispatch` + BSTR/VARIANT | the IDE exposes one automation object a PowerShell script can call | design |
 
 **What the keyword cost, and why it was small.** The synthesis was expected to

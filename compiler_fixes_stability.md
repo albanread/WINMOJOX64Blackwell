@@ -29,6 +29,72 @@ The proven ground, so the register below is read in proportion:
 None of that is in question. The defects below are in the parts the tests
 did not yet reach.
 
+## Progress — 2026-08-29, after the fixing pass
+
+Steps 0-6 of the order below are done. What changed against the register:
+
+| defect | outcome |
+|---|---|
+| 1 destructor leak | **fixed** — `_com_class_dtor[T]` wired by `finish_state`; `s15` is the canary and was verified to FAIL without the fix |
+| 2 non-COM `def`s | **fixed** — `wire_if_com` plus a catch-all overload; `s16`. See the measured Mojo facts below |
+| 3 no signature check | **fixed** — arity and width asserted against the metadata; `f09`, `f10`. The runner's must-fail glob had silently skipped `f10` |
+| 4 diagnostics in `<class Name>` | still deferred to the IDE's diagnostics design, as planned |
+| 5 untested edges | **empty body** fixed (it swallowed the rest of the file; now a located error, `f11`); **nested class** already refused correctly (`f12`); **CRLF** works, checked by the runner on a converted copy since git normalises committed files; **move-only state** fixed — the desugar derived `Copyable` and so refused any class holding an owned `ComPtr`, which is the ordinary IDE case (`s19`) |
+| 6 base-chain QI | **fixed** — `com_chain_iids` returns a whole chain in one query, so depth is never unrolled; `s18` queries an IStream object for ISequentialStream and calls Read through it |
+| 7 STA threading | **documented** — `ComClassBuilder`'s docstring states that these are single-threaded apartment objects: the refcount is atomic, the state is not, which is correct under `Apartment` and races in an MTA |
+
+### One defect the register did not predict
+
+**A nested class hung the compiler.** Not a poor diagnostic -- an infinite
+loop: 5.5 million identical "must be declared at module scope" errors and no
+termination. `parseClassStmt` rejected the nested case and recovered *before*
+consuming the `class` keyword, and `skipUntilIndentation` stops on the current
+token when it already sits at the target indentation, so the statement loop
+re-entered on the same token forever.
+
+MojoCocoa's `parseClassStmt` carries a comment about exactly this hazard,
+which was read during the implementation and not carried across. Recovery now
+consumes a token before skipping, the keyword is consumed before any
+diagnostic can recover, and all five malformed-header paths (no name, broken
+interface list, missing colon, empty list, class inside a function) were
+checked to terminate.
+
+The harness had the same gap: a hang read as a slow run, so the suite simply
+never finished. Every compile is now capped, and a timeout is recorded as a
+failure with its own message -- a must-fail test only means something if the
+compiler survives it.
+
+Also added, because defect 2 moved a typo from compile time to construction
+time: `finish` now **names** the slots it is missing (`com_method_at_slot`),
+so a mistyped `Drpo` reports "unfilled slot(s): IDropTarget.Drop" rather than
+a count. `s17` makes the typo deliberately.
+
+### Two Mojo facts this pass measured
+
+Both were assumptions worth testing, and one of them was wrong:
+
+- **`comptime if` prunes instantiation but NOT overload conversion.** A
+  guarded call still resolves its overloads and still fails on a type
+  mismatch, while a `comptime assert` inside a pruned branch never fires.
+  That is why filtering helpers needs both a guard *and* a catch-all
+  overload: neither alone covers every shape a class body can hold.
+- **Generics instantiate lazily**, so a class whose slots cannot be resolved
+  compiles cleanly until `into_com()` is called. Every must-fail that tests a
+  class has to build an object, or it passes for the wrong reason.
+
+### Stability
+
+- `com-c4-green` tags `1b750f2`, the pre-fix known-good point.
+- COM suite: **28/28** after defect 6; the edge additions (`s19`, `f11`,
+  `f12`, the CRLF check) are being verified as this is written.
+- The stdlib battery ran once and is **not yet a clean gate**: 14 pass, 1
+  fails to build, 4 fail, and 350 skipped because the build abort cut the run
+  short. Every failure was checked and none are ours -- `test_ffi` is an
+  upstream test that supports only Linux and macOS (`comptime assert False,
+  "test not implemented for the platform"`, no COM references), three are
+  clang-tidy on C support files, one is lit configuration. It needs a
+  `--keep_going` re-run to mean anything, which is step 7.
+
 ## The defect register
 
 Ranked by how soon the IDE would trip over each.
