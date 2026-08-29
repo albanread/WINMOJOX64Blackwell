@@ -6,7 +6,7 @@ NewModula2's shipped COM implementation. Status: **C0-C2 are built and
 verified** -- `let`, `fn`, the metadata queries, `Com[...]` typed receivers,
 `HResult`, `Apartment`, `co_create`, and a 14-check spike suite under
 `spikes/com/` whose must-fail half refuses to compile and whose s09 is a
-cl.exe-built oracle object driven from Mojo. `class` (C3-C4) remains design.
+cl.exe-built oracle object driven from Mojo. **C3's runtime landed too**: `ComClassBuilder` implements live COM objects (`s10` registers a real IDropTarget with OLE), so the `class` keyword now has a proven runtime to synthesise onto -- that synthesis is the remaining work.
 The sibling documents to read beside this one are MojoCocoa's
 `COCOA_CLASS_DESIGN.md` and `COCOA_LET_DESIGN.md`.*
 
@@ -37,7 +37,7 @@ different states, and all three states are convenient:
 
 | keyword | state | notes |
 |---|---|---|
-| `class` | **Still the reserved stub** (`ParserStmts.cpp:4067`) | replacing it is C3-C4; the runtime pattern its synthesis will automate is proven by hand in `spikes/com/s08_sink_vtable.mojo` |
+| `class` | **Reserved stub** (`ParserStmts.cpp:4067`); its *runtime* is built | `ComClassBuilder` in `std/sys/com.mojo` is what the keyword's synthesis will emit: static vtable in metadata slot order, atomic refcount, IID-checking QI, per-slot completeness. `s08`/`s10` prove it. Replacing the stub to emit these calls from a `class` declaration is the one piece left. |
 | `let` | **BUILT.** `kLetPat` onto `PatternDeclKind::kBind`, ported from the Mac ports across nine files | exercised by every spike; `f0*` prove nothing about it because rebinding is caught in `ExprNodes.cpp`'s existing kBind machinery |
 | `fn` | **BUILT.** The removal error at `DeclResolution.cpp:1958` became the foreign-callable capture; `setCABI(true)` engages the existing `abi("C")` machinery | `s07` hands one to EnumWindows; `s08` builds a vtable of them; `f05` proves `fn ... raises` refuses to compile |
 
@@ -366,7 +366,8 @@ agree on every byte.
 | C1 | `Com[...]` typed receivers; `HResult` raises; width checks | `s05` round-trips bytes through a live IStream; `s06` drives the shell's FileOpenDialog headless; `f01-f04` refuse unknown method / wrong arity / wrong width / unknown interface | **DONE** |
 | C2 | `let` and `fn` (port + revival) | `s07` hands an `fn` to EnumWindows; `f05` proves `fn raises` refuses; `let` used throughout | **DONE** |
 | C2.5 | the foreign-compiler oracle | `s09`: an MSVC-built ISequentialStream consumed through the typed surface -- Write's byte-sum read back exact, QI honoured and refused correctly | **DONE** |
-| C3 | `class` over one interface: static vtable, AddRef/Release, QI, trampolines | `DropTarget` receives a real drag from Explorer onto an IDE window; `s08` is the hand-built pattern the synthesis automates | design |
+| C3-runtime | `ComClassBuilder`: static vtable in metadata order, atomic AddRef/Release, IID-checking QI, completeness-or-E_NOTIMPL | `s10` builds an IDropTarget, RegisterDragDrop holds it (refcount 1->2), drop callbacks accumulate state, RevokeDragDrop releases (2->1); `f06` refuses a class that overrides IUnknown | **DONE** |
+| C3-keyword | replace the `class` stub to emit ComClassBuilder calls from a declaration | `class DropTarget(IDropTarget):` compiles to what s10 writes by hand | design |
 | C4 | multiple interfaces (tear-off first, per the M2 cost model) + `raises` bridge | one object answering two IIDs; the cl.exe oracle calls both; shuffled-source must-fail proves slot order comes from metadata | design |
 | C5 | `IDispatch` + BSTR/VARIANT | the IDE exposes one automation object a PowerShell script can call | design |
 
