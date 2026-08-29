@@ -1,10 +1,14 @@
 # language_update — `class`, `let`, and `fn` for COM
 
-*2026-08-26. Written against this tree at `4aa5bec` and a survey of MojoCocoa
-at `ce53b96`. Status: design, nothing below is built. The sibling documents to
-read beside this one are MojoCocoa's `COCOA_CLASS_DESIGN.md` and
-`COCOA_LET_DESIGN.md`, which record the decisions this document inherits, and
-`COCOA_DESIGN.md` in MojoMacX64, which we have not yet pulled and should.*
+*2026-08-26, revised 2026-08-29. Written against a survey of MojoCocoa at
+`ce53b96`, MojoMacX64's `COCOA_DESIGN.md` (D1-D6), and a deep survey of
+NewModula2's shipped COM implementation. Status: **C0-C2 are built and
+verified** -- `let`, `fn`, the metadata queries, `Com[...]` typed receivers,
+`HResult`, `Apartment`, `co_create`, and a 14-check spike suite under
+`spikes/com/` whose must-fail half refuses to compile and whose s09 is a
+cl.exe-built oracle object driven from Mojo. `class` (C3-C4) remains design.
+The sibling documents to read beside this one are MojoCocoa's
+`COCOA_CLASS_DESIGN.md` and `COCOA_LET_DESIGN.md`.*
 
 The Mac ports gave Mojo an object story by teaching three keywords to speak
 the platform's object system: `class` declares a Cocoa class, `let` binds
@@ -31,27 +35,51 @@ Windows."* This is the COM half.
 Checked against this tree, not assumed. The three keywords are in three
 different states, and all three states are convenient:
 
-| keyword | this tree at `4aa5bec` | MojoCocoa's use | our use |
-|---|---|---|---|
-| `class` | **Reserved, stubbed.** `ParserStmts.cpp:4067` parses the keyword and emits "classes are not supported yet" | an Objective-C class, on an attributed `StructDeclOp` | a COM object implementing N interfaces, on the same attributed `StructDeclOp` |
-| `let` | **Absent.** No `kw_let`, no `kLetPat` | immutable binding, lowered onto the pre-existing `PatternDeclKind::kBind` | identical — port as-is |
-| `fn` | **Parses, then refuses.** `DeclResolution.cpp:1958` emits "'fn' has been removed; use 'def' instead" with a FixIt | revived as *foreign-callable*: C ABI, non-raising, no captures | identical revival — the keyword for anything Windows calls |
+| keyword | state | notes |
+|---|---|---|
+| `class` | **Still the reserved stub** (`ParserStmts.cpp:4067`) | replacing it is C3-C4; the runtime pattern its synthesis will automate is proven by hand in `spikes/com/s08_sink_vtable.mojo` |
+| `let` | **BUILT.** `kLetPat` onto `PatternDeclKind::kBind`, ported from the Mac ports across nine files | exercised by every spike; `f0*` prove nothing about it because rebinding is caught in `ExprNodes.cpp`'s existing kBind machinery |
+| `fn` | **BUILT.** The removal error at `DeclResolution.cpp:1958` became the foreign-callable capture; `setCABI(true)` engages the existing `abi("C")` machinery | `s07` hands one to EnumWindows; `s08` builds a vtable of them; `f05` proves `fn ... raises` refuses to compile |
 
-So: `class` needs its stub replaced with a real parse (MojoCocoa's is 111
-lines, `ParserStmts.cpp:4076-4187` there); `let` is a mechanical port their
-own design doc sizes as "a handful of parser changes"; `fn` is the deletion of
-one error and the attachment of a contract that already exists in this tree as
-`abi("C")` — their `fn` merely engages it by default.
-
-What we already have underneath, verified in this tree:
+The layers as they now stand:
 
 | piece | where | state |
 |---|---|---|
-| metadata database | `windows_api.db` via `@winkb` archive, from WRASM releases | 86 MB, fetched, hash-pinned |
-| compiler hook | `winkb_query` in `KGENAttrs.cpp` + `IREvaluatorContext.cpp:1115` | working; used by `winkb_struct_size` etc. |
-| query surface | `std/sys/_winkb.mojo` | 7 queries incl. `vtable_index`, `interface_iid` |
-| ownership type | `ComPtr` in `std/sys/_com.mojo` (287 lines) | adopt / copy=AddRef / move / deinit=Release / `query_interface[T]` — proven live in `examples/win32/comptr.mojo` |
-| raw dispatch | `com_method_of` | works, but the caller hand-writes the signature |
+| metadata database | `windows_api.db` via `@winkb`, from WRASM releases -- the same artefact NewModula2's pipeline builds | 86 MB, hash-pinned; method tables present, CLSID values absent |
+| compiler hook | `winkb_query` in `KGENAttrs.cpp` + `IREvaluatorContext.cpp` | 13 named queries; every COM method query chain-walks in SQL |
+| query surface | `std/sys/_winkb.mojo` | wrappers for all 13 |
+| ownership type | `ComPtr` in `std/sys/_com.mojo` | adopt / copy=AddRef / move / deinit=Release / `query_interface[T]` |
+| raw dispatch | `com_method_of` | permanent bottom layer, per the M2 rule |
+| typed surface | **`std/sys/com.mojo`** | `Com[...]` receivers, `HResult`, `Apartment`, `co_create` |
+| proof | **`spikes/com/`** | 9 must-pass, 5 must-fail, one cl.exe oracle, `run-com-checks.ps1` |
+
+### Lessons the implementation itself paid for
+
+Recorded here because each cost a debugging cycle and will be reached for
+again:
+
+- **`comptime if` does not prune what follows it.** A taken `comptime if ...
+  return` still elaborates the statements after the block, so a metadata
+  query used as a fallback must sit in the final `else` of one chain or it
+  elaborates -- and errors -- even when a primitive already answered
+  (`_expected_width` in com.mojo carries the comment).
+- **ASAP destruction and COM refcounts compose exactly, and that is a trap.**
+  Mojo destroys a value after its last use, not at scope end, so a `ComPtr`'s
+  Release fires the moment the binding goes cold -- before the refcount
+  assertion three lines later. `s04` pins this with keep-alives and a
+  comment. `class` synthesis must document the same for sinks handed to
+  Windows: the OS's reference is the one that keeps the object alive, and
+  `RegisterDragDrop`'s AddRef is doing real work.
+- **`OwnedDLHandle.get_function[T]` takes a return type, not a signature.**
+  Feeding it a full fn type compiles and then miscalls. The typed-signature
+  accessor is `Win32Module(...).function[Sig]` from `std.sys._win32`, which
+  is what `std/windows/process.mojo` uses; com.mojo now does the same, and
+  `Apartment.__exit__` resolves by `address_of` because `__exit__` cannot
+  raise.
+- **The GUID pin caught its own author.** The s03 regression was first
+  written with five zero bytes where `c000-000000000046` has six; it failed
+  its own check on the first run. That is the check working, and it stays in
+  the spike's comment.
 
 ---
 
@@ -263,15 +291,23 @@ by `winkb_vtable_index` (a compile-time constant), cast the slot to the
 per-signature function type, call. The per-signature cast and the comptime
 argument checking (`runtime.mojo:262-314` there) transfer verbatim.
 
-**The gating gap is metadata, and it is the first work item.** Their database
-answers 25 named queries; ours answers 7. The missing 18 are all method
-signatures — return kind, return type, per-argument ABI classification —
-which is precisely what typed calls and comptime checking consume. WRASM must
-grow the equivalent of `method_ret_kind` / `method_ret_class` / `method_abi`
-for COM methods, from WinMD/typelibs, with **Win64 classification** (simpler
-than their AAPCS64: four register slots, shadow space, >8-byte or
-non-power-of-two returns go indirect). Until those tables exist, nothing in
-§2–§6 can be verified.
+**The metadata gap closed on inspection.** The database already held the
+method tables -- `interface_methods` (46,250 rows with absolute
+`vtable_index` and return types) and `interface_method_params` (79,208 typed
+rows) -- because `windows_api.db` is the same artefact NewModula2's
+winapi-gen pipeline builds; only the *queries* were missing. Six were added
+(`com_method_ret_type`, `com_method_param_count`, `com_method_param_type`,
+`com_method_count`, `com_interface_base`, `type_width`), all walking the
+inheritance chain in SQL with a recursive CTE seeded on `iid IS NOT NULL`
+(the definitive interface signal; the winmd importer's kind classifier
+mislabels). Fixing the pre-existing `vtable_index` query to chain-walk came
+with it -- it could not previously answer (IStream, Read).
+
+**The one genuine WRASM gap left: CLSID values.** All 5,837 guid-kind
+constants are present but valueless, and coclasses land as `kind='struct'`
+with no IID. Until the generator grows them, activation writes its one GUID
+at the call site (`co_create`'s documented convention), validated at run
+time. Everything else in §2-§6 is now verified by `spikes/com/`.
 
 Three database-side decisions inherited unchanged: named queries only (a
 caller asks `vtable_index`, never a SELECT); `db_hash` pins the metadata
@@ -324,14 +360,15 @@ Their verification discipline arrives whole: a check-script where the
 consumes our interfaces, linked against the Mojo binary, and the two must
 agree on every byte.
 
-| # | lands | verified by |
-|---|---|---|
-| C0 | WRASM emits COM method tables (ret kind/class, arg ABI classes, slot order) + the ~18 new named queries; `db_hash` bumps | queries answer for `IFileOpenDialog` and disagree nowhere with `cl.exe`'s headers |
-| C1 | `Com[...]` typed receivers; HRESULT raises; out-params become returns | the §3 file-dialog snippet runs; must-fail: wrong arity, wrong arg register class, unknown method |
-| C2 | `let` and `fn` land (port + revival) | `wnd_proc` as `fn` drives a real window; `let` rebinding is a compile error |
-| C3 | `class` over one interface: vtable, AddRef/Release, QI, trampolines | `DropTarget` receives a real drag from Explorer onto an IDE window; refcount probe balances |
-| C4 | multiple interfaces + this-adjustment; `raises` bridge | one object answering two IIDs, `cl.exe` oracle calls both; shuffled-source must-fail proves slot order comes from metadata |
-| C5 | `IDispatch` implementation support + BSTR/VARIANT | the IDE exposes one automation object a PowerShell script can call — the AppleScript-dictionary analogue, which makes the IDE's scripting surface *be* this work |
+| # | lands | verified by | state |
+|---|---|---|---|
+| C0 | COM method queries over the existing tables; chain-walk everywhere | `spikes/com/s01_metadata.mojo` pins slots, arities, types, widths, the base chain, and the db hash | **DONE** |
+| C1 | `Com[...]` typed receivers; `HResult` raises; width checks | `s05` round-trips bytes through a live IStream; `s06` drives the shell's FileOpenDialog headless; `f01-f04` refuse unknown method / wrong arity / wrong width / unknown interface | **DONE** |
+| C2 | `let` and `fn` (port + revival) | `s07` hands an `fn` to EnumWindows; `f05` proves `fn raises` refuses; `let` used throughout | **DONE** |
+| C2.5 | the foreign-compiler oracle | `s09`: an MSVC-built ISequentialStream consumed through the typed surface -- Write's byte-sum read back exact, QI honoured and refused correctly | **DONE** |
+| C3 | `class` over one interface: static vtable, AddRef/Release, QI, trampolines | `DropTarget` receives a real drag from Explorer onto an IDE window; `s08` is the hand-built pattern the synthesis automates | design |
+| C4 | multiple interfaces (tear-off first, per the M2 cost model) + `raises` bridge | one object answering two IIDs; the cl.exe oracle calls both; shuffled-source must-fail proves slot order comes from metadata | design |
+| C5 | `IDispatch` + BSTR/VARIANT | the IDE exposes one automation object a PowerShell script can call | design |
 
 C3 is deliberately the IDE's drop-target because the IDE plan (their
 `IDE-DESIGN.md`, ours to be written against it) is the consumer that keeps
