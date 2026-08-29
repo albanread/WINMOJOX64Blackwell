@@ -793,12 +793,18 @@ struct ComClassBuilder[*interfaces: StaticString]:
     `method` and `slot` take the name alone and find its interface. A name
     declared by more than one of them is ambiguous and refused.
 
-    v1 scope, recorded honestly: QueryInterface answers each implemented
-    interface and IUnknown, but not the intermediate bases of a deeper chain
-    (IDropTarget and IDropSource derive straight from IUnknown, so the
-    drag-and-drop pair is complete; an IStream would not answer to
-    ISequentialStream). The fn signatures themselves are not checked against
-    the metadata -- the `class` keyword's trampolines do that.
+    Threading: these objects are single-threaded apartment objects. The
+    refcount is atomic, so AddRef and Release are safe from any thread, but
+    the state the methods mutate is NOT synchronised. That is correct under
+    `Apartment` (STA/OLE), where COM serialises calls onto the one thread
+    that created the object -- which is what drag-and-drop, the clipboard and
+    window callbacks all use. An object handed to a multi-threaded apartment
+    would race, and nothing here prevents it.
+
+    QueryInterface answers every implemented interface, each interface's
+    inherited bases, and IUnknown. Method signatures are checked against the
+    metadata by `method` -- arity and argument widths -- so a slot cannot be
+    filled by an implementation the caller would misdispatch to.
 
     Parameters:
         interfaces: The COM interfaces the object implements, primary first.
