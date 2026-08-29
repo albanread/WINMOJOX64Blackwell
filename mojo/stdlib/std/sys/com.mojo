@@ -822,3 +822,132 @@ struct ComClassBuilder[interface_name: StaticString]:
             iid_bytes.unsafe_offset(i)[] = self._iids[i]
 
         return ComPtr[Self.interface_name](adopt=base)
+
+    def finish_state[
+        T: Movable & Deinitable
+    ](var self, var state: T) raises -> ComPtr[Self.interface_name]:
+        """Allocates the object with `state` moved into its state region.
+
+        The state type `T` is the struct whose fields the callbacks mutate
+        through `com_class_state`; the trampolines reconstruct a `T` from the
+        same region. This is the `finish` a `class` uses -- the object owns a
+        live `T` for its whole lifetime, destroyed when Release hits zero.
+
+        Parameters:
+            T: The state struct.
+
+        Args:
+            state: The initial state, moved in.
+
+        Returns:
+            An owning pointer to the new object.
+
+        Raises:
+            If any slot is neither implemented nor declined.
+        """
+        comptime words = (size_of[T]() + 7) // 8
+        var ptr = self^.finish(state_words=words)
+        var base = ptr.address()
+        var state_off = Pointer[Int, MutAnyOrigin](
+            unsafe_from_address=base
+        ).unsafe_offset(_COM_W_STATE_OFF)[]
+        Pointer[T, MutAnyOrigin](
+            unsafe_from_address=base + state_off
+        ).unsafe_write(state^)
+        return ptr^
+
+
+# ===----------------------------------------------------------------------=== #
+# Method trampolines: the bridge a COM vtable slot needs
+#
+# A vtable slot is a captureless C-ABI `fn(this, args...) -> HRESULT`. A Mojo
+# method is `def M(mut self, args...) raises`. These generics are the adapter,
+# one per arity: recover the object's `T` state from `this`, forward to the
+# method, and translate a raise into E_FAIL and a clean return into S_OK.
+# Because the method arrives as a compile-time parameter, each specialisation
+# is a distinct captureless function whose address goes straight into a slot --
+# no closure, no per-object cost.
+#
+# This is what `class` synthesis emits: one `slot[name, com_trampN[T, M]]` per
+# method. The library form below is usable directly, and remains the escape
+# hatch for anything the keyword does not cover.
+# ===----------------------------------------------------------------------=== #
+
+comptime _E_FAIL_RAW = Int32(-2147467259)
+
+
+fn _com_self[T: AnyType](this: Int) -> Pointer[T, MutAnyOrigin]:
+    var obj = Pointer[Int, MutAnyOrigin](unsafe_from_address=this)
+    return Pointer[T, MutAnyOrigin](
+        unsafe_from_address=this + obj.unsafe_offset(_COM_W_STATE_OFF)[]
+    )
+
+
+fn com_tramp0[
+    T: AnyType, //, m: def (mut T) raises thin -> None
+](this: Int) -> Int32:
+    """Slot adapter for a zero-argument COM method."""
+    try:
+        m(_com_self[T](this)[])
+        return 0
+    except:
+        return _E_FAIL_RAW
+
+
+fn com_tramp1[
+    T: AnyType, A0: AnyType, //, m: def (mut T, A0) raises thin -> None
+](this: Int, a0: A0) -> Int32:
+    """Slot adapter for a one-argument COM method."""
+    try:
+        m(_com_self[T](this)[], a0)
+        return 0
+    except:
+        return _E_FAIL_RAW
+
+
+fn com_tramp2[
+    T: AnyType,
+    A0: AnyType,
+    A1: AnyType,
+    //,
+    m: def (mut T, A0, A1) raises thin -> None,
+](this: Int, a0: A0, a1: A1) -> Int32:
+    """Slot adapter for a two-argument COM method."""
+    try:
+        m(_com_self[T](this)[], a0, a1)
+        return 0
+    except:
+        return _E_FAIL_RAW
+
+
+fn com_tramp3[
+    T: AnyType,
+    A0: AnyType,
+    A1: AnyType,
+    A2: AnyType,
+    //,
+    m: def (mut T, A0, A1, A2) raises thin -> None,
+](this: Int, a0: A0, a1: A1, a2: A2) -> Int32:
+    """Slot adapter for a three-argument COM method."""
+    try:
+        m(_com_self[T](this)[], a0, a1, a2)
+        return 0
+    except:
+        return _E_FAIL_RAW
+
+
+fn com_tramp4[
+    T: AnyType,
+    A0: AnyType,
+    A1: AnyType,
+    A2: AnyType,
+    A3: AnyType,
+    //,
+    m: def (mut T, A0, A1, A2, A3) raises thin -> None,
+](this: Int, a0: A0, a1: A1, a2: A2, a3: A3) -> Int32:
+    """Slot adapter for a four-argument COM method."""
+    try:
+        m(_com_self[T](this)[], a0, a1, a2, a3)
+        return 0
+    except:
+        return _E_FAIL_RAW
