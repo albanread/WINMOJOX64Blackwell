@@ -4076,63 +4076,151 @@ ParseResult StmtParser::parseExtensionStmt(LexerCursor startCursor,
 
 ParseResult StmtParser::parseClassStmt(LexerCursor startCursor,
                                        size_t curIndent) {
-  // `class` is reserved for the COM object surface (see language_update.md).
-  // Its runtime and library form are built and tested -- a COM class is an
-  // ordinary struct of state with raising methods, wired to its interface by
-  // ComClassBuilder + com_trampN. The keyword that compiles a `class`
-  // declaration down to that form is not emitted yet, so rather than a blunt
-  // "not supported", parse the header and hand back the exact working form for
-  // the interface named, so the reserved word guides instead of dead-ends.
+  // `class Name(IFace):` is the first-class Windows COM object surface. It is
+  // a source-level desugar (language_update.md): the compiler generates the
+  // struct-of-state plus the ComClassBuilder factory that the library form
+  // spells by hand, and the user writes only the clean declaration. The
+  // generated text is sub-parsed into this module, so every downstream stage
+  // -- type checking, the metadata slot lookups, the trampolines -- sees an
+  // ordinary struct and never learns `class` existed.
+  auto recover = [&]() -> ParseResult {
+    skipUntilIndentation(curIndent);
+    return success();
+  };
+
+  // Top level only, like a struct.
+  if (isa_and_nonnull<StructDeclOp, TraitDeclOp, FnOp>(
+          getParentDecl().getIfOperation())) {
+    emitTokenError("a COM class must be declared at module scope");
+    return recover();
+  }
+
   SMLoc kwLoc = consumeToken(Token::kw_class).getLoc();
 
   StringAttr nameAttr;
   SMLoc nameLoc;
-  StringRef className = "MyClass";
-  if (!parseIdentifier(nameAttr, "expected class name", &nameLoc,
-                       /*forbidStartOfLine=*/true))
-    className = nameAttr.getValue();
+  if (parseIdentifier(nameAttr, "expected class name", &nameLoc,
+                      /*forbidStartOfLine=*/true))
+    return recover();
+  StringRef className = nameAttr.getValue();
 
-  // `class Name(IFace, ...)` -- the parenthesised list names the COM
-  // interfaces the class implements. Collect the first, for the guidance.
-  StringRef iface = "IInterface";
+  // `class Name(IFace, ...)`. The parenthesised list names the COM interfaces
+  // the class implements. v1 supports exactly one; several needs tear-off
+  // vtables (COCOA_DESIGN.md's cost model), which the runtime does not yet do.
+  SmallVector<StringRef> ifaces;
   if (getToken().is(Token::l_paren)) {
     consumeToken(Token::l_paren);
-    StringAttr part;
-    if (!parseIdentifier(part, "expected interface name"))
-      iface = part.getValue();
-    // Skip to the closing paren; a full parse is not needed for guidance.
     while (getToken().isNot(Token::r_paren) && getToken().isNot(Token::eof) &&
-           getToken().isNot(Token::colon))
-      consumeToken();
-    if (getToken().is(Token::r_paren))
-      consumeToken(Token::r_paren);
+           getToken().isNot(Token::colon)) {
+      StringAttr part;
+      if (parseIdentifier(part, "expected COM interface name"))
+        return recover();
+      ifaces.push_back(part.getValue());
+      if (!consumeIf(Token::comma))
+        break;
+    }
+    if (parseToken(Token::r_paren, "expected ')' after the interface list"))
+      return recover();
+  }
+  if (ifaces.empty()) {
+    emitError(nameLoc,
+              "a COM class names the interface it implements: "
+              "`class " +
+                  className.str() + "(ISomeInterface):`");
+    return recover();
+  }
+  if (ifaces.size() > 1) {
+    emitError(nameLoc,
+              "a COM class implements one interface for now; several needs "
+              "tear-off vtables, which are not built yet. Implement the base "
+              "interface and QueryInterface for the rest.");
+    return recover();
+  }
+  StringRef iface = ifaces.front();
+
+  if (parseToken(Token::colon, "expected ':' after the class header"))
+    return recover();
+
+  // Capture the body's source. getToken() now sits on the first body token;
+  // walk back to the start of its line so the captured text keeps the user's
+  // indentation, which becomes the struct members' indentation verbatim.
+  StringRef buffer = getLexer().getBuffer();
+  const char *firstTok = getToken().getLoc().getPointer();
+  const char *lineStart = firstTok;
+  while (lineStart > buffer.begin() && lineStart[-1] != '\n')
+    --lineStart;
+
+  // The run of leading whitespace on the first body line is the base indent;
+  // the generated factory matches it so the struct body stays consistent.
+  StringRef baseIndent(lineStart, firstTok - lineStart);
+
+  // Consume the block, then take everything up to the next statement as body.
+  skipUntilIndentation(curIndent);
+  const char *bodyEnd = getToken().is(Token::eof)
+                            ? buffer.end()
+                            : getToken().getLoc().getPointer();
+  // Own the body text: a Lexer reads to a guaranteed null terminator, which a
+  // bare StringRef into the middle of the file does not have -- lexing it
+  // directly would run off the end into the rest of the buffer. std::string's
+  // storage is null-terminated at size(), so a Lexer over it stops cleanly.
+  std::string bodyOwned(lineStart, bodyEnd);
+  StringRef bodyText(bodyOwned);
+
+  // Scan the body for method names: any `def` at the base indent. A COM slot
+  // is filled per method, and the metadata gives the slot -- so only names are
+  // needed here, not arities (ComClassBuilder.method picks the trampoline).
+  SmallVector<StringRef> methods;
+  {
+    Lexer scan(shared.diags, bodyText, bodyText.begin());
+    while (scan.getToken().isNot(Token::eof)) {
+      if (scan.getToken().is(Token::kw_def)) {
+        scan.lexToken();
+        if (scan.getToken().is(Token::identifier))
+          methods.push_back(scan.getToken().getSpelling());
+      }
+      scan.lexToken();
+    }
   }
 
-  std::string guidance;
-  llvm::raw_string_ostream os(guidance);
-  os << "'" << className
-     << "': the `class` keyword is reserved for COM objects but its synthesis "
-        "is not emitted yet. Write the COM class in its library form, which "
-        "the keyword will compile to:\n\n"
-     << "    @fieldwise_init\n"
-     << "    struct " << className << "(Copyable, Movable):\n"
-     << "        # ... your state fields ...\n"
-     << "        def SomeMethod(mut self, ...) raises: ...\n\n"
-     << "    def make_" << className
-     << "() raises -> ComPtr[StaticString(\"" << iface << "\")]:\n"
-     << "        var b = ComClassBuilder[StaticString(\"" << iface << "\")]()\n"
-     << "        b.slot[\"SomeMethod\"](com_tramp1[" << className
-     << ".SomeMethod])   # com_trampN, N = argument count\n"
-     << "        return b^.finish_state(" << className << "(...))\n\n"
-     << "from std.sys.com import ComClassBuilder, com_tramp0, com_tramp1, "
-        "com_tramp2, com_tramp3, com_tramp4; from std.sys._com import ComPtr. "
-        "See spikes/com/s11_class_library.mojo for a complete example.";
-  shared.emitError(kwLoc, os.str());
+  // Generate the desugared source: aliased imports so nothing collides with
+  // the user's, the struct with the body verbatim, and the into_com() factory.
+  SmallString<1024> src;
+  llvm::raw_svector_ostream os(src);
+  std::string alias = ("__wincom_" + className).str();
+  std::string ualias = ("__winunk_" + className).str();
+  os << "import std.sys.com as " << alias << "\n";
+  os << "import std.sys._com as " << ualias << "\n";
+  os << "@fieldwise_init\n";
+  os << "struct " << className << "(Copyable, Movable):\n";
+  os << bodyText;
+  if (!bodyText.ends_with("\n"))
+    os << "\n";
+  os << baseIndent << "def into_com(var self) raises -> " << ualias
+     << ".ComPtr[StaticString(\"" << iface << "\")]:\n";
+  os << baseIndent << baseIndent << "var __b = " << alias
+     << ".ComClassBuilder[StaticString(\"" << iface << "\")]()\n";
+  for (StringRef m : methods)
+    os << baseIndent << baseIndent << "__b.method[\"" << m << "\", "
+       << className << "." << m << "]()\n";
+  os << baseIndent << baseIndent << "return __b^.finish_state(self^)\n";
 
-  // Skip the body of this definition: go to a token that starts a line at the
-  // same indent level (or less) as the current definition.
-  skipUntilIndentation(curIndent);
-  return success();
+  // Own the text in the source manager and sub-parse it into this module. The
+  // struct's own body defers and re-parses from this buffer, so it must
+  // outlive compilation; the SourceMgr owns it.
+  // Set MOJO_DEBUG_COM_CLASS to dump the generated source: the desugar
+  // is meant to be inspectable, not magic.
+  if (::getenv("MOJO_DEBUG_COM_CLASS")) {
+    llvm::errs() << "==== class " << className << " desugars to ====\n";
+    llvm::errs().write(os.str().data(), os.str().size());
+    llvm::errs() << "==== end ====\n";
+  }
+  auto memBuf = llvm::MemoryBuffer::getMemBufferCopy(
+      os.str(), "<class " + className.str() + ">");
+  unsigned bufId =
+      getSourceMgr().AddNewSourceBuffer(std::move(memBuf), SMLoc());
+  StringRef synth = getSourceMgr().getMemoryBuffer(bufId)->getBuffer();
+  Lexer subLexer(shared.diags, synth, synth.begin());
+  return ParserBase(shared, subLexer).parseSuite(getDeclScope());
 }
 
 /// An MLIR region declaration defines a single block region body as a suite
