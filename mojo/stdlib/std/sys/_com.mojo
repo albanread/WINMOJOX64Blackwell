@@ -209,6 +209,17 @@ struct ComPtr[interface_name: StaticString](Boolable, Copyable, Movable):
             unsafe_from_address=self._address
         )
 
+    def address(self) -> Int:
+        """The interface pointer as an integer, for APIs that take a raw
+        pointer -- RegisterDragDrop, an out-parameter slot, a foreign call.
+
+        Ownership is unaffected; the caller must not Release through it.
+
+        Returns:
+            The pointer's address, or 0 if null.
+        """
+        return self._address
+
     def query_interface[
         Target: StaticString
     ](self) raises -> ComPtr[Target]:

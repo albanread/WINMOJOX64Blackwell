@@ -14,7 +14,9 @@
 # tolerate a lossy mapping, an interface ABI must be exact.
 # ===----------------------------------------------------------------------=== #
 
+from std.atomic import Atomic
 from std.ffi import c_int
+from std.memory import alloc
 from std.sys import size_of
 from std.sys._win32 import Win32Module
 from std.memory import Pointer, OpaquePointer
@@ -25,6 +27,7 @@ from std.sys._winkb import (
     winkb_com_ret_type,
     winkb_com_param_count,
     winkb_com_param_type,
+    winkb_com_method_count,
     winkb_type_width,
 )
 
@@ -119,27 +122,48 @@ struct Apartment:
     var _ole32: Win32Module
     var _model: Int32
     var _owns: Bool
+    var _ole: Bool
 
-    def __init__(out self, *, multithreaded: Bool = False):
+    def __init__(out self, *, multithreaded: Bool = False, ole: Bool = False):
         """Prepares an apartment scope; nothing happens until entry.
 
         Args:
             multithreaded: True for the MTA; the default is the STA, which is
                 what a thread that owns windows wants.
+            ole: True to initialise full OLE rather than bare COM. Drag and
+                drop registration and the OLE clipboard require it, and it is
+                STA by definition, so it excludes `multithreaded`.
         """
         self._ole32 = Win32Module("ole32.dll")
         self._model = Int32(
             COINIT_MULTITHREADED if multithreaded else COINIT_APARTMENTTHREADED
         )
         self._owns = False
+        self._ole = ole
 
     def __enter__(mut self) raises:
-        """Initialises COM on this thread.
+        """Initialises COM -- or, for `ole=True`, OLE -- on this thread.
 
         Raises:
             If the thread is already committed to the other apartment model,
             or initialisation fails outright.
         """
+        if self._ole:
+            if self._model != Int32(COINIT_APARTMENTTHREADED):
+                raise Error("OLE apartments are single-threaded by definition")
+            var ole_hr = HResult(
+                self._ole32.function[def (Int) thin abi("C") -> Int32](
+                    "OleInitialize"
+                )(0)
+            )
+            if ole_hr.value == RPC_E_CHANGED_MODE.value:
+                raise Error(
+                    "this thread is already committed to the MTA;"
+                    " OleInitialize returned RPC_E_CHANGED_MODE"
+                )
+            ole_hr.raise_for["OleInitialize"]()
+            self._owns = True
+            return
         var hr = HResult(
             self._ole32.function[
                 def (Int, Int32) thin abi("C") -> Int32
@@ -158,9 +182,11 @@ struct Apartment:
         """Uninitialises COM, balancing the successful initialise."""
         if self._owns:
             # __exit__ cannot raise, and `function[]` can (absent export), so
-            # resolve by address here; ole32 exporting CoInitializeEx but not
-            # CoUninitialize is not a real machine.
-            var addr = self._ole32.address_of("CoUninitialize")
+            # resolve by address here; ole32 exporting the initialiser but not
+            # the uninitialiser is not a real machine.
+            var addr = self._ole32.address_of(
+                "OleUninitialize" if self._ole else "CoUninitialize"
+            )
             if addr != 0:
                 Pointer(to=addr).unsafe_bitcast[
                     def () thin abi("C") -> NoneType
@@ -541,3 +567,258 @@ struct Com[interface_name: StaticString](TrivialRegisterPassable):
             The bound method, awaiting arguments.
         """
         return _ComBound[Self.interface_name, name](self._this)
+
+
+# ===----------------------------------------------------------------------=== #
+# Implementing COM objects: the class runtime
+#
+# What the `class` keyword's synthesis will automate, available today as a
+# library, following the Mac ports' sequencing: registrar machinery first,
+# keyword on top of a proven runtime. spikes/com/s10 is the milestone consumer.
+#
+# One heap block per object:
+#
+#   word 0            vtable pointer (points into this same block)
+#   word 1            refcount, atomic
+#   word 2            accepted-IID table pointer (into this block)
+#   word 3            accepted-IID count
+#   word 4            destructor fn (0 for none; reserved for `class`)
+#   word 5            byte offset from the object to the user state
+#   words 6..6+n-1    the vtable: n = the interface's total slot count
+#   then              the IID bytes, then the user state, zero-initialised
+#
+# AddRef, Release and QueryInterface are one generic implementation each,
+# reading everything they need from the block -- an fn has no captures, so
+# the object itself is the closure.
+# ===----------------------------------------------------------------------=== #
+
+comptime _COM_W_VTBL = 0
+comptime _COM_W_REFS = 1
+comptime _COM_W_IIDS = 2
+comptime _COM_W_IIDN = 3
+comptime _COM_W_DTOR = 4
+comptime _COM_W_STATE_OFF = 5
+comptime _COM_W_HDR = 6
+
+comptime _E_NOTIMPL_RAW = Int32(-2147467263)
+comptime _E_NOINTERFACE_RAW = Int32(-2147467262)
+
+
+def com_fn_bits[Sig: TrivialRegisterPassable](f: Sig) -> Int:
+    """The address bits of a thin fn value, for a vtable slot.
+
+    Parameters:
+        Sig: The fn's type.
+
+    Args:
+        f: The fn.
+
+    Returns:
+        Its address, as an Int.
+    """
+    var v = f
+    return Pointer(to=v).unsafe_bitcast[Int]()[]
+
+
+def com_class_state(this: Int) -> Pointer[Int, MutAnyOrigin]:
+    """The user-state words of a ComClassBuilder object, from a callback.
+
+    Args:
+        this: The interface pointer the callback received.
+
+    Returns:
+        A pointer to the first state word.
+    """
+    var obj = Pointer[Int, MutAnyOrigin](unsafe_from_address=this)
+    return Pointer[Int, MutAnyOrigin](
+        unsafe_from_address=this + obj.unsafe_offset(_COM_W_STATE_OFF)[]
+    )
+
+
+fn _com_class_add_ref(this: Int) -> UInt32:
+    var refs = Pointer[Scalar[DType.uint64], MutAnyOrigin](
+        unsafe_from_address=this + _COM_W_REFS * 8
+    )
+    var before = Atomic[Scalar[DType.uint64]].fetch_add(refs, 1)
+    return UInt32(before + 1)
+
+
+fn _com_class_release(this: Int) -> UInt32:
+    var refs = Pointer[Scalar[DType.uint64], MutAnyOrigin](
+        unsafe_from_address=this + _COM_W_REFS * 8
+    )
+    # No static fetch_sub; -1 on a uint64 wraps to the same decrement, and
+    # the pre-value read back is what Release must return minus one.
+    var before = Atomic[Scalar[DType.uint64]].fetch_add(
+        refs, Scalar[DType.uint64](0) - 1
+    )
+    if before == 1:
+        var obj = Pointer[Int, MutAnyOrigin](unsafe_from_address=this)
+        var dtor_bits = obj.unsafe_offset(_COM_W_DTOR)[]
+        if dtor_bits != 0:
+            Pointer(to=dtor_bits).unsafe_bitcast[
+                def (Int) thin abi("C") -> NoneType
+            ]()[](this)
+        obj.unsafe_free()
+    return UInt32(before - 1)
+
+
+fn _com_class_query_interface(this: Int, riid: Int, ppv: Int) -> Int32:
+    var obj = Pointer[Int, MutAnyOrigin](unsafe_from_address=this)
+    var iids = Pointer[UInt8, MutAnyOrigin](
+        unsafe_from_address=obj.unsafe_offset(_COM_W_IIDS)[]
+    )
+    var count = obj.unsafe_offset(_COM_W_IIDN)[]
+    var asked = Pointer[UInt8, MutAnyOrigin](unsafe_from_address=riid)
+    var out = Pointer[Int, MutAnyOrigin](unsafe_from_address=ppv)
+    for i in range(count):
+        var hit = True
+        for b in range(16):
+            if iids.unsafe_offset(i * 16 + b)[] != asked.unsafe_offset(b)[]:
+                hit = False
+                break
+        if hit:
+            _ = _com_class_add_ref(this)
+            out[] = this
+            return 0
+    out[] = 0
+    return _E_NOINTERFACE_RAW
+
+
+fn _com_class_notimpl(this: Int) -> Int32:
+    # Serves ANY arity: extra arguments arrive in registers and shadow space
+    # the callee never reads, and Win64 is caller-cleanup, so ignoring them
+    # is sound. Opt-in per slot via `ComClassBuilder.notimpl`.
+    return _E_NOTIMPL_RAW
+
+
+struct ComClassBuilder[interface_name: StaticString]:
+    """Builds a live COM object implementing one interface chain.
+
+    The three IUnknown slots are the library's; every other slot must be
+    filled with an `fn` (`slot`) or explicitly declined (`notimpl`) before
+    `finish` will produce an object -- an incompletely implemented interface
+    is a construction error, never a silent vtable hole. Slot indices come
+    from the metadata, so declaration order in user code is meaningless and
+    cannot corrupt dispatch.
+
+    v1 scope, recorded honestly: QueryInterface answers the primary interface
+    and IUnknown; intermediate bases of a deeper chain are refused. The
+    `fn` signatures themselves are not yet checked against the metadata --
+    that is the `class` keyword's job, and this builder is the escape hatch
+    that will remain when it lands.
+
+    Parameters:
+        interface_name: The COM interface the object implements.
+    """
+
+    var _slots: List[Int]
+    var _iids: List[UInt8]
+
+    def __init__(out self):
+        """Prepares the builder with IUnknown's slots prefilled."""
+        comptime total = winkb_com_method_count[Self.interface_name]()
+        self._slots = List[Int]()
+        for _ in range(total):
+            self._slots.append(0)
+        self._slots[0] = com_fn_bits[
+            def (Int, Int, Int) thin abi("C") -> Int32
+        ](_com_class_query_interface)
+        self._slots[1] = com_fn_bits[def (Int) thin abi("C") -> UInt32](
+            _com_class_add_ref
+        )
+        self._slots[2] = com_fn_bits[def (Int) thin abi("C") -> UInt32](
+            _com_class_release
+        )
+        self._iids = _guid_bytes(winkb_interface_iid[Self.interface_name]())
+        for b in _guid_bytes(winkb_interface_iid["IUnknown"]()):
+            self._iids.append(b)
+
+    def slot[
+        method: StaticString, Sig: TrivialRegisterPassable
+    ](mut self, f: Sig):
+        """Fills one method slot, at the index the metadata records.
+
+        Parameters:
+            method: The method's name on the interface (or its chain).
+            Sig: The fn's type. Its first parameter receives `this` as an
+                Int; reach the object's state with `com_class_state`.
+
+        Args:
+            f: The implementation.
+        """
+        comptime index = winkb_vtable_index[Self.interface_name, method]()
+        comptime assert index >= 3, (
+            "the IUnknown slots are the library's; do not replace them"
+        )
+        self._slots[index] = com_fn_bits[Sig](f)
+
+    def notimpl[method: StaticString](mut self):
+        """Declines one method, visibly: its slot answers E_NOTIMPL.
+
+        Parameters:
+            method: The method being declined.
+        """
+        comptime index = winkb_vtable_index[Self.interface_name, method]()
+        comptime assert index >= 3, (
+            "the IUnknown slots are the library's; do not replace them"
+        )
+        self._slots[index] = com_fn_bits[def (Int) thin abi("C") -> Int32](
+            _com_class_notimpl
+        )
+
+    def finish(
+        var self, *, state_words: Int = 0
+    ) raises -> ComPtr[Self.interface_name]:
+        """Allocates and wires the object; the creation reference is adopted.
+
+        Args:
+            state_words: Zero-initialised Int-sized words of user state,
+                reachable from callbacks via `com_class_state`.
+
+        Returns:
+            An owning pointer to the new object.
+
+        Raises:
+            If any slot is neither filled nor declined.
+        """
+        var missing = 0
+        for i in range(len(self._slots)):
+            if self._slots[i] == 0:
+                missing += 1
+        if missing != 0:
+            raise Error(
+                "ComClassBuilder["
+                + String(Self.interface_name)
+                + "]: "
+                + String(missing)
+                + " slot(s) neither implemented nor declined; fill each with"
+                " slot[...] or decline it with notimpl[...] -- a silent"
+                " vtable hole dispatches somewhere wrong, successfully"
+            )
+
+        var nslots = len(self._slots)
+        var iid_words = (len(self._iids) + 7) // 8
+        var total_words = _COM_W_HDR + nslots + iid_words + state_words
+        # alloc[type](count): the count overload, not the Layout one.
+        var block = alloc[Int](total_words, alignment=8)
+        for i in range(total_words):
+            block.unsafe_offset(i)[] = 0
+
+        var base = Int(block)
+        block.unsafe_offset(_COM_W_VTBL)[] = base + _COM_W_HDR * 8
+        block.unsafe_offset(_COM_W_REFS)[] = 1
+        block.unsafe_offset(_COM_W_IIDS)[] = base + (_COM_W_HDR + nslots) * 8
+        block.unsafe_offset(_COM_W_IIDN)[] = len(self._iids) // 16
+        block.unsafe_offset(_COM_W_STATE_OFF)[] = (
+            _COM_W_HDR + nslots + iid_words
+        ) * 8
+        for i in range(nslots):
+            block.unsafe_offset(_COM_W_HDR + i)[] = self._slots[i]
+        var iid_bytes = Pointer[UInt8, MutAnyOrigin](
+            unsafe_from_address=base + (_COM_W_HDR + nslots) * 8
+        )
+        for i in range(len(self._iids)):
+            iid_bytes.unsafe_offset(i)[] = self._iids[i]
+
+        return ComPtr[Self.interface_name](adopt=base)
