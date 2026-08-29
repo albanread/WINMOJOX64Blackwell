@@ -4084,18 +4084,29 @@ ParseResult StmtParser::parseClassStmt(LexerCursor startCursor,
   // -- type checking, the metadata slot lookups, the trampolines -- sees an
   // ordinary struct and never learns `class` existed.
   auto recover = [&]() -> ParseResult {
+    // skipUntilIndentation stops on the CURRENT token when it already sits
+    // at this indentation, so recovery has to make progress itself or the
+    // statement loop re-enters this function on the same token forever. A
+    // nested class reached exactly that: millions of identical diagnostics
+    // and no termination.
+    if (getToken().isNot(Token::eof))
+      if (auto indent = getToken().getIndentation())
+        if (*indent <= curIndent)
+          consumeToken();
     skipUntilIndentation(curIndent);
     return success();
   };
 
+  // Consume the keyword before any diagnostic below can recover, so recovery
+  // always starts from a token that has been passed.
+  SMLoc kwLoc = consumeToken(Token::kw_class).getLoc();
+
   // Top level only, like a struct.
   if (isa_and_nonnull<StructDeclOp, TraitDeclOp, FnOp>(
           getParentDecl().getIfOperation())) {
-    emitTokenError("a COM class must be declared at module scope");
+    emitError(kwLoc, "a COM class must be declared at module scope");
     return recover();
   }
-
-  SMLoc kwLoc = consumeToken(Token::kw_class).getLoc();
 
   StringAttr nameAttr;
   SMLoc nameLoc;
@@ -4132,6 +4143,18 @@ ParseResult StmtParser::parseClassStmt(LexerCursor startCursor,
 
   if (parseToken(Token::colon, "expected ':' after the class header"))
     return recover();
+
+  // An empty body would swallow the rest of the file: the capture below
+  // starts at the line of whatever token follows, which for a bodiless class
+  // is the next top-level statement. Diagnosed here, where the cause is
+  // still visible, rather than as a parse error inside generated source.
+  if (auto bodyIndent = getToken().getIndentation())
+    if (*bodyIndent <= curIndent) {
+      emitError(nameLoc,
+                "a COM class needs a body: declare its state with `var` and "
+                "implement the interface's methods");
+      return success();
+    }
 
   // Capture the body's source. getToken() now sits on the first body token;
   // walk back to the start of its line so the captured text keeps the user's
@@ -4183,7 +4206,10 @@ ParseResult StmtParser::parseClassStmt(LexerCursor startCursor,
   os << "import std.sys.com as " << alias << "\n";
   os << "import std.sys._com as " << ualias << "\n";
   os << "@fieldwise_init\n";
-  os << "struct " << className << "(Copyable, Movable):\n";
+  // Movable, not Copyable: into_com consumes `self^` and finish_state needs
+  // only Movable & Deinitable, while deriving Copyable would refuse any class
+  // holding a move-only field -- an owned ComPtr being the obvious one.
+  os << "struct " << className << "(Movable):\n";
   os << bodyText;
   if (!bodyText.ends_with("\n"))
     os << "\n";
