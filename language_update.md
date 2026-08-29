@@ -37,7 +37,7 @@ different states, and all three states are convenient:
 
 | keyword | state | notes |
 |---|---|---|
-| `class` | **Reserved stub** (`ParserStmts.cpp:4067`); its *runtime* is built | `ComClassBuilder` in `std/sys/com.mojo` is what the keyword's synthesis will emit: static vtable in metadata slot order, atomic refcount, IID-checking QI, per-slot completeness. `s08`/`s10` prove it. Replacing the stub to emit these calls from a `class` declaration is the one piece left. |
+| `class` | **Reserved, and it now guides** (`ParserStmts.cpp:4077`) | its *runtime and library form are built and tested*. `class Name(IFace):` parses its header and emits a located diagnostic showing the exact working form for that interface -- struct of state + `ComClassBuilder`/`com_trampN` factory. The keyword that compiles a declaration *down to* that form is the one piece left, and is pure sugar over a working system (see the cost note below). |
 | `let` | **BUILT.** `kLetPat` onto `PatternDeclKind::kBind`, ported from the Mac ports across nine files | exercised by every spike; `f0*` prove nothing about it because rebinding is caught in `ExprNodes.cpp`'s existing kBind machinery |
 | `fn` | **BUILT.** The removal error at `DeclResolution.cpp:1958` became the foreign-callable capture; `setCABI(true)` engages the existing `abi("C")` machinery | `s07` hands one to EnumWindows; `s08` builds a vtable of them; `f05` proves `fn ... raises` refuses to compile |
 
@@ -367,11 +367,26 @@ agree on every byte.
 | C2 | `let` and `fn` (port + revival) | `s07` hands an `fn` to EnumWindows; `f05` proves `fn raises` refuses; `let` used throughout | **DONE** |
 | C2.5 | the foreign-compiler oracle | `s09`: an MSVC-built ISequentialStream consumed through the typed surface -- Write's byte-sum read back exact, QI honoured and refused correctly | **DONE** |
 | C3-runtime | `ComClassBuilder`: static vtable in metadata order, atomic AddRef/Release, IID-checking QI, completeness-or-E_NOTIMPL | `s10` builds an IDropTarget, RegisterDragDrop holds it (refcount 1->2), drop callbacks accumulate state, RevokeDragDrop releases (2->1); `f06` refuses a class that overrides IUnknown | **DONE** |
-| C3-keyword | replace the `class` stub to emit ComClassBuilder calls from a declaration | `class DropTarget(IDropTarget):` compiles to what s10 writes by hand | design |
+| C3-library | `com_tramp0..4` + `finish_state`: a COM class as a struct + small factory | `s11` rebuilds the IDropTarget as a `DropTarget` struct with raising methods, no raw fn pointers | **DONE** |
+| C3-guidance | `class Name(IFace):` parses its header and hands back the library form for that interface | writing `class DropTarget(IDropTarget):` emits the exact struct-plus-factory to write instead | **DONE** |
+| C3-keyword | compile a `class` declaration down to the library form | `class DropTarget(IDropTarget):` compiles to what s11 writes by hand | design (see cost note) |
 | C4 | multiple interfaces (tear-off first, per the M2 cost model) + `raises` bridge | one object answering two IIDs; the cl.exe oracle calls both; shuffled-source must-fail proves slot order comes from metadata | design |
 | C5 | `IDispatch` + BSTR/VARIANT | the IDE exposes one automation object a PowerShell script can call | design |
 
-C3 is deliberately the IDE's drop-target because the IDE plan (their
+**Cost note on the remaining keyword.** The runtime, the trampolines, and the
+library form are done and tested (17/17), so a COM class is already writable
+in pure Mojo: a struct of state with raising methods and a four-to-six-line
+factory (`s11`). What remains -- compiling `class Name(IFace):` *down to* that
+factory -- is genuine compiler synthesis of one method body: a
+`ComClassBuilder` construction, one `b.slot["M"](com_trampN[Name.M])` per
+method at the metadata's arity, and a `finish_state`. The Mac ports sized the
+equivalent as their one "L", "no partial credit" sprint, and the hard part
+here is the same: forming, in MLIR, a reference to `com_trampN` specialised on
+a method of the struct being defined. It is sugar over a working system, so it
+is scoped separately and left for a deliberate, reviewed pass rather than
+folded in with the runtime. Until then the keyword guides to the library form.
+
+C3-library is the IDE's drop-target because the IDE plan (their
 `IDE-DESIGN.md`, ours to be written against it) is the consumer that keeps
 this honest: every milestone above is a capability the editor needs anyway.
 

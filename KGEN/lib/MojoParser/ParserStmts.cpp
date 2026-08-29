@@ -4076,10 +4076,60 @@ ParseResult StmtParser::parseExtensionStmt(LexerCursor startCursor,
 
 ParseResult StmtParser::parseClassStmt(LexerCursor startCursor,
                                        size_t curIndent) {
-  emitTokenError("classes are not supported yet");
-  consumeToken(Token::kw_class).getLoc();
+  // `class` is reserved for the COM object surface (see language_update.md).
+  // Its runtime and library form are built and tested -- a COM class is an
+  // ordinary struct of state with raising methods, wired to its interface by
+  // ComClassBuilder + com_trampN. The keyword that compiles a `class`
+  // declaration down to that form is not emitted yet, so rather than a blunt
+  // "not supported", parse the header and hand back the exact working form for
+  // the interface named, so the reserved word guides instead of dead-ends.
+  SMLoc kwLoc = consumeToken(Token::kw_class).getLoc();
 
-  // Skip the body of this definition: go to a token the starts a line at the
+  StringAttr nameAttr;
+  SMLoc nameLoc;
+  StringRef className = "MyClass";
+  if (!parseIdentifier(nameAttr, "expected class name", &nameLoc,
+                       /*forbidStartOfLine=*/true))
+    className = nameAttr.getValue();
+
+  // `class Name(IFace, ...)` -- the parenthesised list names the COM
+  // interfaces the class implements. Collect the first, for the guidance.
+  StringRef iface = "IInterface";
+  if (getToken().is(Token::l_paren)) {
+    consumeToken(Token::l_paren);
+    StringAttr part;
+    if (!parseIdentifier(part, "expected interface name"))
+      iface = part.getValue();
+    // Skip to the closing paren; a full parse is not needed for guidance.
+    while (getToken().isNot(Token::r_paren) && getToken().isNot(Token::eof) &&
+           getToken().isNot(Token::colon))
+      consumeToken();
+    if (getToken().is(Token::r_paren))
+      consumeToken(Token::r_paren);
+  }
+
+  std::string guidance;
+  llvm::raw_string_ostream os(guidance);
+  os << "'" << className
+     << "': the `class` keyword is reserved for COM objects but its synthesis "
+        "is not emitted yet. Write the COM class in its library form, which "
+        "the keyword will compile to:\n\n"
+     << "    @fieldwise_init\n"
+     << "    struct " << className << "(Copyable, Movable):\n"
+     << "        # ... your state fields ...\n"
+     << "        def SomeMethod(mut self, ...) raises: ...\n\n"
+     << "    def make_" << className
+     << "() raises -> ComPtr[StaticString(\"" << iface << "\")]:\n"
+     << "        var b = ComClassBuilder[StaticString(\"" << iface << "\")]()\n"
+     << "        b.slot[\"SomeMethod\"](com_tramp1[" << className
+     << ".SomeMethod])   # com_trampN, N = argument count\n"
+     << "        return b^.finish_state(" << className << "(...))\n\n"
+     << "from std.sys.com import ComClassBuilder, com_tramp0, com_tramp1, "
+        "com_tramp2, com_tramp3, com_tramp4; from std.sys._com import ComPtr. "
+        "See spikes/com/s11_class_library.mojo for a complete example.";
+  shared.emitError(kwLoc, os.str());
+
+  // Skip the body of this definition: go to a token that starts a line at the
   // same indent level (or less) as the current definition.
   skipUntilIndentation(curIndent);
   return success();
