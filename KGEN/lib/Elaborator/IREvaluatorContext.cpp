@@ -962,6 +962,15 @@ constexpr StringRef kComMethodCountSQL =
     WINKB_IFACE_CHAIN_CTE
     "SELECT MAX(m.vtable_index) + 1 FROM interface_methods m "
     "JOIN chain c ON c.type_id = m.interface_type_id";
+// Does this interface (or its chain) declare this method? Answers 0 or 1
+// rather than failing, so a caller can ASK -- which is what dispatching a
+// method across several implemented interfaces needs, and what vtable_index
+// deliberately cannot do.
+constexpr StringRef kComHasMethodSQL =
+    WINKB_IFACE_CHAIN_CTE
+    "SELECT CASE WHEN EXISTS (SELECT 1 FROM interface_methods m "
+    "JOIN chain c ON c.type_id = m.interface_type_id "
+    "WHERE m.method_name = ?2) THEN 1 ELSE 0 END";
 constexpr StringRef kComInterfaceBaseSQL =
     "SELECT t2.type_name FROM types t1 "
     "JOIN types t2 ON t2.qualified_name = t1.base_qualified_name "
@@ -1019,6 +1028,7 @@ const WinKBQueryDef kQueries[] = {
     {"com_method_param_type", 3, kComMethodParamTypeSQL},
     {"com_method_count", 1, kComMethodCountSQL},
     {"com_interface_base", 1, kComInterfaceBaseSQL},
+    {"com_has_method", 2, kComHasMethodSQL},
     {"type_width", 1, kTypeWidthSQL},
     {"interface_iid", 1, kInterfaceIIDSQL},
     {"function_dll", 1, kFunctionDLLSQL},

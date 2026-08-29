@@ -323,6 +323,38 @@ def winkb_com_param_type[
     return StaticString(res)
 
 
+def winkb_com_has_method[
+    type_name: StaticString, method_name: StaticString
+]() -> Bool:
+    """Whether an interface or its chain declares a method.
+
+    Asks instead of failing, which `winkb_vtable_index` deliberately cannot
+    do: a class implementing several interfaces has to find out which one
+    declares each method before it can ask for its slot.
+
+    Parameters:
+        type_name: The COM interface name.
+        method_name: The method to look for.
+
+    Returns:
+        True if the interface or an ancestor declares it.
+    """
+    return (
+        Int(
+            mlir_value=__mlir_attr[
+                `#kgen.param.expr<winkb_query, `,
+                _get_kgen_string["com_has_method"](),
+                `, `,
+                _get_kgen_string[type_name](),
+                `, `,
+                _get_kgen_string[method_name](),
+                `> : index`,
+            ]
+        )
+        != 0
+    )
+
+
 def winkb_com_method_count[type_name: StaticString]() -> Int:
     """The total slot count of an interface's vtable, inherited included.
 
