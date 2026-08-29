@@ -37,7 +37,7 @@ different states, and all three states are convenient:
 
 | keyword | state | notes |
 |---|---|---|
-| `class` | **Implemented** (`ParserStmts.cpp:4077`) | `class Name(IFace):` is the COM object surface: name the interface, declare the state, write the methods. It is a *source-level desugar* -- the parser captures the body, scans its `def`s, generates the `@fieldwise_init` struct plus an `into_com()` factory filling each metadata slot through the arity-matched trampoline, and sub-parses that into the module. Every later stage sees an ordinary struct. `MOJO_DEBUG_COM_CLASS=1` prints the generated source. |
+| `class` | **Implemented, one or more interfaces** (`ParserStmts.cpp:4077`) | `class Name(IFace):` is the COM object surface: name the interface, declare the state, write the methods. It is a *source-level desugar* -- the parser captures the body, scans its `def`s, generates the `@fieldwise_init` struct plus an `into_com()` factory filling each metadata slot through the arity-matched trampoline, and sub-parses that into the module. `class Name(IA, IB):` builds one object carrying a vtable cell per interface. Every later stage sees an ordinary struct. `MOJO_DEBUG_COM_CLASS=1` prints the generated source. |
 | `let` | **BUILT.** `kLetPat` onto `PatternDeclKind::kBind`, ported from the Mac ports across nine files | exercised by every spike; `f0*` prove nothing about it because rebinding is caught in `ExprNodes.cpp`'s existing kBind machinery |
 | `fn` | **BUILT.** The removal error at `DeclResolution.cpp:1958` became the foreign-callable capture; `setCABI(true)` engages the existing `abi("C")` machinery | `s07` hands one to EnumWindows; `s08` builds a vtable of them; `f05` proves `fn ... raises` refuses to compile |
 
@@ -369,7 +369,7 @@ agree on every byte.
 | C3-runtime | `ComClassBuilder`: static vtable in metadata order, atomic AddRef/Release, IID-checking QI, completeness-or-E_NOTIMPL | `s10` builds an IDropTarget, RegisterDragDrop holds it (refcount 1->2), drop callbacks accumulate state, RevokeDragDrop releases (2->1); `f06` refuses a class that overrides IUnknown | **DONE** |
 | C3-library | `com_tramp0..4` + `finish_state`: a COM class as a struct + small factory | `s11` rebuilds the IDropTarget as a `DropTarget` struct with raising methods, no raw fn pointers | **DONE** |
 | C3-keyword | `class Name(IFace):` compiles down to the library form | `s12` writes the IDropTarget as a plain `class` and it dispatches through the metadata slots; `f07`/`f08` refuse two interfaces and a missing one | **DONE** |
-| C4 | multiple interfaces (tear-off first, per the M2 cost model) + `raises` bridge | one object answering two IIDs; the cl.exe oracle calls both; shuffled-source must-fail proves slot order comes from metadata | design |
+| C4-interfaces | several interfaces on one object: per-interface vtable cells, IID-routed QI, shared refcount | `s13` checks the three COM identity rules (distinct pointers, symmetric QI, one IUnknown); `s14` is the same as a `class` over two interfaces; `f07` refuses an ambiguous method name | **DONE** |
 | C5 | `IDispatch` + BSTR/VARIANT | the IDE exposes one automation object a PowerShell script can call | design |
 
 **What the keyword cost, and why it was small.** The synthesis was expected to
