@@ -29,6 +29,7 @@ from std.sys._winkb import (
     winkb_com_param_type,
     winkb_com_method_count,
     winkb_com_has_method,
+    winkb_com_method_at_slot,
     winkb_type_width,
 )
 
@@ -803,12 +804,14 @@ struct ComClassBuilder[*interfaces: StaticString]:
     """
 
     var _slots: List[List[Int]]
+    var _slot_names: List[List[StaticString]]
     var _iids: List[UInt8]
     var _iid_cells: List[Int]
 
     def __init__(out self):
         """Prepares the builder with every interface's IUnknown prefilled."""
         self._slots = List[List[Int]]()
+        self._slot_names = List[List[StaticString]]()
         self._iids = List[UInt8]()
         self._iid_cells = List[Int]()
 
@@ -829,6 +832,19 @@ struct ComClassBuilder[*interfaces: StaticString]:
                 _com_class_release
             )
             self._slots.append(v^)
+            # Slot names, for the diagnostic `finish` raises. Collected here
+            # because the metadata lookup needs a comptime slot index, and
+            # `finish` walks the slots at runtime.
+            var names = List[StaticString]()
+            comptime for s in range(
+                winkb_com_method_count[Self.interfaces[c]]()
+            ):
+                names.append(
+                    winkb_com_method_at_slot[
+                        Self.interfaces[c], StaticString(String(s))
+                    ]()
+                )
+            self._slot_names.append(names^)
             for b in _guid_bytes(winkb_interface_iid[Self.interfaces[c]]()):
                 self._iids.append(b)
             self._iid_cells.append(c)
@@ -1246,20 +1262,27 @@ struct ComClassBuilder[*interfaces: StaticString]:
         Raises:
             If any slot is neither filled nor declined.
         """
-        var missing = 0
+        var missing = String("")
+        var count = 0
         for c in range(len(self._slots)):
             for i in range(len(self._slots[c])):
                 if self._slots[c][i] == 0:
-                    missing += 1
-        if missing != 0:
+                    if count != 0:
+                        missing += ", "
+                    missing += String(Self.interfaces[c])
+                    missing += "."
+                    missing += String(self._slot_names[c][i])
+                    count += 1
+        if count != 0:
             raise Error(
                 "ComClassBuilder["
                 + String(Self.interfaces[0])
-                + "]: "
-                + String(missing)
-                + " slot(s) neither implemented nor declined; fill each with"
-                " slot[...] or decline it with notimpl[...] -- a silent"
-                " vtable hole dispatches somewhere wrong, successfully"
+                + "]: unfilled slot(s): "
+                + missing
+                + " -- implement each with slot[...] (or from a class, a"
+                " method of that name) or decline it with notimpl[...]. A"
+                " silent vtable hole dispatches somewhere wrong,"
+                " successfully."
             )
 
         var ncells = len(self._slots)

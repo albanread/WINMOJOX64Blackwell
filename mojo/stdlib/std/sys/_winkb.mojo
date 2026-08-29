@@ -323,6 +323,33 @@ def winkb_com_param_type[
     return StaticString(res)
 
 
+def winkb_com_method_at_slot[
+    type_name: StaticString, slot: StaticString
+]() -> StaticString:
+    """The method occupying an interface's absolute vtable slot.
+
+    Lets an incompletely implemented object name the slots it is missing
+    rather than count them: "DragEnter, Drop" instead of "2 slot(s)".
+
+    Parameters:
+        type_name: The COM interface name.
+        slot: The absolute vtable index, spelled as a string.
+
+    Returns:
+        The method's name.
+    """
+    var res = __mlir_attr[
+        `#kgen.param.expr<winkb_query, `,
+        _get_kgen_string["com_method_at_slot"](),
+        `, `,
+        _get_kgen_string[type_name](),
+        `, `,
+        _get_kgen_string[slot](),
+        `> : !kgen.string`,
+    ]
+    return StaticString(res)
+
+
 def winkb_com_has_method[
     type_name: StaticString, method_name: StaticString
 ]() -> Bool:
