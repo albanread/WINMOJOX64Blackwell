@@ -56,7 +56,7 @@ if ($vsdev) {
 
 # ---- must-pass ------------------------------------------------------------
 Write-Host "== must-pass =="
-$passSpikes = Get-ChildItem (Join-Path $repo 'spikes\com') -Filter 's0*.mojo' | Sort-Object Name
+$passSpikes = Get-ChildItem (Join-Path $repo 'spikes\com') -Filter 's??_*.mojo' | Sort-Object Name
 foreach ($f in $passSpikes) {
     if ($f.Name -eq 's09_cl_oracle.mojo' -and -not (Test-Path $oracleDll)) {
         Record $f.Name 'SKIP' 'no cl.exe on this machine'
