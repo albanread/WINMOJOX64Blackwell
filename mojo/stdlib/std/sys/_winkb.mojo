@@ -236,3 +236,153 @@ def winkb_db_schema_version() -> StaticString:
         `> : !kgen.string`,
     ]
     return StaticString(res)
+
+
+# ===----------------------------------------------------------------------=== #
+# COM method signatures.
+#
+# These walk the interface inheritance chain in the query itself, so asking
+# IStream about Read -- defined on ISequentialStream -- answers as the caller
+# expects. See language_update.md for the surface built on top of them.
+# ===----------------------------------------------------------------------=== #
+
+
+def winkb_com_ret_type[
+    type_name: StaticString, method: StaticString
+]() -> StaticString:
+    """The declared return type of a COM method, from the metadata.
+
+    Parameters:
+        type_name: The COM interface name; the inheritance chain is searched.
+        method: The method name.
+
+    Returns:
+        The metadata type name, e.g. "Windows.Win32.Foundation.HRESULT".
+    """
+    var res = __mlir_attr[
+        `#kgen.param.expr<winkb_query, `,
+        _get_kgen_string["com_method_ret_type"](),
+        `, `,
+        _get_kgen_string[type_name](),
+        `, `,
+        _get_kgen_string[method](),
+        `> : !kgen.string`,
+    ]
+    return StaticString(res)
+
+
+def winkb_com_param_count[
+    type_name: StaticString, method: StaticString
+]() -> Int:
+    """The number of parameters a COM method declares, receiver excluded.
+
+    Parameters:
+        type_name: The COM interface name; the inheritance chain is searched.
+        method: The method name.
+
+    Returns:
+        The parameter count.
+    """
+    return Int(
+        mlir_value=__mlir_attr[
+            `#kgen.param.expr<winkb_query, `,
+            _get_kgen_string["com_method_param_count"](),
+            `, `,
+            _get_kgen_string[type_name](),
+            `, `,
+            _get_kgen_string[method](),
+            `> : index`,
+        ]
+    )
+
+
+def winkb_com_param_type[
+    type_name: StaticString, method: StaticString, ordinal: StaticString
+]() -> StaticString:
+    """The declared type of one COM method parameter, from the metadata.
+
+    Parameters:
+        type_name: The COM interface name; the inheritance chain is searched.
+        method: The method name.
+        ordinal: The zero-based parameter position, as a decimal string.
+
+    Returns:
+        The metadata type name, e.g. "u32" or "void*".
+    """
+    var res = __mlir_attr[
+        `#kgen.param.expr<winkb_query, `,
+        _get_kgen_string["com_method_param_type"](),
+        `, `,
+        _get_kgen_string[type_name](),
+        `, `,
+        _get_kgen_string[method](),
+        `, `,
+        _get_kgen_string[ordinal](),
+        `> : !kgen.string`,
+    ]
+    return StaticString(res)
+
+
+def winkb_com_method_count[type_name: StaticString]() -> Int:
+    """The total slot count of an interface's vtable, inherited included.
+
+    What a static vtable implementing the interface must provide, and the
+    bound a slot index must stay under.
+
+    Parameters:
+        type_name: The COM interface name.
+
+    Returns:
+        The number of slots.
+    """
+    return Int(
+        mlir_value=__mlir_attr[
+            `#kgen.param.expr<winkb_query, `,
+            _get_kgen_string["com_method_count"](),
+            `, `,
+            _get_kgen_string[type_name](),
+            `> : index`,
+        ]
+    )
+
+
+def winkb_com_interface_base[type_name: StaticString]() -> StaticString:
+    """The immediate base of a COM interface, by short name.
+
+    Parameters:
+        type_name: The COM interface name.
+
+    Returns:
+        The base interface's name, e.g. "ISequentialStream" for "IStream".
+    """
+    var res = __mlir_attr[
+        `#kgen.param.expr<winkb_query, `,
+        _get_kgen_string["com_interface_base"](),
+        `, `,
+        _get_kgen_string[type_name](),
+        `> : !kgen.string`,
+    ]
+    return StaticString(res)
+
+
+def winkb_type_width[type_name: StaticString]() -> Int:
+    """The width in bytes of any named Windows type the metadata sizes.
+
+    Unlike `winkb_struct_size` this answers for enums and interface types
+    too, which is what compile-time argument classification needs.
+
+    Parameters:
+        type_name: The type name, e.g. "STREAM_SEEK" or "POINTL".
+
+    Returns:
+        The width in bytes.
+    """
+    return Int(
+        mlir_value=__mlir_attr[
+            `#kgen.param.expr<winkb_query, `,
+            _get_kgen_string["type_width"](),
+            `, `,
+            _get_kgen_string[type_name](),
+            `> : index`,
+        ]
+    )
