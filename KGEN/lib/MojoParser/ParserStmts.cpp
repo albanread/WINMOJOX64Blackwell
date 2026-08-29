@@ -4194,8 +4194,13 @@ ParseResult StmtParser::parseClassStmt(LexerCursor startCursor,
   for (auto [n, i] : llvm::enumerate(ifaces))
     os << (n ? ", " : "") << "StaticString(\"" << i << "\")";
   os << "]()\n";
+  // wire_if_com, not method: a class body may hold helpers that are not COM
+  // methods at all, and those stay ordinary methods of the struct. A name
+  // that no implemented interface declares is left unwired, and finish()
+  // refuses to build an object with an unfilled slot -- so a mistyped COM
+  // name is caught at construction rather than compilation.
   for (StringRef m : methods)
-    os << baseIndent << baseIndent << "__b.method[\"" << m << "\", "
+    os << baseIndent << baseIndent << "__b.wire_if_com[\"" << m << "\", "
        << className << "." << m << "]()\n";
   os << baseIndent << baseIndent << "return __b^.finish_state(self^)\n";
 
