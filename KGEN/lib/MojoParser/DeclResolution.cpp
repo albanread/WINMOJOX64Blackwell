@@ -1954,12 +1954,15 @@ LogicalResult DeclResolver::resolveSignature(FnOp funcOp, Lexer &lexer,
   assert(p.getToken().isAny(Token::kw_async, Token::kw_def, Token::kw_fn) &&
          "not a function definition?");
   bool isAsync = p.consumeIf(Token::kw_async);
-  // FIXME(26.5): Remove support for 'fn'.
-  if (p.getToken().is(Token::kw_fn)) {
-    shared.emitError(p.getToken().getLoc(),
-                     "'fn' has been removed; use 'def' instead")
-        << FixIt::replaceToken(p.getToken().getLoc(), "def");
-  }
+  // win-mojo: `fn` declares a FOREIGN-CALLABLE function -- C ABI,
+  // non-raising, no captured state. Upstream removed the keyword; this fork
+  // revives it with narrower semantics, shared with the Mac ports, because
+  // the COM boundary needs a function contract the callee side can rely on:
+  // a vtable slot, a WndProc, an enumeration callback. The C-ABI capture
+  // rejection and the raises-vs-C conflict already exist for abi("C"); `fn`
+  // simply engages them by default. See language_update.md.
+  bool isFnKeyword = p.getToken().is(Token::kw_fn);
+  SMLoc fnKeywordLoc = p.getToken().getLoc();
 
   p.consumeToken();
 
@@ -2073,6 +2076,27 @@ LogicalResult DeclResolver::resolveSignature(FnOp funcOp, Lexer &lexer,
   // Parse the argument list next if present.
   if (fnSignature.parseArgumentListAndEffects(p, ArgListKind::kArgList))
     return failure();
+
+  if (isFnKeyword) {
+    // The teaching diagnostic: legacy-Mojo `fn` was a general strict
+    // function, so old-shaped code gets told what changed rather than a
+    // bare contract violation.
+    if (fnSignature.effects.isThrows()) {
+      shared.emitError(fnKeywordLoc,
+                       "'fn' declares a foreign-callable (C ABI, non-raising) "
+                       "function in win-mojo and may not be marked 'raises'; "
+                       "use 'def' for an ordinary Mojo function")
+          << FixIt::replaceToken(fnKeywordLoc, "def");
+      return failure();
+    }
+    if (isAsync) {
+      shared.emitError(fnKeywordLoc,
+                       "'fn' declares a foreign-callable function and cannot "
+                       "be 'async'; use 'def'");
+      return failure();
+    }
+    fnSignature.effects.setCABI(true);
+  }
 
   auto hasParameterDecorator = [&]() {
     return llvm::any_of(

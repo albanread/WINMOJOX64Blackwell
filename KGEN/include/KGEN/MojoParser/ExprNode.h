@@ -103,6 +103,7 @@ public:
     kTransfer, // x^
     kVarPat,   // var x
     kRefPat,   // ref x
+    kLetPat,   // let x (win-mojo: immutable binding, shared with the Mac ports)
     kComptime, // comptime (x)
     kFirstUnaryOp = kNeg,
     kLastUnaryOp = kComptime,
