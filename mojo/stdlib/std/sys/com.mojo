@@ -747,6 +747,29 @@ fn _com_class_query_interface(this: Int, riid: Int, ppv: Int) -> Int32:
     return _E_NOINTERFACE_RAW
 
 
+fn _com_class_dtor[T: Deinitable](base: Int) -> None:
+    """Destroys the state a `finish_state` object owns.
+
+    Release stores nothing about `T`, so the type is baked into this thunk at
+    the point the object is built and reached through the block's destructor
+    word. Without it the block is freed and `T`'s destructor never runs: a
+    class holding a String, a List or a ComPtr leaks its contents on the last
+    Release, and trivial state hides it completely.
+
+    Parameters:
+        T: The state struct.
+
+    Args:
+        base: The object's block base, as Release passes it.
+    """
+    Pointer[T, MutAnyOrigin](
+        unsafe_from_address=base
+        + Pointer[Int, MutAnyOrigin](unsafe_from_address=base).unsafe_offset(
+            _COM_H_STATE_OFF
+        )[]
+    ).unsafe_deinit_pointee()
+
+
 fn _com_class_notimpl(this: Int) -> Int32:
     # Serves ANY arity: extra arguments arrive in registers and shadow space
     # the callee never reads, and Win64 is caller-cleanup, so ignoring them
@@ -883,6 +906,16 @@ struct ComClassBuilder[*interfaces: StaticString]:
             name: The COM method name.
             m: The method, e.g. `DropTarget.DragLeave`.
         """
+        # The implementation side is checked exactly as the calling side is:
+        # a method whose shape disagrees with the metadata fills a slot that
+        # half-works. Win64 is caller-cleanup, so too few arguments are
+        # silently ignored -- the call "succeeds" and out-parameters are never
+        # written -- and too many read registers the caller never set.
+        comptime _c = Self._cell_of[name]()
+        comptime assert _c >= 0, (
+            "no implemented interface declares this method"
+        )
+        _check_hresult_method[Self.interfaces[_c], name, 0]()
         self.slot[name](com_tramp0[m])
 
     def method[
@@ -900,6 +933,17 @@ struct ComClassBuilder[*interfaces: StaticString]:
             name: The COM method name.
             m: The method.
         """
+        # The implementation side is checked exactly as the calling side is:
+        # a method whose shape disagrees with the metadata fills a slot that
+        # half-works. Win64 is caller-cleanup, so too few arguments are
+        # silently ignored -- the call "succeeds" and out-parameters are never
+        # written -- and too many read registers the caller never set.
+        comptime _c = Self._cell_of[name]()
+        comptime assert _c >= 0, (
+            "no implemented interface declares this method"
+        )
+        _check_hresult_method[Self.interfaces[_c], name, 1]()
+        _check_arg[Self.interfaces[_c], name, "0", A0]()
         self.slot[name](com_tramp1[m])
 
     def method[
@@ -919,6 +963,18 @@ struct ComClassBuilder[*interfaces: StaticString]:
             name: The COM method name.
             m: The method.
         """
+        # The implementation side is checked exactly as the calling side is:
+        # a method whose shape disagrees with the metadata fills a slot that
+        # half-works. Win64 is caller-cleanup, so too few arguments are
+        # silently ignored -- the call "succeeds" and out-parameters are never
+        # written -- and too many read registers the caller never set.
+        comptime _c = Self._cell_of[name]()
+        comptime assert _c >= 0, (
+            "no implemented interface declares this method"
+        )
+        _check_hresult_method[Self.interfaces[_c], name, 2]()
+        _check_arg[Self.interfaces[_c], name, "0", A0]()
+        _check_arg[Self.interfaces[_c], name, "1", A1]()
         self.slot[name](com_tramp2[m])
 
     def method[
@@ -940,6 +996,19 @@ struct ComClassBuilder[*interfaces: StaticString]:
             name: The COM method name.
             m: The method.
         """
+        # The implementation side is checked exactly as the calling side is:
+        # a method whose shape disagrees with the metadata fills a slot that
+        # half-works. Win64 is caller-cleanup, so too few arguments are
+        # silently ignored -- the call "succeeds" and out-parameters are never
+        # written -- and too many read registers the caller never set.
+        comptime _c = Self._cell_of[name]()
+        comptime assert _c >= 0, (
+            "no implemented interface declares this method"
+        )
+        _check_hresult_method[Self.interfaces[_c], name, 3]()
+        _check_arg[Self.interfaces[_c], name, "0", A0]()
+        _check_arg[Self.interfaces[_c], name, "1", A1]()
+        _check_arg[Self.interfaces[_c], name, "2", A2]()
         self.slot[name](com_tramp3[m])
 
     def method[
@@ -963,7 +1032,182 @@ struct ComClassBuilder[*interfaces: StaticString]:
             name: The COM method name.
             m: The method.
         """
+        # The implementation side is checked exactly as the calling side is:
+        # a method whose shape disagrees with the metadata fills a slot that
+        # half-works. Win64 is caller-cleanup, so too few arguments are
+        # silently ignored -- the call "succeeds" and out-parameters are never
+        # written -- and too many read registers the caller never set.
+        comptime _c = Self._cell_of[name]()
+        comptime assert _c >= 0, (
+            "no implemented interface declares this method"
+        )
+        _check_hresult_method[Self.interfaces[_c], name, 4]()
+        _check_arg[Self.interfaces[_c], name, "0", A0]()
+        _check_arg[Self.interfaces[_c], name, "1", A1]()
+        _check_arg[Self.interfaces[_c], name, "2", A2]()
+        _check_arg[Self.interfaces[_c], name, "3", A3]()
         self.slot[name](com_tramp4[m])
+
+    def wire_if_com[
+        T: AnyType, //, name: StaticString, m: def (mut T) raises thin -> None
+    ](mut self):
+        """Wires a zero-argument method into its slot, if it is a COM method.
+
+        What the `class` keyword emits for every `def` in a class body. A
+        class may hold helpers -- `def reset(mut self)` -- and those are
+        ordinary methods of the struct, not slots to fill; wiring every `def`
+        unconditionally would reject them with a constraint failure from
+        inside generated source, for a rule nobody would guess.
+
+        The cost, stated plainly: a mistyped COM name (`DragEntr`) is also
+        "not a COM method", so it stops being a compile-time error and
+        becomes a missing slot -- caught by `finish`, which refuses to build
+        an object with a hole, at construction rather than compilation.
+
+        Parameters:
+            T: The implementing struct, inferred from the method.
+            name: The method's name.
+            m: The method.
+        """
+        # comptime-if prunes INSTANTIATION, so an undeclared name never
+        # reaches `method`'s constraints. It does not prune overload
+        # conversion, which is why the catch-all overload below is also
+        # needed: together they cover every shape a class body can hold.
+        comptime if Self._cell_of[name]() >= 0:
+            self.method[name, m]()
+
+    def wire_if_com[
+        T: AnyType,
+        A0: AnyType,
+        //,
+        name: StaticString,
+        m: def (mut T, A0) raises thin -> None,
+    ](mut self):
+        """Wires a one-argument method into its slot, if it is a COM method.
+
+        Parameters:
+            T: The implementing struct.
+            A0: The argument type.
+            name: The method's name.
+            m: The method.
+        """
+        # comptime-if prunes INSTANTIATION, so an undeclared name never
+        # reaches `method`'s constraints. It does not prune overload
+        # conversion, which is why the catch-all overload below is also
+        # needed: together they cover every shape a class body can hold.
+        comptime if Self._cell_of[name]() >= 0:
+            self.method[name, m]()
+
+    def wire_if_com[
+        T: AnyType,
+        A0: AnyType,
+        A1: AnyType,
+        //,
+        name: StaticString,
+        m: def (mut T, A0, A1) raises thin -> None,
+    ](mut self):
+        """Wires a two-argument method into its slot, if it is a COM method.
+
+        Parameters:
+            T: The implementing struct.
+            A0: The first argument type.
+            A1: The second argument type.
+            name: The method's name.
+            m: The method.
+        """
+        # comptime-if prunes INSTANTIATION, so an undeclared name never
+        # reaches `method`'s constraints. It does not prune overload
+        # conversion, which is why the catch-all overload below is also
+        # needed: together they cover every shape a class body can hold.
+        comptime if Self._cell_of[name]() >= 0:
+            self.method[name, m]()
+
+    def wire_if_com[
+        T: AnyType,
+        A0: AnyType,
+        A1: AnyType,
+        A2: AnyType,
+        //,
+        name: StaticString,
+        m: def (mut T, A0, A1, A2) raises thin -> None,
+    ](mut self):
+        """Wires a three-argument method into its slot, if it is a COM method.
+
+        Parameters:
+            T: The implementing struct.
+            A0: The first argument type.
+            A1: The second argument type.
+            A2: The third argument type.
+            name: The method's name.
+            m: The method.
+        """
+        # comptime-if prunes INSTANTIATION, so an undeclared name never
+        # reaches `method`'s constraints. It does not prune overload
+        # conversion, which is why the catch-all overload below is also
+        # needed: together they cover every shape a class body can hold.
+        comptime if Self._cell_of[name]() >= 0:
+            self.method[name, m]()
+
+    def wire_if_com[
+        T: AnyType,
+        A0: AnyType,
+        A1: AnyType,
+        A2: AnyType,
+        A3: AnyType,
+        //,
+        name: StaticString,
+        m: def (mut T, A0, A1, A2, A3) raises thin -> None,
+    ](mut self):
+        """Wires a four-argument method into its slot, if it is a COM method.
+
+        Parameters:
+            T: The implementing struct.
+            A0: The first argument type.
+            A1: The second argument type.
+            A2: The third argument type.
+            A3: The fourth argument type.
+            name: The method's name.
+            m: The method.
+        """
+        # comptime-if prunes INSTANTIATION, so an undeclared name never
+        # reaches `method`'s constraints. It does not prune overload
+        # conversion, which is why the catch-all overload below is also
+        # needed: together they cover every shape a class body can hold.
+        comptime if Self._cell_of[name]() >= 0:
+            self.method[name, m]()
+
+    def wire_if_com[
+        F: AnyType, //, name: StaticString, m: F
+    ](mut self):
+        """Absorbs a class method that is not shaped like a COM method.
+
+        The overload the `class` desugar falls back to. A class body may hold
+        helpers -- `def total(self) -> Int` -- and wiring every `def` into a
+        slot would reject them for a rule nobody would guess. Overload
+        resolution picks a COM-shaped overload when the signature fits one;
+        anything else lands here and stays an ordinary method of the struct.
+
+        `comptime if` cannot do this job: it does not prune type checking, so
+        a guarded call still resolves its overloads and still fails. The
+        filtering has to happen in the overload set itself.
+
+        The name is still checked, which is what keeps the net tight: if an
+        implemented interface *does* declare this name, then the method was
+        meant to be a COM method and its signature is simply wrong -- say so,
+        rather than silently leaving the slot empty.
+
+        Parameters:
+            F: The method's type, whatever it is.
+            name: The method's name.
+            m: The method.
+        """
+        comptime assert Self._cell_of[name]() < 0, (
+            "'"
+            + String(name)
+            + "' is declared by an implemented COM interface, but this"
+            " signature cannot fill its slot: a COM method takes `mut self`,"
+            " is `raises`, returns nothing, and takes at most four arguments"
+        )
 
     def notimpl[method: StaticString](mut self):
         """Declines one method, visibly: its slot answers E_NOTIMPL.
@@ -1093,12 +1337,18 @@ struct ComClassBuilder[*interfaces: StaticString]:
         comptime words = (size_of[T]() + 7) // 8
         var ptr = self^.finish(state_words=words)
         var base = com_class_base(ptr.address())
-        var state_off = Pointer[Int, MutAnyOrigin](
-            unsafe_from_address=base
-        ).unsafe_offset(_COM_H_STATE_OFF)[]
+        var hdr = Pointer[Int, MutAnyOrigin](unsafe_from_address=base)
+        var state_off = hdr.unsafe_offset(_COM_H_STATE_OFF)[]
         Pointer[T, MutAnyOrigin](
             unsafe_from_address=base + state_off
         ).unsafe_write(state^)
+        # The object owns a live `T` from here until the last Release, which
+        # reaches this thunk through the destructor word. Set it only after
+        # the state is initialised: a raise between the two would otherwise
+        # destroy a value that was never constructed.
+        hdr.unsafe_offset(_COM_H_DTOR)[] = com_fn_bits[
+            def (Int) thin abi("C") -> NoneType
+        ](_com_class_dtor[T])
         return ptr^
 
 
