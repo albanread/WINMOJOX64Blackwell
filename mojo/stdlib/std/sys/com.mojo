@@ -28,6 +28,7 @@ from std.sys._winkb import (
     winkb_com_param_count,
     winkb_com_param_type,
     winkb_com_method_count,
+    winkb_com_has_method,
     winkb_type_width,
 )
 
@@ -572,33 +573,52 @@ struct Com[interface_name: StaticString](TrivialRegisterPassable):
 # ===----------------------------------------------------------------------=== #
 # Implementing COM objects: the class runtime
 #
-# What the `class` keyword's synthesis will automate, available today as a
-# library, following the Mac ports' sequencing: registrar machinery first,
-# keyword on top of a proven runtime. spikes/com/s10 is the milestone consumer.
+# The runtime behind the `class` keyword, and a usable library in its own
+# right. One heap block per object, holding every interface it implements.
 #
-# One heap block per object:
+# A COM interface pointer must point at a word holding that interface's vtable
+# pointer -- so an object implementing several interfaces needs several such
+# words at distinct addresses. This is the layout C++ multiple inheritance
+# produces, and what Windows expects: one 2-word cell per interface, each
+# carrying its own vtable pointer and the byte offset back to the block base.
+# Any method, given the `this` it was called with, subtracts that offset and
+# is back at the object.
 #
-#   word 0            vtable pointer (points into this same block)
-#   word 1            refcount, atomic
-#   word 2            accepted-IID table pointer (into this block)
-#   word 3            accepted-IID count
-#   word 4            destructor fn (0 for none; reserved for `class`)
-#   word 5            byte offset from the object to the user state
-#   words 6..6+n-1    the vtable: n = the interface's total slot count
-#   then              the IID bytes, then the user state, zero-initialised
+#   word 0            refcount, atomic
+#   word 1            accepted-IID table pointer (into this block)
+#   word 2            accepted-IID count
+#   word 3            destructor fn (0 for none)
+#   word 4            byte offset from the base to the user state
+#   word 5            pointer to the per-IID cell index table
+#   words 6,7         cell 0: [vtable ptr][offset back to base]  <- iface 0 ptr
+#   words 8,9         cell 1: ...                                <- iface 1 ptr
+#   ...               one cell per implemented interface
+#   then              the vtables, the IID bytes, the IID->cell table,
+#                     then the user state, zero-initialised
 #
 # AddRef, Release and QueryInterface are one generic implementation each,
-# reading everything they need from the block -- an fn has no captures, so
+# reading everything they need from the block -- an `fn` has no captures, so
 # the object itself is the closure.
+#
+# What this is not: a true COM tear-off, which allocates a secondary interface
+# lazily on first QueryInterface to keep rarely-used interfaces out of the
+# object. Every interface here is embedded and always present, which costs 16
+# bytes each and buys simpler lifetime rules -- there is exactly one refcount
+# and one allocation, so a client holding any interface keeps the whole object
+# alive, and Release from any interface frees it exactly once.
 # ===----------------------------------------------------------------------=== #
 
-comptime _COM_W_VTBL = 0
-comptime _COM_W_REFS = 1
-comptime _COM_W_IIDS = 2
-comptime _COM_W_IIDN = 3
-comptime _COM_W_DTOR = 4
-comptime _COM_W_STATE_OFF = 5
-comptime _COM_W_HDR = 6
+comptime _COM_H_REFS = 0
+comptime _COM_H_IIDS = 1
+comptime _COM_H_IIDN = 2
+comptime _COM_H_DTOR = 3
+comptime _COM_H_STATE_OFF = 4
+comptime _COM_H_IIDCELLS = 5
+comptime _COM_H_WORDS = 6
+# Within a cell: the vtable pointer, then the offset back to the block base.
+comptime _COM_C_VTBL = 0
+comptime _COM_C_BACK = 1
+comptime _COM_C_WORDS = 2
 
 comptime _E_NOTIMPL_RAW = Int32(-2147467263)
 comptime _E_NOINTERFACE_RAW = Int32(-2147467262)
@@ -620,55 +640,94 @@ def com_fn_bits[Sig: TrivialRegisterPassable](f: Sig) -> Int:
     return Pointer(to=v).unsafe_bitcast[Int]()[]
 
 
+fn _com_cell_offset(cell: Int) -> Int:
+    """Byte offset from the block base to a cell -- the interface pointer."""
+    return (_COM_H_WORDS + cell * _COM_C_WORDS) * 8
+
+
+fn com_class_base(this: Int) -> Int:
+    """The object's block base, from any of its interface pointers.
+
+    Every cell stores its own distance back to the base, so a method never
+    needs to know which interface it was reached through.
+
+    Args:
+        this: An interface pointer belonging to the object.
+
+    Returns:
+        The address of the block base.
+    """
+    return (
+        this
+        - Pointer[Int, MutAnyOrigin](unsafe_from_address=this).unsafe_offset(
+            _COM_C_BACK
+        )[]
+    )
+
+
 def com_class_state(this: Int) -> Pointer[Int, MutAnyOrigin]:
     """The user-state words of a ComClassBuilder object, from a callback.
 
     Args:
-        this: The interface pointer the callback received.
+        this: The interface pointer the callback received -- any of the
+            object's interfaces.
 
     Returns:
         A pointer to the first state word.
     """
-    var obj = Pointer[Int, MutAnyOrigin](unsafe_from_address=this)
+    var base = com_class_base(this)
     return Pointer[Int, MutAnyOrigin](
-        unsafe_from_address=this + obj.unsafe_offset(_COM_W_STATE_OFF)[]
+        unsafe_from_address=base
+        + Pointer[Int, MutAnyOrigin](unsafe_from_address=base).unsafe_offset(
+            _COM_H_STATE_OFF
+        )[]
     )
 
 
 fn _com_class_add_ref(this: Int) -> UInt32:
     var refs = Pointer[Scalar[DType.uint64], MutAnyOrigin](
-        unsafe_from_address=this + _COM_W_REFS * 8
+        unsafe_from_address=com_class_base(this) + _COM_H_REFS * 8
     )
-    var before = Atomic[Scalar[DType.uint64]].fetch_add(refs, 1)
-    return UInt32(before + 1)
+    return UInt32(
+        Atomic[Scalar[DType.uint64]].fetch_add(
+            refs, Scalar[DType.uint64](1)
+        )
+        + 1
+    )
 
 
 fn _com_class_release(this: Int) -> UInt32:
+    var base = com_class_base(this)
     var refs = Pointer[Scalar[DType.uint64], MutAnyOrigin](
-        unsafe_from_address=this + _COM_W_REFS * 8
+        unsafe_from_address=base + _COM_H_REFS * 8
     )
-    # No static fetch_sub; -1 on a uint64 wraps to the same decrement, and
-    # the pre-value read back is what Release must return minus one.
+    # No static fetch_sub exists; adding the wrapped -1 is the same operation
+    # on a uint64, and these callbacks are fns that cannot hold an Atomic by
+    # reference.
     var before = Atomic[Scalar[DType.uint64]].fetch_add(
         refs, Scalar[DType.uint64](0) - 1
     )
     if before == 1:
-        var obj = Pointer[Int, MutAnyOrigin](unsafe_from_address=this)
-        var dtor_bits = obj.unsafe_offset(_COM_W_DTOR)[]
+        var obj = Pointer[Int, MutAnyOrigin](unsafe_from_address=base)
+        var dtor_bits = obj.unsafe_offset(_COM_H_DTOR)[]
         if dtor_bits != 0:
             Pointer(to=dtor_bits).unsafe_bitcast[
                 def (Int) thin abi("C") -> NoneType
-            ]()[](this)
+            ]()[](base)
         obj.unsafe_free()
     return UInt32(before - 1)
 
 
 fn _com_class_query_interface(this: Int, riid: Int, ppv: Int) -> Int32:
-    var obj = Pointer[Int, MutAnyOrigin](unsafe_from_address=this)
+    var base = com_class_base(this)
+    var hdr = Pointer[Int, MutAnyOrigin](unsafe_from_address=base)
     var iids = Pointer[UInt8, MutAnyOrigin](
-        unsafe_from_address=obj.unsafe_offset(_COM_W_IIDS)[]
+        unsafe_from_address=hdr.unsafe_offset(_COM_H_IIDS)[]
     )
-    var count = obj.unsafe_offset(_COM_W_IIDN)[]
+    var cells = Pointer[Int, MutAnyOrigin](
+        unsafe_from_address=hdr.unsafe_offset(_COM_H_IIDCELLS)[]
+    )
+    var count = hdr.unsafe_offset(_COM_H_IIDN)[]
     var asked = Pointer[UInt8, MutAnyOrigin](unsafe_from_address=riid)
     var out = Pointer[Int, MutAnyOrigin](unsafe_from_address=ppv)
     for i in range(count):
@@ -678,8 +737,11 @@ fn _com_class_query_interface(this: Int, riid: Int, ppv: Int) -> Int32:
                 hit = False
                 break
         if hit:
-            _ = _com_class_add_ref(this)
-            out[] = this
+            # Hand back the pointer for the cell that IID names, not the one
+            # the caller happened to hold: that is the whole point of QI.
+            var target = base + _com_cell_offset(cells.unsafe_offset(i)[])
+            _ = _com_class_add_ref(target)
+            out[] = target
             return 0
     out[] = 0
     return _E_NOINTERFACE_RAW
@@ -692,47 +754,92 @@ fn _com_class_notimpl(this: Int) -> Int32:
     return _E_NOTIMPL_RAW
 
 
-struct ComClassBuilder[interface_name: StaticString]:
-    """Builds a live COM object implementing one interface chain.
+struct ComClassBuilder[*interfaces: StaticString]:
+    """Builds a live COM object implementing one or more interface chains.
 
-    The three IUnknown slots are the library's; every other slot must be
-    filled with an `fn` (`slot`) or explicitly declined (`notimpl`) before
-    `finish` will produce an object -- an incompletely implemented interface
-    is a construction error, never a silent vtable hole. Slot indices come
-    from the metadata, so declaration order in user code is meaningless and
-    cannot corrupt dispatch.
+    The three IUnknown slots of every interface are the library's; each other
+    slot must be filled (`slot`/`method`) or explicitly declined (`notimpl`)
+    before `finish` will produce an object -- an incompletely implemented
+    interface is a construction error, never a silent vtable hole. Slot
+    indices come from the metadata, so declaration order in user code is
+    meaningless and cannot corrupt dispatch.
 
-    v1 scope, recorded honestly: QueryInterface answers the primary interface
-    and IUnknown; intermediate bases of a deeper chain are refused. The
-    `fn` signatures themselves are not yet checked against the metadata --
-    that is the `class` keyword's job, and this builder is the escape hatch
-    that will remain when it lands.
+    With several interfaces, a method is routed to the one that declares it;
+    `method` and `slot` take the name alone and find its interface. A name
+    declared by more than one of them is ambiguous and refused.
+
+    v1 scope, recorded honestly: QueryInterface answers each implemented
+    interface and IUnknown, but not the intermediate bases of a deeper chain
+    (IDropTarget and IDropSource derive straight from IUnknown, so the
+    drag-and-drop pair is complete; an IStream would not answer to
+    ISequentialStream). The fn signatures themselves are not checked against
+    the metadata -- the `class` keyword's trampolines do that.
 
     Parameters:
-        interface_name: The COM interface the object implements.
+        interfaces: The COM interfaces the object implements, primary first.
     """
 
-    var _slots: List[Int]
+    var _slots: List[List[Int]]
     var _iids: List[UInt8]
+    var _iid_cells: List[Int]
 
     def __init__(out self):
-        """Prepares the builder with IUnknown's slots prefilled."""
-        comptime total = winkb_com_method_count[Self.interface_name]()
-        self._slots = List[Int]()
-        for _ in range(total):
-            self._slots.append(0)
-        self._slots[0] = com_fn_bits[
-            def (Int, Int, Int) thin abi("C") -> Int32
-        ](_com_class_query_interface)
-        self._slots[1] = com_fn_bits[def (Int) thin abi("C") -> UInt32](
-            _com_class_add_ref
-        )
-        self._slots[2] = com_fn_bits[def (Int) thin abi("C") -> UInt32](
-            _com_class_release
-        )
-        self._iids = _guid_bytes(winkb_interface_iid[Self.interface_name]())
+        """Prepares the builder with every interface's IUnknown prefilled."""
+        self._slots = List[List[Int]]()
+        self._iids = List[UInt8]()
+        self._iid_cells = List[Int]()
+
+        comptime for c in range(len(Self.interfaces)):
+            var v = List[Int]()
+            for _ in range(winkb_com_method_count[Self.interfaces[c]]()):
+                v.append(0)
+            # Every COM interface begins with IUnknown's three slots, and each
+            # cell needs its own copy: the vtable a client holds must answer
+            # QueryInterface/AddRef/Release whichever interface it reached.
+            v[0] = com_fn_bits[def (Int, Int, Int) thin abi("C") -> Int32](
+                _com_class_query_interface
+            )
+            v[1] = com_fn_bits[def (Int) thin abi("C") -> UInt32](
+                _com_class_add_ref
+            )
+            v[2] = com_fn_bits[def (Int) thin abi("C") -> UInt32](
+                _com_class_release
+            )
+            self._slots.append(v^)
+            for b in _guid_bytes(winkb_interface_iid[Self.interfaces[c]]()):
+                self._iids.append(b)
+            self._iid_cells.append(c)
+
+        # IUnknown resolves to the primary interface, as COM requires: the
+        # identity pointer must be the same one every time it is asked for.
         for b in _guid_bytes(winkb_interface_iid["IUnknown"]()):
             self._iids.append(b)
+        self._iid_cells.append(0)
+
+    @staticmethod
+    def _cell_of[method: StaticString]() -> Int:
+        """Which implemented interface declares `method`; -1 if none."""
+        var found = -1
+        comptime for c in range(len(Self.interfaces)):
+            comptime if winkb_com_has_method[Self.interfaces[c], method]():
+                if found < 0:
+                    found = c
+        return found
+
+    @staticmethod
+    def _declarers_of[method: StaticString]() -> Int:
+        """How many implemented interfaces declare `method`.
+
+        More than one means the name is ambiguous, and binding it to whichever
+        interface happens to be listed first would put the implementation in a
+        slot the caller never meant -- silently, and only on one of the two
+        vtables. Counting lets that be refused instead.
+        """
+        var n = 0
+        comptime for c in range(len(Self.interfaces)):
+            comptime if winkb_com_has_method[Self.interfaces[c], method]():
+                n += 1
+        return n
 
     def slot[
         method: StaticString, Sig: TrivialRegisterPassable
@@ -740,32 +847,40 @@ struct ComClassBuilder[interface_name: StaticString]:
         """Fills one method slot, at the index the metadata records.
 
         Parameters:
-            method: The method's name on the interface (or its chain).
+            method: The method's name, on any implemented interface.
             Sig: The fn's type. Its first parameter receives `this` as an
                 Int; reach the object's state with `com_class_state`.
 
         Args:
             f: The implementation.
         """
-        comptime index = winkb_vtable_index[Self.interface_name, method]()
+        comptime cell = Self._cell_of[method]()
+        comptime assert cell >= 0, (
+            "no implemented interface declares this method"
+        )
+        comptime index = winkb_vtable_index[Self.interfaces[cell], method]()
         comptime assert index >= 3, (
             "the IUnknown slots are the library's; do not replace them"
         )
-        self._slots[index] = com_fn_bits[Sig](f)
+        comptime assert Self._declarers_of[method]() == 1, (
+            "ambiguous method name: more than one implemented interface"
+            " declares it, so which vtable slot it belongs in is undefined"
+        )
+        self._slots[cell][index] = com_fn_bits[Sig](f)
 
     def method[
         T: AnyType, //, name: StaticString, m: def (mut T) raises thin -> None
     ](mut self):
         """Fills slot `name` with a zero-argument method, arity chosen for you.
 
-        This is the uniform form the `class` keyword emits: it names the
-        method and hands the method value, and the overload set picks the
-        right trampoline from the method's arity, so the caller never spells
-        com_trampN or counts arguments.
+        The uniform form the `class` keyword emits: name the method, hand the
+        method value, and the overload set picks the trampoline matching its
+        arity. The caller never spells com_trampN or counts arguments, and
+        with several interfaces the slot is found on whichever declares it.
 
         Parameters:
-            name: The COM method name.
             T: The implementing struct, inferred from the method.
+            name: The COM method name.
             m: The method, e.g. `DropTarget.DragLeave`.
         """
         self.slot[name](com_tramp0[m])
@@ -780,9 +895,9 @@ struct ComClassBuilder[interface_name: StaticString]:
         """Fills slot `name` with a one-argument method.
 
         Parameters:
-            name: The COM method name.
             T: The implementing struct.
             A0: The argument type.
+            name: The COM method name.
             m: The method.
         """
         self.slot[name](com_tramp1[m])
@@ -798,10 +913,10 @@ struct ComClassBuilder[interface_name: StaticString]:
         """Fills slot `name` with a two-argument method.
 
         Parameters:
-            name: The COM method name.
             T: The implementing struct.
             A0: The first argument type.
             A1: The second argument type.
+            name: The COM method name.
             m: The method.
         """
         self.slot[name](com_tramp2[m])
@@ -818,11 +933,11 @@ struct ComClassBuilder[interface_name: StaticString]:
         """Fills slot `name` with a three-argument method.
 
         Parameters:
-            name: The COM method name.
             T: The implementing struct.
             A0: The first argument type.
             A1: The second argument type.
             A2: The third argument type.
+            name: The COM method name.
             m: The method.
         """
         self.slot[name](com_tramp3[m])
@@ -840,12 +955,12 @@ struct ComClassBuilder[interface_name: StaticString]:
         """Fills slot `name` with a four-argument method.
 
         Parameters:
-            name: The COM method name.
             T: The implementing struct.
             A0: The first argument type.
             A1: The second argument type.
             A2: The third argument type.
             A3: The fourth argument type.
+            name: The COM method name.
             m: The method.
         """
         self.slot[name](com_tramp4[m])
@@ -856,17 +971,25 @@ struct ComClassBuilder[interface_name: StaticString]:
         Parameters:
             method: The method being declined.
         """
-        comptime index = winkb_vtable_index[Self.interface_name, method]()
+        comptime cell = Self._cell_of[method]()
+        comptime assert cell >= 0, (
+            "no implemented interface declares this method"
+        )
+        comptime index = winkb_vtable_index[Self.interfaces[cell], method]()
         comptime assert index >= 3, (
             "the IUnknown slots are the library's; do not replace them"
         )
-        self._slots[index] = com_fn_bits[def (Int) thin abi("C") -> Int32](
-            _com_class_notimpl
+        comptime assert Self._declarers_of[method]() == 1, (
+            "ambiguous method name: more than one implemented interface"
+            " declares it, so which vtable slot it belongs in is undefined"
         )
+        self._slots[cell][index] = com_fn_bits[
+            def (Int) thin abi("C") -> Int32
+        ](_com_class_notimpl)
 
     def finish(
         var self, *, state_words: Int = 0
-    ) raises -> ComPtr[Self.interface_name]:
+    ) raises -> ComPtr[Self.interfaces[0]]:
         """Allocates and wires the object; the creation reference is adopted.
 
         Args:
@@ -874,19 +997,20 @@ struct ComClassBuilder[interface_name: StaticString]:
                 reachable from callbacks via `com_class_state`.
 
         Returns:
-            An owning pointer to the new object.
+            An owning pointer to the new object's primary interface.
 
         Raises:
             If any slot is neither filled nor declined.
         """
         var missing = 0
-        for i in range(len(self._slots)):
-            if self._slots[i] == 0:
-                missing += 1
+        for c in range(len(self._slots)):
+            for i in range(len(self._slots[c])):
+                if self._slots[c][i] == 0:
+                    missing += 1
         if missing != 0:
             raise Error(
                 "ComClassBuilder["
-                + String(Self.interface_name)
+                + String(Self.interfaces[0])
                 + "]: "
                 + String(missing)
                 + " slot(s) neither implemented nor declined; fill each with"
@@ -894,41 +1018,65 @@ struct ComClassBuilder[interface_name: StaticString]:
                 " vtable hole dispatches somewhere wrong, successfully"
             )
 
-        var nslots = len(self._slots)
+        var ncells = len(self._slots)
+        var vtable_words = 0
+        for c in range(ncells):
+            vtable_words += len(self._slots[c])
         var iid_words = (len(self._iids) + 7) // 8
-        var total_words = _COM_W_HDR + nslots + iid_words + state_words
-        # alloc[type](count): the count overload, not the Layout one.
+        var cells_words = len(self._iid_cells)
+        var total_words = (
+            _COM_H_WORDS
+            + ncells * _COM_C_WORDS
+            + vtable_words
+            + iid_words
+            + cells_words
+            + state_words
+        )
         var block = alloc[Int](total_words, alignment=8)
         for i in range(total_words):
             block.unsafe_offset(i)[] = 0
 
         var base = Int(block)
-        block.unsafe_offset(_COM_W_VTBL)[] = base + _COM_W_HDR * 8
-        block.unsafe_offset(_COM_W_REFS)[] = 1
-        block.unsafe_offset(_COM_W_IIDS)[] = base + (_COM_W_HDR + nslots) * 8
-        block.unsafe_offset(_COM_W_IIDN)[] = len(self._iids) // 16
-        block.unsafe_offset(_COM_W_STATE_OFF)[] = (
-            _COM_W_HDR + nslots + iid_words
+        var vt_word = _COM_H_WORDS + ncells * _COM_C_WORDS
+        var iid_word = vt_word + vtable_words
+        var cellidx_word = iid_word + iid_words
+
+        block.unsafe_offset(_COM_H_REFS)[] = 1
+        block.unsafe_offset(_COM_H_IIDS)[] = base + iid_word * 8
+        block.unsafe_offset(_COM_H_IIDN)[] = len(self._iids) // 16
+        block.unsafe_offset(_COM_H_IIDCELLS)[] = base + cellidx_word * 8
+        block.unsafe_offset(_COM_H_STATE_OFF)[] = (
+            cellidx_word + cells_words
         ) * 8
-        for i in range(nslots):
-            block.unsafe_offset(_COM_W_HDR + i)[] = self._slots[i]
+
+        var w = vt_word
+        for c in range(ncells):
+            var cell_word = _COM_H_WORDS + c * _COM_C_WORDS
+            block.unsafe_offset(cell_word + _COM_C_VTBL)[] = base + w * 8
+            block.unsafe_offset(cell_word + _COM_C_BACK)[] = _com_cell_offset(c)
+            for i in range(len(self._slots[c])):
+                block.unsafe_offset(w)[] = self._slots[c][i]
+                w += 1
+
         var iid_bytes = Pointer[UInt8, MutAnyOrigin](
-            unsafe_from_address=base + (_COM_W_HDR + nslots) * 8
+            unsafe_from_address=base + iid_word * 8
         )
         for i in range(len(self._iids)):
             iid_bytes.unsafe_offset(i)[] = self._iids[i]
+        for i in range(len(self._iid_cells)):
+            block.unsafe_offset(cellidx_word + i)[] = self._iid_cells[i]
 
-        return ComPtr[Self.interface_name](adopt=base)
+        return ComPtr[Self.interfaces[0]](adopt=base + _com_cell_offset(0))
 
     def finish_state[
         T: Movable & Deinitable
-    ](var self, var state: T) raises -> ComPtr[Self.interface_name]:
+    ](var self, var state: T) raises -> ComPtr[Self.interfaces[0]]:
         """Allocates the object with `state` moved into its state region.
 
-        The state type `T` is the struct whose fields the callbacks mutate
-        through `com_class_state`; the trampolines reconstruct a `T` from the
-        same region. This is the `finish` a `class` uses -- the object owns a
-        live `T` for its whole lifetime, destroyed when Release hits zero.
+        The state type `T` is the struct whose fields the callbacks mutate;
+        the trampolines reconstruct a `T` from the same region. This is the
+        `finish` a `class` uses -- the object owns a live `T` for its whole
+        lifetime, destroyed when Release hits zero.
 
         Parameters:
             T: The state struct.
@@ -937,17 +1085,17 @@ struct ComClassBuilder[interface_name: StaticString]:
             state: The initial state, moved in.
 
         Returns:
-            An owning pointer to the new object.
+            An owning pointer to the new object's primary interface.
 
         Raises:
             If any slot is neither implemented nor declined.
         """
         comptime words = (size_of[T]() + 7) // 8
         var ptr = self^.finish(state_words=words)
-        var base = ptr.address()
+        var base = com_class_base(ptr.address())
         var state_off = Pointer[Int, MutAnyOrigin](
             unsafe_from_address=base
-        ).unsafe_offset(_COM_W_STATE_OFF)[]
+        ).unsafe_offset(_COM_H_STATE_OFF)[]
         Pointer[T, MutAnyOrigin](
             unsafe_from_address=base + state_off
         ).unsafe_write(state^)
@@ -974,9 +1122,16 @@ comptime _E_FAIL_RAW = Int32(-2147467259)
 
 
 fn _com_self[T: AnyType](this: Int) -> Pointer[T, MutAnyOrigin]:
-    var obj = Pointer[Int, MutAnyOrigin](unsafe_from_address=this)
+    # `this` may be any of the object's interface pointers; the cell it points
+    # at carries the distance back to the block base, where the state offset
+    # lives. So a method reached through a secondary interface finds the same
+    # state as one reached through the primary.
+    var base = com_class_base(this)
     return Pointer[T, MutAnyOrigin](
-        unsafe_from_address=this + obj.unsafe_offset(_COM_W_STATE_OFF)[]
+        unsafe_from_address=base
+        + Pointer[Int, MutAnyOrigin](unsafe_from_address=base).unsafe_offset(
+            _COM_H_STATE_OFF
+        )[]
     )
 
 
