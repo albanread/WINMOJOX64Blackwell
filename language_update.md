@@ -37,7 +37,7 @@ different states, and all three states are convenient:
 
 | keyword | state | notes |
 |---|---|---|
-| `class` | **Reserved, and it now guides** (`ParserStmts.cpp:4077`) | its *runtime and library form are built and tested*. `class Name(IFace):` parses its header and emits a located diagnostic showing the exact working form for that interface -- struct of state + `ComClassBuilder`/`com_trampN` factory. The keyword that compiles a declaration *down to* that form is the one piece left, and is pure sugar over a working system (see the cost note below). |
+| `class` | **Implemented** (`ParserStmts.cpp:4077`) | `class Name(IFace):` is the COM object surface: name the interface, declare the state, write the methods. It is a *source-level desugar* -- the parser captures the body, scans its `def`s, generates the `@fieldwise_init` struct plus an `into_com()` factory filling each metadata slot through the arity-matched trampoline, and sub-parses that into the module. Every later stage sees an ordinary struct. `MOJO_DEBUG_COM_CLASS=1` prints the generated source. |
 | `let` | **BUILT.** `kLetPat` onto `PatternDeclKind::kBind`, ported from the Mac ports across nine files | exercised by every spike; `f0*` prove nothing about it because rebinding is caught in `ExprNodes.cpp`'s existing kBind machinery |
 | `fn` | **BUILT.** The removal error at `DeclResolution.cpp:1958` became the foreign-callable capture; `setCABI(true)` engages the existing `abi("C")` machinery | `s07` hands one to EnumWindows; `s08` builds a vtable of them; `f05` proves `fn ... raises` refuses to compile |
 
@@ -368,23 +368,27 @@ agree on every byte.
 | C2.5 | the foreign-compiler oracle | `s09`: an MSVC-built ISequentialStream consumed through the typed surface -- Write's byte-sum read back exact, QI honoured and refused correctly | **DONE** |
 | C3-runtime | `ComClassBuilder`: static vtable in metadata order, atomic AddRef/Release, IID-checking QI, completeness-or-E_NOTIMPL | `s10` builds an IDropTarget, RegisterDragDrop holds it (refcount 1->2), drop callbacks accumulate state, RevokeDragDrop releases (2->1); `f06` refuses a class that overrides IUnknown | **DONE** |
 | C3-library | `com_tramp0..4` + `finish_state`: a COM class as a struct + small factory | `s11` rebuilds the IDropTarget as a `DropTarget` struct with raising methods, no raw fn pointers | **DONE** |
-| C3-guidance | `class Name(IFace):` parses its header and hands back the library form for that interface | writing `class DropTarget(IDropTarget):` emits the exact struct-plus-factory to write instead | **DONE** |
-| C3-keyword | compile a `class` declaration down to the library form | `class DropTarget(IDropTarget):` compiles to what s11 writes by hand | design (see cost note) |
+| C3-keyword | `class Name(IFace):` compiles down to the library form | `s12` writes the IDropTarget as a plain `class` and it dispatches through the metadata slots; `f07`/`f08` refuse two interfaces and a missing one | **DONE** |
 | C4 | multiple interfaces (tear-off first, per the M2 cost model) + `raises` bridge | one object answering two IIDs; the cl.exe oracle calls both; shuffled-source must-fail proves slot order comes from metadata | design |
 | C5 | `IDispatch` + BSTR/VARIANT | the IDE exposes one automation object a PowerShell script can call | design |
 
-**Cost note on the remaining keyword.** The runtime, the trampolines, and the
-library form are done and tested (17/17), so a COM class is already writable
-in pure Mojo: a struct of state with raising methods and a four-to-six-line
-factory (`s11`). What remains -- compiling `class Name(IFace):` *down to* that
-factory -- is genuine compiler synthesis of one method body: a
-`ComClassBuilder` construction, one `b.slot["M"](com_trampN[Name.M])` per
-method at the metadata's arity, and a `finish_state`. The Mac ports sized the
-equivalent as their one "L", "no partial credit" sprint, and the hard part
-here is the same: forming, in MLIR, a reference to `com_trampN` specialised on
-a method of the struct being defined. It is sugar over a working system, so it
-is scoped separately and left for a deliberate, reviewed pass rather than
-folded in with the runtime. Until then the keyword guides to the library form.
+**What the keyword cost, and why it was small.** The synthesis was expected to
+be the one "L"-sized sprint: forming, in MLIR, a reference to a trampoline
+specialised on a method of the struct being defined. It turned out not to need
+MLIR at all. Two facts collapsed it. First, a Mojo method reference is already
+a `thin` fn value, so `com_trampN[Struct.Method]` is an ordinary library
+generic -- the trampoline family is stdlib code, not compiler code. Second,
+`struct` does not parse its own body inline: it records a source range and the
+body is re-lexed later. So `class` can capture its body, generate the struct
+and factory as *source*, and hand that to the existing parser -- roughly 120
+lines in `parseClassStmt`, no new IR, no new type-checking path. The desugar is
+printable (`MOJO_DEBUG_COM_CLASS=1`), which makes it debuggable by reading it.
+
+Two things that bit, recorded so they are not re-learned: a `Lexer` reads to a
+guaranteed null terminator, so lexing a `StringRef` into the middle of the file
+runs off the end (own the body text); and the generated buffer must be owned by
+the `SourceMgr`, because the struct's body is re-parsed from it long after
+`parseClassStmt` returns.
 
 C3-library is the IDE's drop-target because the IDE plan (their
 `IDE-DESIGN.md`, ours to be written against it) is the consumer that keeps
