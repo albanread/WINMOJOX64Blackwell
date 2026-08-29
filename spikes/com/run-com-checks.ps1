@@ -77,7 +77,7 @@ foreach ($f in $passSpikes) {
 
 # ---- must-fail: the interesting half --------------------------------------
 Write-Host "== must-fail (each must REFUSE to compile) =="
-$failSpikes = Get-ChildItem (Join-Path $repo 'spikes\com') -Filter 'f0*.mojo' | Sort-Object Name
+$failSpikes = Get-ChildItem (Join-Path $repo 'spikes\com') -Filter 'f??_*.mojo' | Sort-Object Name
 foreach ($f in $failSpikes) {
     $out = cmd /c "`"$mojo`" run -I mojo/stdlib spikes/com/$($f.Name) 2>&1" | Out-String
     $code = $LASTEXITCODE
