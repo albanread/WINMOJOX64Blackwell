@@ -913,10 +913,71 @@ constexpr StringRef kFieldOffsetSQL =
     "SELECT f.byte_offset FROM struct_fields f "
     "JOIN types t ON t.type_id = f.struct_type_id "
     "WHERE t.type_name = ?1 AND f.field_name = ?2";
+// COM method lookups walk the interface's inheritance chain: a method
+// asked of IStream may be defined on ISequentialStream or IUnknown, and
+// interface_methods rows live on the DEFINING interface. vtable_index is
+// already absolute across the chain, so the walk changes which row is
+// found, never the number it holds. ORDER BY depth LIMIT 1 makes the
+// nearest definition win, matching the Mac ports' method CTE. The seed
+// filters on `iid IS NOT NULL`: the winmd importer's kind classifier
+// occasionally mislabels an interface, and the IID is the one signal that
+// is definitively COM (the Modula-2 pipeline's lesson, recorded in its
+// db.rs).
+#define WINKB_IFACE_CHAIN_CTE                                                  \
+  "WITH RECURSIVE chain(type_id, qualified_name, depth) AS ( "                \
+  "  SELECT type_id, qualified_name, 0 FROM types "                           \
+  "   WHERE type_name = ?1 AND iid IS NOT NULL "                              \
+  "  UNION ALL "                                                              \
+  "  SELECT t.type_id, t.qualified_name, c.depth + 1 "                        \
+  "    FROM chain c "                                                         \
+  "    JOIN types t0 ON t0.type_id = c.type_id "                              \
+  "    JOIN types t ON t.qualified_name = t0.base_qualified_name "            \
+  ") "
+#define WINKB_CHAIN_METHOD_ID                                                  \
+  "(SELECT m.method_id FROM interface_methods m "                             \
+  " JOIN chain c ON c.type_id = m.interface_type_id "                         \
+  " WHERE m.method_name = ?2 ORDER BY c.depth LIMIT 1)"
+
 constexpr StringRef kVtableIndexSQL =
+    WINKB_IFACE_CHAIN_CTE
     "SELECT m.vtable_index FROM interface_methods m "
-    "JOIN types t ON t.type_id = m.interface_type_id "
-    "WHERE t.type_name = ?1 AND m.method_name = ?2";
+    "JOIN chain c ON c.type_id = m.interface_type_id "
+    "WHERE m.method_name = ?2 ORDER BY c.depth LIMIT 1";
+constexpr StringRef kComMethodRetTypeSQL =
+    WINKB_IFACE_CHAIN_CTE
+    "SELECT m.return_type_name FROM interface_methods m "
+    "JOIN chain c ON c.type_id = m.interface_type_id "
+    "WHERE m.method_name = ?2 ORDER BY c.depth LIMIT 1";
+constexpr StringRef kComMethodParamCountSQL =
+    WINKB_IFACE_CHAIN_CTE
+    "SELECT COUNT(*) FROM interface_method_params p "
+    "WHERE p.method_id = " WINKB_CHAIN_METHOD_ID;
+constexpr StringRef kComMethodParamTypeSQL =
+    WINKB_IFACE_CHAIN_CTE
+    "SELECT p.type_name FROM interface_method_params p "
+    "WHERE p.ordinal = ?3 AND p.method_id = " WINKB_CHAIN_METHOD_ID;
+// Total absolute slot count of an interface's vtable, inherited slots
+// included -- what a static vtable for the interface must provide.
+constexpr StringRef kComMethodCountSQL =
+    WINKB_IFACE_CHAIN_CTE
+    "SELECT MAX(m.vtable_index) + 1 FROM interface_methods m "
+    "JOIN chain c ON c.type_id = m.interface_type_id";
+constexpr StringRef kComInterfaceBaseSQL =
+    "SELECT t2.type_name FROM types t1 "
+    "JOIN types t2 ON t2.qualified_name = t1.base_qualified_name "
+    "WHERE t1.type_name = ?1 AND t1.iid IS NOT NULL";
+// Width in bytes of any named type -- struct, enum, or interface pointer
+// target -- for comptime argument classification. struct_size stays
+// struct-only on purpose; this one answers for everything the metadata
+// sizes.
+// Matches the short or the qualified spelling, because COM parameter
+// types arrive qualified ("Windows.Win32.System.Com.STREAM_SEEK") and
+// string surgery belongs in SQL, where it always evaluates, not in
+// comptime Mojo, where it may not fold (the Mac ports' lesson).
+constexpr StringRef kTypeWidthSQL =
+    "SELECT size_bits / 8 FROM types "
+    "WHERE (type_name = ?1 OR qualified_name = ?1) "
+    "AND size_bits IS NOT NULL";
 constexpr StringRef kInterfaceIIDSQL =
     "SELECT iid FROM types WHERE type_name = ?1 AND iid IS NOT NULL";
 constexpr StringRef kFunctionDLLSQL =
@@ -953,6 +1014,12 @@ const WinKBQueryDef kQueries[] = {
     {"struct_align", 1, kStructAlignSQL},
     {"field_offset", 2, kFieldOffsetSQL},
     {"vtable_index", 2, kVtableIndexSQL},
+    {"com_method_ret_type", 2, kComMethodRetTypeSQL},
+    {"com_method_param_count", 2, kComMethodParamCountSQL},
+    {"com_method_param_type", 3, kComMethodParamTypeSQL},
+    {"com_method_count", 1, kComMethodCountSQL},
+    {"com_interface_base", 1, kComInterfaceBaseSQL},
+    {"type_width", 1, kTypeWidthSQL},
     {"interface_iid", 1, kInterfaceIIDSQL},
     {"function_dll", 1, kFunctionDLLSQL},
     {"constant_value", 1, kConstantValueSQL},

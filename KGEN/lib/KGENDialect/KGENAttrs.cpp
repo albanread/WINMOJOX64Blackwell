@@ -2545,11 +2545,11 @@ LogicalResult ParamOperatorAttr::verify(
     break;
   case POC::WinKBQuery:
     // (query, argument...) -- the first operand names the query, the rest are
-    // its arguments. Two is enough for every query so far: a struct size takes
-    // one name, a field offset takes a struct and a field.
-    if (operands.size() < 1 || operands.size() > 3)
-      return emitError() << "'winkb_query' expects a query name and up to two "
-                            "arguments";
+    // its arguments. Three covers every query so far: a COM method parameter
+    // type takes an interface, a method, and an ordinal.
+    if (operands.size() < 1 || operands.size() > 4)
+      return emitError() << "'winkb_query' expects a query name and up to "
+                            "three arguments";
     for (auto operand : operands)
       if (!::isa<StringType>(operand.getType()))
         return emitError() << "'winkb_query' operands must all be strings";
