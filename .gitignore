@@ -231,3 +231,7 @@ mojo/docs/releases/nightly.md
 /*.fatbin
 /*.ll
 /*.asm
+
+# COM spike oracle, built on demand by run-com-checks.ps1
+spikes/com/oracle_stream.dll
+spikes/com/*.obj
