@@ -753,6 +753,103 @@ struct ComClassBuilder[interface_name: StaticString]:
         )
         self._slots[index] = com_fn_bits[Sig](f)
 
+    def method[
+        T: AnyType, //, name: StaticString, m: def (mut T) raises thin -> None
+    ](mut self):
+        """Fills slot `name` with a zero-argument method, arity chosen for you.
+
+        This is the uniform form the `class` keyword emits: it names the
+        method and hands the method value, and the overload set picks the
+        right trampoline from the method's arity, so the caller never spells
+        com_trampN or counts arguments.
+
+        Parameters:
+            name: The COM method name.
+            T: The implementing struct, inferred from the method.
+            m: The method, e.g. `DropTarget.DragLeave`.
+        """
+        self.slot[name](com_tramp0[m])
+
+    def method[
+        T: AnyType,
+        A0: AnyType,
+        //,
+        name: StaticString,
+        m: def (mut T, A0) raises thin -> None,
+    ](mut self):
+        """Fills slot `name` with a one-argument method.
+
+        Parameters:
+            name: The COM method name.
+            T: The implementing struct.
+            A0: The argument type.
+            m: The method.
+        """
+        self.slot[name](com_tramp1[m])
+
+    def method[
+        T: AnyType,
+        A0: AnyType,
+        A1: AnyType,
+        //,
+        name: StaticString,
+        m: def (mut T, A0, A1) raises thin -> None,
+    ](mut self):
+        """Fills slot `name` with a two-argument method.
+
+        Parameters:
+            name: The COM method name.
+            T: The implementing struct.
+            A0: The first argument type.
+            A1: The second argument type.
+            m: The method.
+        """
+        self.slot[name](com_tramp2[m])
+
+    def method[
+        T: AnyType,
+        A0: AnyType,
+        A1: AnyType,
+        A2: AnyType,
+        //,
+        name: StaticString,
+        m: def (mut T, A0, A1, A2) raises thin -> None,
+    ](mut self):
+        """Fills slot `name` with a three-argument method.
+
+        Parameters:
+            name: The COM method name.
+            T: The implementing struct.
+            A0: The first argument type.
+            A1: The second argument type.
+            A2: The third argument type.
+            m: The method.
+        """
+        self.slot[name](com_tramp3[m])
+
+    def method[
+        T: AnyType,
+        A0: AnyType,
+        A1: AnyType,
+        A2: AnyType,
+        A3: AnyType,
+        //,
+        name: StaticString,
+        m: def (mut T, A0, A1, A2, A3) raises thin -> None,
+    ](mut self):
+        """Fills slot `name` with a four-argument method.
+
+        Parameters:
+            name: The COM method name.
+            T: The implementing struct.
+            A0: The first argument type.
+            A1: The second argument type.
+            A2: The third argument type.
+            A3: The fourth argument type.
+            m: The method.
+        """
+        self.slot[name](com_tramp4[m])
+
     def notimpl[method: StaticString](mut self):
         """Declines one method, visibly: its slot answers E_NOTIMPL.
 
