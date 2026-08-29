@@ -4129,14 +4129,6 @@ ParseResult StmtParser::parseClassStmt(LexerCursor startCursor,
                   className.str() + "(ISomeInterface):`");
     return recover();
   }
-  if (ifaces.size() > 1) {
-    emitError(nameLoc,
-              "a COM class implements one interface for now; several needs "
-              "tear-off vtables, which are not built yet. Implement the base "
-              "interface and QueryInterface for the rest.");
-    return recover();
-  }
-  StringRef iface = ifaces.front();
 
   if (parseToken(Token::colon, "expected ':' after the class header"))
     return recover();
@@ -4196,9 +4188,12 @@ ParseResult StmtParser::parseClassStmt(LexerCursor startCursor,
   if (!bodyText.ends_with("\n"))
     os << "\n";
   os << baseIndent << "def into_com(var self) raises -> " << ualias
-     << ".ComPtr[StaticString(\"" << iface << "\")]:\n";
+     << ".ComPtr[StaticString(\"" << ifaces.front() << "\")]:\n";
   os << baseIndent << baseIndent << "var __b = " << alias
-     << ".ComClassBuilder[StaticString(\"" << iface << "\")]()\n";
+     << ".ComClassBuilder[";
+  for (auto [n, i] : llvm::enumerate(ifaces))
+    os << (n ? ", " : "") << "StaticString(\"" << i << "\")";
+  os << "]()\n";
   for (StringRef m : methods)
     os << baseIndent << baseIndent << "__b.method[\"" << m << "\", "
        << className << "." << m << "]()\n";
