@@ -87,13 +87,23 @@ Both were assumptions worth testing, and one of them was wrong:
 - `com-c4-green` tags `1b750f2`, the pre-fix known-good point.
 - COM suite: **28/28** after defect 6; the edge additions (`s19`, `f11`,
   `f12`, the CRLF check) are being verified as this is written.
-- The stdlib battery ran once and is **not yet a clean gate**: 14 pass, 1
-  fails to build, 4 fail, and 350 skipped because the build abort cut the run
-  short. Every failure was checked and none are ours -- `test_ffi` is an
-  upstream test that supports only Linux and macOS (`comptime assert False,
-  "test not implemented for the platform"`, no COM references), three are
-  clang-tidy on C support files, one is lit configuration. It needs a
-  `--keep_going` re-run to mean anything, which is step 7.
+- COM suite: **32/32** -- 19 must-pass, 12 must-fail, and a CRLF check.
+- The stdlib battery ran with `--keep_going`: **369 tests, 183 pass, 4 fail to
+  build, 132 fail locally, 50 skipped.** It **cannot be a pass/fail gate on
+  this port**, and that is the finding rather than a disappointment: the 132
+  are a pre-existing failure set -- absent LLVM test tooling (`FileCheck.exe`,
+  `not.exe`), POSIX assumptions (a standard C library, symlinks, isatty,
+  realpath, path semantics), LLP64 C type widths, and lit configuration that
+  does not parse here.
+
+  None are ours, and that was established mechanically rather than by
+  inspection: every failing test source was checked for use of the `class`
+  keyword or an import of `std.sys.com`, `std.sys._com` or `std.sys._winkb`,
+  and none has either. The changes cannot reach that code.
+
+  So the battery becomes a gate **by difference**: `docs/STDLIB-TEST-BASELINE.md`
+  records the failing targets, and a future run is judged on what is new. A
+  raw pass count on this port means nothing.
 
 ## The defect register
 
