@@ -82,12 +82,22 @@ def _hex_nibble(c: UInt8) -> Int:
     return Int(c) - ord("A") + 10
 
 
-def _guid_bytes(text: StaticString) -> List[UInt8]:
+def _guid_bytes(text: String) -> List[UInt8]:
     """The 16 bytes COM expects for a textual GUID.
 
     Not text order: the first three groups are little-endian integers and the
     last eight bytes literal. Wrong order yields E_NOINTERFACE, which looks
     like an unsupported interface rather than a mangled identifier.
+
+    Takes a String rather than a StaticString: the accepted-IID table is
+    built by splitting a chain of GUIDs out of one metadata answer, and those
+    pieces are ordinary runtime slices. A StaticString converts on the way in.
+
+    Args:
+        text: The textual GUID.
+
+    Returns:
+        The 16 bytes, in COM's mixed-endian order.
     """
     var digits = List[UInt8]()
     for byte in text.as_bytes():

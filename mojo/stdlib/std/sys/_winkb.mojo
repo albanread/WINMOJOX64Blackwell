@@ -323,6 +323,30 @@ def winkb_com_param_type[
     return StaticString(res)
 
 
+def winkb_com_chain_iids[type_name: StaticString]() -> StaticString:
+    """Every IID in an interface's chain, itself included, comma separated.
+
+    QueryInterface has to answer for the bases as well: a client holding an
+    IStream may legitimately ask it for ISequentialStream. Asking once for
+    the whole chain avoids unrolling an unknown inheritance depth at
+    comptime.
+
+    Parameters:
+        type_name: The COM interface name.
+
+    Returns:
+        The textual GUIDs, comma separated.
+    """
+    var res = __mlir_attr[
+        `#kgen.param.expr<winkb_query, `,
+        _get_kgen_string["com_chain_iids"](),
+        `, `,
+        _get_kgen_string[type_name](),
+        `> : !kgen.string`,
+    ]
+    return StaticString(res)
+
+
 def winkb_com_method_at_slot[
     type_name: StaticString, slot: StaticString
 ]() -> StaticString:

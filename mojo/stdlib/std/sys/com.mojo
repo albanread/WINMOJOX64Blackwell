@@ -30,6 +30,7 @@ from std.sys._winkb import (
     winkb_com_method_count,
     winkb_com_has_method,
     winkb_com_method_at_slot,
+    winkb_com_chain_iids,
     winkb_type_width,
 )
 
@@ -845,15 +846,40 @@ struct ComClassBuilder[*interfaces: StaticString]:
                     ]()
                 )
             self._slot_names.append(names^)
-            for b in _guid_bytes(winkb_interface_iid[Self.interfaces[c]]()):
-                self._iids.append(b)
-            self._iid_cells.append(c)
+            # Accept the whole inheritance chain, not just this interface: a
+            # client holding an IStream may legitimately ask it for
+            # ISequentialStream, and a base's vtable is a prefix of the
+            # derived one, so the SAME cell pointer is already correct for it.
+            for guid in winkb_com_chain_iids[Self.interfaces[c]]().split(","):
+                self._accept(_guid_bytes(String(guid)), c)
 
         # IUnknown resolves to the primary interface, as COM requires: the
         # identity pointer must be the same one every time it is asked for.
-        for b in _guid_bytes(winkb_interface_iid["IUnknown"]()):
+        # Every chain already ends at IUnknown, and the primary's chain was
+        # walked first, so `_accept` has recorded it against cell 0 -- this
+        # call is the guarantee rather than the mechanism.
+        self._accept(_guid_bytes(winkb_interface_iid["IUnknown"]()), 0)
+
+    def _accept(mut self, iid: List[UInt8], cell: Int):
+        """Records that `cell` answers to `iid`, first mapping winning.
+
+        Chains overlap -- every one ends at IUnknown, and two interfaces can
+        share a base -- so an IID already claimed keeps its cell. Because the
+        primary interface is walked first, that rule is what pins IUnknown,
+        and any shared base, to the primary pointer.
+        """
+        var count = len(self._iids) // 16
+        for i in range(count):
+            var same = True
+            for b in range(16):
+                if self._iids[i * 16 + b] != iid[b]:
+                    same = False
+                    break
+            if same:
+                return
+        for b in iid:
             self._iids.append(b)
-        self._iid_cells.append(0)
+        self._iid_cells.append(cell)
 
     @staticmethod
     def _cell_of[method: StaticString]() -> Int:

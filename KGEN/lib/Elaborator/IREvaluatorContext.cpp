@@ -969,6 +969,14 @@ constexpr StringRef kComMethodCountSQL =
 // The method name occupying a given absolute vtable slot, so an incomplete
 // object can say WHICH slots are unfilled rather than how many. Nearest
 // definition wins, as everywhere else on the chain.
+// Every IID in an interface's inheritance chain, itself included, comma
+// separated. QueryInterface must answer for the bases too -- a client holding
+// an IStream may legitimately ask for ISequentialStream -- and asking once
+// for the whole chain avoids unrolling an unknown depth at comptime.
+constexpr StringRef kComChainIIDsSQL =
+    WINKB_IFACE_CHAIN_CTE
+    "SELECT group_concat(t.iid) FROM chain c "
+    "JOIN types t ON t.type_id = c.type_id WHERE t.iid IS NOT NULL";
 constexpr StringRef kComMethodAtSlotSQL =
     WINKB_IFACE_CHAIN_CTE
     "SELECT m.method_name FROM interface_methods m "
@@ -1038,6 +1046,7 @@ const WinKBQueryDef kQueries[] = {
     {"com_interface_base", 1, kComInterfaceBaseSQL},
     {"com_has_method", 2, kComHasMethodSQL},
     {"com_method_at_slot", 2, kComMethodAtSlotSQL},
+    {"com_chain_iids", 1, kComChainIIDsSQL},
     {"type_width", 1, kTypeWidthSQL},
     {"interface_iid", 1, kInterfaceIIDSQL},
     {"function_dll", 1, kFunctionDLLSQL},
