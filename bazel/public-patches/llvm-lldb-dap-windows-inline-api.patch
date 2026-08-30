@@ -1,0 +1,35 @@
+lldb-dap on Windows: neutralize LLDB_API so inline members are usable.
+
+The SB API headers default LLDB_API to __declspec(dllimport) for any
+Windows consumer that is not the DLL itself. dllimport is prescriptive:
+it forbids using a member's inline definition and demands an import --
+and members like SBCommand's implicit destructor and Status::takeError
+exist ONLY inline, so under -O2 no object ever defines them and the
+import cannot be satisfied. Mach-O never meets this: visibility
+annotations are additive, which is why the Mac tree builds lldb-dap
+with no change here.
+
+Defining LLDB_API empty (the headers guard with #ifndef) lets lldb-dap
+compile inline members inline; every out-of-line symbol still resolves
+through the DLL's import library, which provides thunks for functions
+with no annotation needed.
+
+--- a/utils/bazel/llvm-project-overlay/lldb/BUILD.bazel
++++ b/utils/bazel/llvm-project-overlay/lldb/BUILD.bazel
+@@ -1302,9 +1302,16 @@
+ cc_binary(
+     name = "lldb-dap",
+     srcs = glob([
+         "tools/lldb-dap/**/*.cpp",
+         "tools/lldb-dap/**/*.h",
+     ]),
++    local_defines = select({
++        "@platforms//os:windows": [
++            "LLDB_API=",
++            "LLDB_PRIVATE_EXPORT=",
++        ],
++        "//conditions:default": [],
++    }),
+     additional_linker_inputs = [
+         ":lldb-dap-plist",
+     ],

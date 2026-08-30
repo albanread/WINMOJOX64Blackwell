@@ -64,3 +64,5 @@ EXPORTS
   ?SetBreakpointKind@Breakpoint@lldb_private@@QEAAXPEBD@Z
   ?shared_from_this@?$enable_shared_from_this@VProcess@lldb_private@@@std@@QEAA?AV?$shared_ptr@VProcess@lldb_private@@@2@XZ
   ?shared_from_this@?$enable_shared_from_this@VTarget@lldb_private@@@std@@QEAA?AV?$shared_ptr@VTarget@lldb_private@@@2@XZ
+  ?GetHomeDirectory@FileSystem@lldb_private@@QEBA_NAEAV?$SmallVectorImpl@D@llvm@@@Z
+  ?Instance@FileSystem@lldb_private@@SAAEAV12@XZ

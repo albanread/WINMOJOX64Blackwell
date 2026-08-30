@@ -25,6 +25,7 @@ PATCHES = [
     "//bazel/public-patches:llvm-machinefunction-sti-ref-to-ptr.patch",
     # https://github.com/llvm/llvm-project/pull/175650
     "//bazel/public-patches:llvm-fix-lldb-dap-console.patch",
+    "//bazel/public-patches:llvm-lldb-dap-windows-inline-api.patch",
     # Fix heap corruption in ObjectFileELF::GetModuleSpecifications: use a
     # local DataExtractor copy instead of mutating the shared extractor_sp,
     # which invalidated other DataExtractors sharing the same buffer and

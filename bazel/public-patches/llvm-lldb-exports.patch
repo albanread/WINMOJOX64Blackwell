@@ -225,10 +225,14 @@ diff --git a/lldb/include/lldb/lldb-forward.h b/lldb/include/lldb/lldb-forward.h
 index 67888f7d32ed..01ca34ebfcc5 100644
 --- a/lldb/include/lldb/lldb-forward.h
 +++ b/lldb/include/lldb/lldb-forward.h
-@@ -14,6 +14,115 @@
+@@ -14,6 +14,125 @@
  // lldb forward declarations
  namespace lldb_private {
  
++// Consumers that link the import library need no annotation for functions,
++// and dllimport forbids inline members outright -- lldb-dap defines this
++// macro empty. The #ifndef guard is what makes that possible.
++#ifndef LLDB_PRIVATE_EXPORT
 +#if defined(_WIN32)
 +#if defined(LLDB_PRIVATE_IN_LIBLLDB)
 +#define LLDB_PRIVATE_EXPORT __declspec(dllexport)
@@ -238,6 +242,7 @@ index 67888f7d32ed..01ca34ebfcc5 100644
 +#else
 +#define LLDB_PRIVATE_EXPORT __attribute__((visibility("default")))
 +#endif
++#endif // #ifndef LLDB_PRIVATE_EXPORT
 +
 +class LLDB_PRIVATE_EXPORT Address;
 +class LLDB_PRIVATE_EXPORT AddressRange;
@@ -270,7 +275,12 @@ index 67888f7d32ed..01ca34ebfcc5 100644
 +class LLDB_PRIVATE_EXPORT ExpressionVariable;
 +class LLDB_PRIVATE_EXPORT FileSpec;
 +class LLDB_PRIVATE_EXPORT FileSpecList;
-+class LLDB_PRIVATE_EXPORT FileSystem;
++// FileSystem is deliberately NOT class-annotated: its default constructor
++// is defined inline in the header, and a class-level dllimport forbids
++// consumers from using that inline body -- lldb-dap was the first to hit
++// it. Out-of-line members still link through the import library, which
++// needs no annotation for functions.
++class FileSystem;
 +namespace FormatEntity {
 +struct LLDB_PRIVATE_EXPORT Entry;
 +} // namespace FormatEntity
