@@ -127,6 +127,22 @@ struct Doc(Movable):
     # because there is no find bar yet and because a person expects the same
     # needle after switching away and back.
     var needle: String
+    # Input latency, measured from the keystroke to the frame that shows it.
+    # `stamp` is when a keystroke arrived and is zero when none is waiting to
+    # be drawn; the rest accumulate over a run. Kept on the document because
+    # the window procedure is captureless and this is the state it needs
+    # between two of its own calls.
+    var stamp: Int
+    var lat_count: Int
+    var lat_total: Int
+    var lat_worst: Int
+    var lat_over: Int
+    # The application half on its own: the keystroke to the last drawing
+    # command, with the wait for the vertical blank left out. That wait is
+    # real and a person experiences it, but it is the display's and not
+    # something any amount of work here can shorten.
+    var work_total: Int
+    var work_worst: Int
 
     def __init__(out self, var rope: Rope):
         """A document scrolled to the top, caret at the start, no history."""
@@ -142,6 +158,13 @@ struct Doc(Movable):
         self.future = List[Snapshot]()
         self.pending = 0
         self.needle = String("")
+        self.stamp = 0
+        self.lat_count = 0
+        self.lat_total = 0
+        self.lat_worst = 0
+        self.lat_over = 0
+        self.work_total = 0
+        self.work_worst = 0
 
     def has_selection(self) -> Bool:
         """Whether the caret and the anchor are anywhere different."""

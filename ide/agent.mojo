@@ -34,6 +34,9 @@ from ide.window import (
     caret_report,
     counters,
     edit_key,
+    keystorm,
+    latency_report,
+    latency_reset,
     find_again,
     find_bench,
     find_text,
@@ -153,7 +156,9 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             "tsf               drive the text store, as an IME would\n"
             "find <text>       search, and select the next match\n"
             "findnext | findprev   repeat the search, F3 and Shift+F3\n"
-            "find-bench <text>     time one search of the whole document"
+            "find-bench <text>     time one search of the whole document\n"
+            "storm [N]         N keystrokes through the real message path\n"
+            "latency [reset]   keystroke to presented frame"
         )
 
     if verb == "echo":
@@ -406,6 +411,20 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
     if verb == "find-bench":
         # The sprint acceptance, as a number rather than a claim.
         return find_bench(hwnd, rest)
+
+    if verb == "storm":
+        # The budget run: N keystrokes through the real WM_CHAR path, each
+        # followed by the frame that shows it.
+        var many = 200
+        if rest.byte_length() > 0:
+            many = Int(rest)
+        return keystorm(hwnd, many)
+
+    if verb == "latency":
+        if rest == "reset":
+            latency_reset(hwnd)
+            return String("latency counters zeroed")
+        return latency_report(hwnd)
 
     if verb == "grid":
         # The counters, and a way to zero them. Measuring a scroll means

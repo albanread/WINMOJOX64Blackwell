@@ -135,19 +135,39 @@ database already describes.
 
 The budget, and what enforces it:
 
-| action | budget | mechanism |
-|---|---|---|
-| keystroke → glyph | ≤ 1 frame (6.9 ms @ 144 Hz, 16.7 @ 60) | O(log n) rope edit + one line redrawn + DComp present |
-| open 250k lines → first paint | < 100 ms | single-pass rope build; paint visible only |
-| full-speed scroll | 0 dropped frames | DComp translate + draw exposed lines from cache |
-| literal find, 100 MB | < 200 ms | leaf walk; the buffer is never flattened |
-| completion popup | < 50 ms after reply | one layered window; the server did the work |
+| action | budget | measured | mechanism |
+|---|---|---|---|
+| keystroke → glyph | ≤ 1 frame (6.9 ms @ 144 Hz, 16.7 @ 60) | **0.85 ms** of work, 5.1% of a frame at 60 Hz; 0 frames missed in 500 | O(log n) rope edit + one line redrawn + vsync present |
+| open 250k lines → first paint | < 100 ms | **16.7 ms** to build the rope | single-pass rope build; paint visible only |
+| full-speed scroll | 0 dropped frames | **0** in 300, worst frame 19.7 ms | draw exposed lines from the layout cache |
+| literal find, 100 MB | < 200 ms | **11.8 ms** over 104 MB | leaf walk; the buffer is never flattened |
+| completion popup | < 50 ms after reply | not yet built | one layered window; the server did the work |
 
-**Measured, not asserted.** Windows has the right instrument: PresentMon
-reads input-to-photon from DXGI frame statistics. Milestone 1 ends with a
-scripted keystroke storm under PresentMon and the numbers published in this
-file. The latency claim is the product; it gets tested where claims go to
-die.
+All measured on this machine (60 Hz display) with the optimized build, by
+`tools/check-ide.ps1` and the `storm`, `frame` and `find-bench` verbs. The
+debug build — which is what ships, because sprint 0.0 wants it debuggable —
+costs 3.4 ms of work per keystroke rather than 0.85, still a fifth of a frame.
+
+**The keystroke number, precisely.** What is measured is the WM_CHAR handler
+being entered to the last drawing command being issued: the whole of this
+application's response. It does not include the keyboard, its driver and the
+message queue on one side, or scanout and panel response on the other. It is
+0.85 ms on a 14 MB document and 0.94 ms on a 104 MB one — the number does not
+track document size, which is the entire thesis and the reason the budget is
+holdable at all.
+
+Add one refresh interval for the wait at the vertical blank and that is
+keystroke-to-photon less the two hops above: worst observed 20.3 ms against a
+33.3 ms ceiling for "made the frame after the one it arrived in". Nothing
+missed a frame in any run.
+
+**PresentMon, and why not.** The plan was to measure input-to-photon with
+PresentMon, which reads both missing hops out of ETW. It is not installed
+here, and downloading and running an external binary is a decision for a
+person rather than something a sprint should do on its own. The application
+half is measured precisely instead, and the two unmeasured hops are named
+rather than folded into a number that would look more complete than it is.
+See `docs/latency.md`.
 
 **Milestone 7, optional:** a D3D11 glyph-atlas renderer on the machinery
 `d3djulia` already proves, for guaranteed high-refresh scrolling. D2D is

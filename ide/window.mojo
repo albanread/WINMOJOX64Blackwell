@@ -618,3 +618,180 @@ def type_unit(hwnd: Int, unit: Int) raises -> String:
         code = 0x10000 + ((doc[].pending - 0xD800) << 10) + (unit - 0xDC00)
     doc[].pending = 0
     return type_text(hwnd, String(chr(code)))
+
+
+# ===----------------------------------------------------------------------===#
+# Input latency
+#
+# Sprint 1.7. What is measured here is the half of input-to-photon the
+# application is responsible for: from the WM_CHAR handler being entered to
+# EndDraw returning. With a vsync-presenting render target, EndDraw returns
+# after the frame has been handed to the display, so that boundary is the last
+# moment this process can affect.
+#
+# What is NOT measured, and cannot be from inside the process:
+#
+#   - key press to WM_CHAR: the keyboard, its driver, the raw input thread and
+#     the message queue. Milliseconds, and none of them ours.
+#   - present to photon: scanout and panel response. Also milliseconds, also
+#     none of them ours.
+#
+# PresentMon measures both of those by reading ETW, which is why the sprint
+# named it. It is not installed on this machine and pulling down and running
+# an external binary is a decision for a person, not for a build. So the
+# number below is the application half, measured precisely, and the reason the
+# other half is missing is written down rather than papered over. See
+# docs/latency.md.
+# ===----------------------------------------------------------------------===#
+
+
+def refresh_hz(hwnd: Int) raises -> Int:
+    """The display refresh rate, asked of the display rather than assumed.
+
+    A budget of "one frame" means nothing without knowing how long a frame is,
+    and 60 Hz is an assumption that is wrong on most machines bought recently.
+    """
+    var GetDC = win32[def (Int) thin abi("C") -> Int, "GetDC"]()
+    var ReleaseDC = win32[def (Int, Int) thin abi("C") -> c_int, "ReleaseDC"]()
+    var GetDeviceCaps = win32[
+        def (Int, c_int) thin abi("C") -> c_int, "GetDeviceCaps"
+    ]()
+    var dc = GetDC(hwnd)
+    if dc == 0:
+        return 60
+    var hz = Int(GetDeviceCaps(dc, c_int(winkb_constant["VREFRESH"]())))
+    _ = ReleaseDC(hwnd, dc)
+    # 0 and 1 both mean "the default hardware rate" in GDI, which is not a
+    # number anything can be divided by.
+    return hz if hz > 1 else 60
+
+
+def mark_keystroke(hwnd: Int) raises:
+    """Note when a keystroke arrived, for the frame that will show it."""
+    var address = doc_of(hwnd)
+    if address == 0:
+        return
+    var doc = Pointer[Doc, MutAnyOrigin](unsafe_from_address=address)
+    # Only the first keystroke of a burst is stamped. If two arrive before a
+    # frame is drawn, the second is shown by the same frame, and the honest
+    # latency for that frame is the older one -- the longer wait, not the
+    # shorter.
+    if doc[].stamp == 0:
+        doc[].stamp = perf_counter_ns()
+
+
+def mark_drawn(hwnd: Int) raises:
+    """Note that every drawing command for this frame has been issued.
+
+    The boundary between the two halves. Before it is this application doing
+    arithmetic, laying out text and filling rectangles; after it is EndDraw
+    waiting for the vertical blank, which is the display's own cadence and
+    which no amount of work here makes shorter.
+    """
+    var address = doc_of(hwnd)
+    if address == 0:
+        return
+    var doc = Pointer[Doc, MutAnyOrigin](unsafe_from_address=address)
+    if doc[].stamp == 0:
+        return
+    var took = perf_counter_ns() - doc[].stamp
+    doc[].work_total += took
+    if took > doc[].work_worst:
+        doc[].work_worst = took
+
+
+def mark_presented(hwnd: Int, budget_ns: Int) raises:
+    """Note that a frame reached the display, and what it cost."""
+    var address = doc_of(hwnd)
+    if address == 0:
+        return
+    var doc = Pointer[Doc, MutAnyOrigin](unsafe_from_address=address)
+    if doc[].stamp == 0:
+        return
+    var took = perf_counter_ns() - doc[].stamp
+    doc[].stamp = 0
+    doc[].lat_count += 1
+    doc[].lat_total += took
+    if took > doc[].lat_worst:
+        doc[].lat_worst = took
+    # Two frames, not one, and the reason matters. A keystroke arrives at some
+    # point inside a refresh interval and is shown at the next vertical blank,
+    # so keystroke-to-photon is spread across [work, work + one frame] even
+    # when the work is nothing at all. Counting everything past one frame
+    # would report half the samples as late by construction. What is actually
+    # late is a keystroke that missed the next blank and waited for the one
+    # after -- a dropped frame, which is what a person sees as a stutter.
+    if took > budget_ns * 2:
+        doc[].lat_over += 1
+
+
+def latency_report(hwnd: Int) raises -> String:
+    """Keystroke to presented frame, over whatever has been typed so far."""
+    var doc = _doc_at(hwnd)
+    var hz = refresh_hz(hwnd)
+    var frame_ms = 1000.0 / Float64(hz)
+    if doc[].lat_count == 0:
+        return (
+            String("no keystrokes measured yet; display is ") + String(hz)
+            + " Hz, one frame is " + String(frame_ms) + " ms"
+        )
+    var n = Float64(doc[].lat_count)
+    var mean = Float64(doc[].lat_total) / n / 1_000_000.0
+    var worst = Float64(doc[].lat_worst) / 1_000_000.0
+    var work_mean = Float64(doc[].work_total) / n / 1_000_000.0
+    var work_worst = Float64(doc[].work_worst) / 1_000_000.0
+    # Two numbers, because they answer different questions. The work is what
+    # this editor costs and what any change to it moves. The total includes
+    # the wait for the vertical blank, which is where a person's experience
+    # actually lands and which is bounded below by the refresh interval no
+    # matter how fast the work is.
+    return (
+        String("keystrokes=") + String(doc[].lat_count)
+        + " display=" + String(hz) + "Hz frame=" + String(frame_ms) + "ms"
+        + "\n  work (keystroke to last draw command): mean="
+        + String(work_mean) + "ms worst=" + String(work_worst) + "ms"
+        + "  = " + String(work_mean / frame_ms * 100.0) + "% of a frame"
+        + "\n  total (keystroke to presented):        mean="
+        + String(mean) + "ms worst=" + String(worst) + "ms"
+        + "  frames missed: " + String(doc[].lat_over)
+    )
+
+
+def latency_reset(hwnd: Int) raises:
+    """Forget everything measured so far."""
+    var doc = _doc_at(hwnd)
+    doc[].stamp = 0
+    doc[].lat_count = 0
+    doc[].lat_total = 0
+    doc[].lat_worst = 0
+    doc[].lat_over = 0
+    doc[].work_total = 0
+    doc[].work_worst = 0
+
+
+def keystorm(hwnd: Int, count: Int) raises -> String:
+    """Type `count` characters through the real message path, and measure.
+
+    Real WM_CHAR messages, sent to this window, so the storm goes through the
+    same handler a keyboard does -- not through `type_text`, which would skip
+    the part being measured. UpdateWindow after each one is what the message
+    loop does when it next goes idle, which for a person typing is
+    immediately.
+    """
+    var SendMessageW = win32[
+        def (Int, UInt32, Int, Int) thin abi("C") -> Int, "SendMessageW"
+    ]()
+    var UpdateWindow = win32[
+        def (Int) thin abi("C") -> c_int, "UpdateWindow"
+    ]()
+    latency_reset(hwnd)
+    var wm_char = UInt32(winkb_constant["WM_CHAR"]())
+    for i in range(count):
+        # Letters and the occasional newline, so the storm exercises the line
+        # split as well as the common case.
+        var ch = ord("a") + (i % 26)
+        if i % 40 == 39:
+            ch = 13  # Return
+        _ = SendMessageW(hwnd, wm_char, ch, 0)
+        _ = UpdateWindow(hwnd)
+    return latency_report(hwnd)

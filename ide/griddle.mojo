@@ -48,6 +48,10 @@ from ide.gridview import (
 from ide.window import (
     caret_click,
     find_again,
+    mark_drawn,
+    mark_keystroke,
+    mark_presented,
+    refresh_hz,
     edit_key,
     move_key,
     move_page,
@@ -218,12 +222,24 @@ def griddle_wndproc(
                         )
                 except err:
                     print("griddle: paint failed:", String(err))
+                # Every drawing command is issued; what remains is the
+                # present. Split here so the application half can be measured
+                # apart from the wait for the vertical blank.
+                try:
+                    mark_drawn(hwnd)
+                except:
+                    pass
+
                 # EndDraw runs whatever happened above. BeginDraw opened a
                 # batch, and a batch left open poisons every frame after it,
                 # so a paint that failed half-way must still be closed.
                 try:
                     if finish(chrome[]) == D2DERR_RECREATE_TARGET:
                         recreate(chrome, hwnd, width, height)
+                    # EndDraw has returned, which for a vsync-presenting
+                    # target means the frame is on its way to the display.
+                    # That is the last boundary this process controls.
+                    mark_presented(hwnd, frame_budget_ns(hwnd))
                 except err:
                     print("griddle: present failed:", String(err))
             # Validate the whole window: the update region must be cleared or
@@ -270,6 +286,10 @@ def griddle_wndproc(
         # the character the person meant -- which is why editors handle text
         # here rather than trying to reconstruct it from key codes.
         if message == UInt32(winkb_constant["WM_CHAR"]()):
+            # Stamped first, before any work: what is being measured is the
+            # whole of this process's response, and starting the clock after
+            # the response has begun would measure a shorter one.
+            mark_keystroke(hwnd)
             var unit = wparam & 0xFFFF
             if unit == 13:  # Return
                 _ = edit_key(hwnd, "enter")
@@ -825,3 +845,13 @@ def main() raises:
     release(chrome_store[])
     chrome_store.unsafe_free()
     print("griddle: closed cleanly")
+
+
+def frame_budget_ns(hwnd: Int) raises -> Int:
+    """One frame at this display's refresh rate, in nanoseconds.
+
+    Asked of the display rather than assumed: "one frame" is the budget the
+    sprint names, and 60 Hz is an assumption that is wrong on most machines
+    bought in the last few years.
+    """
+    return 1_000_000_000 // refresh_hz(hwnd)

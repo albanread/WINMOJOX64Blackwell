@@ -446,7 +446,36 @@ if ($out -match 'bytes=(\d+)' ) {
     Record 'find-100mb' 'FAIL' 'the benchmark did not report'
 }
 
-# 27. No address is laundered through an integer on its way into a call.
+# ---- 27. the keystroke budget -----------------------------------------------
+# Sprint 1.7. A storm of real WM_CHAR messages, each followed by the frame
+# that shows it. Two claims: the application's own work fits inside a frame,
+# and no keystroke ever missed the blank it was due at. What this cannot see
+# is the keyboard at one end and the panel at the other -- named, and left
+# named, in docs/latency.md.
+$out = (cmd /c "`"$Exe`" --lines 250000 --cmd `"storm 200`" 2>&1" | Out-String)
+# Each value pulled with its own Match rather than through $matches: a
+# second -match overwrites $matches, and the check then cheerfully reports
+# the missed-frame count as the work time.
+$mWork = [regex]::Match($out, 'work[^=]*=([\d.]+)ms worst=([\d.]+)ms')
+$mPct = [regex]::Match($out, '= ([\d.]+)% of a frame')
+$mMissed = [regex]::Match($out, 'frames missed: (\d+)')
+if ($mWork.Success -and $mPct.Success -and $mMissed.Success) {
+    $workMean = [double]$mWork.Groups[1].Value
+    $missed = [int]$mMissed.Groups[1].Value
+    $pct = [double]$mPct.Groups[1].Value
+    if ($missed -gt 0) {
+        Record 'keystroke-budget' 'FAIL' "$missed keystrokes missed their frame"
+    } elseif ($pct -ge 100) {
+        Record 'keystroke-budget' 'FAIL' "work is $([math]::Round($pct,1))% of a frame"
+    } else {
+        Record 'keystroke-budget' 'PASS' `
+            "$([math]::Round($workMean,2)) ms of work, $([math]::Round($pct,1))% of a frame, none missed"
+    }
+} else {
+    Record 'keystroke-budget' 'FAIL' 'the storm did not report'
+}
+
+# 28. No address is laundered through an integer on its way into a call.
 # `Int(Pointer(to=x))` erases the origin, so the compiler is no longer told
 # that x is read after the call, and dropping its store is then correct. See
 # docs/addresses-and-optimization.md. `com_addr` states the fact instead.
