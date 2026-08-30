@@ -34,6 +34,9 @@ from ide.window import (
     caret_report,
     counters,
     edit_key,
+    find_again,
+    find_bench,
+    find_text,
     goto,
     hittest_report,
     line_text,
@@ -147,7 +150,10 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             "goto L[:C]        put the caret there, one-based\n"
             "mem               what this process is holding\n"
             "repeat N <cmd>    run one command N times\n"
-            "tsf               drive the text store, as an IME would"
+            "tsf               drive the text store, as an IME would\n"
+            "find <text>       search, and select the next match\n"
+            "findnext | findprev   repeat the search, F3 and Shift+F3\n"
+            "find-bench <text>     time one search of the whole document"
         )
 
     if verb == "echo":
@@ -387,6 +393,19 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         # advised, the way an input method does. What this cannot cover is a
         # real IME choosing to make those calls, which is the manual half.
         return tsf_self_check(hwnd)
+
+    if verb == "find":
+        return find_text(hwnd, rest)
+
+    if verb == "findnext":
+        return find_again(hwnd, False)
+
+    if verb == "findprev":
+        return find_again(hwnd, True)
+
+    if verb == "find-bench":
+        # The sprint acceptance, as a number rather than a claim.
+        return find_bench(hwnd, rest)
 
     if verb == "grid":
         # The counters, and a way to zero them. Measuring a scroll means

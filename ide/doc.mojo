@@ -123,6 +123,10 @@ struct Doc(Movable):
     # nowhere else for the first one to live: the window procedure is
     # captureless, so state between two of its calls belongs here.
     var pending: Int
+    # What F3 repeats. Kept on the document rather than in the find bar,
+    # because there is no find bar yet and because a person expects the same
+    # needle after switching away and back.
+    var needle: String
 
     def __init__(out self, var rope: Rope):
         """A document scrolled to the top, caret at the start, no history."""
@@ -137,6 +141,7 @@ struct Doc(Movable):
         self.past = List[Snapshot]()
         self.future = List[Snapshot]()
         self.pending = 0
+        self.needle = String("")
 
     def has_selection(self) -> Bool:
         """Whether the caret and the anchor are anywhere different."""

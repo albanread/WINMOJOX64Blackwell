@@ -35,9 +35,11 @@ from ide.chrome import (
     EMBER,
     INK,
     Layout,
+    MATCH,
     SELECT,
 )
 from ide.doc import Doc, Grid
+from ide.find import matches_in_line
 from ide.rope import Rope
 
 
@@ -70,6 +72,7 @@ def draw_text(
     caret_col: Int = 0,
     anchor_line: Int = -1,
     anchor_col: Int = 0,
+    needle: StringSlice = "",
 ) raises:
     """Draw the visible slice of `rope` into `region`.
 
@@ -83,6 +86,7 @@ def draw_text(
         caret_col: Its UTF-16 offset within that line.
         anchor_line: The selection's other end, or -1 for none.
         anchor_col: Its UTF-16 offset.
+        needle: The current search, highlighted wherever it appears.
 
     Raises:
         If DirectWrite refuses to lay out a line.
@@ -144,6 +148,32 @@ def draw_text(
         if line >= total:
             break
         var y = region.top + Float32(row) * grid.line_height
+
+        # Every match of the current search, under the glyphs. Searched
+        # per visible line rather than once for the document: a file with a
+        # million matches highlights the forty a person can see, and costs
+        # what a file with three costs.
+        if needle.byte_length() > 0:
+            var line_text = rope.line(line)
+            for at in matches_in_line(0, line_text, String(needle)):
+                var from_col = _units_before(line_text, at)
+                var to_col = from_col + _units_of(String(needle))
+                var hx = caret_x(
+                    grid, dwrite, chrome, rope, line, from_col, revision
+                )
+                var hx2 = caret_x(
+                    grid, dwrite, chrome, rope, line, to_col, revision
+                )
+                if hx2 > hx:
+                    _fill_rect(
+                        this,
+                        chrome.target,
+                        region.left + Float32(GUTTER_W) + hx,
+                        y,
+                        region.left + Float32(GUTTER_W) + hx2,
+                        y + grid.line_height,
+                        MATCH,
+                    )
 
         # Selection under the glyphs, so the text stays readable on top of
         # it rather than being drawn first and then covered.
@@ -684,3 +714,39 @@ def _line_width(
     for ch in text.codepoints():
         units += 2 if Int(ch) >= 0x10000 else 1
     return caret_x(grid, dwrite, chrome, rope, line, units, revision)
+
+
+def _units_of(text: String) -> Int:
+    """How many UTF-16 code units a string is."""
+    var n = 0
+    for ch in text.codepoints():
+        n += 2 if Int(ch) >= 0x10000 else 1
+    return n
+
+
+def _units_before(text: String, byte_offset: Int) -> Int:
+    """How many UTF-16 code units precede a byte offset in a line.
+
+    The rope answers in bytes and the caret counts in code units, and for an
+    ASCII line those are the same number -- which is exactly why this has to
+    exist: the case where they differ is the case that would otherwise be
+    silently wrong.
+    """
+    if byte_offset <= 0:
+        return 0
+    var seen = 0
+    var units = 0
+    for ch in text.codepoints():
+        var v = Int(ch)
+        var width = 1
+        if v >= 0x10000:
+            width = 4
+        elif v >= 0x800:
+            width = 3
+        elif v >= 0x80:
+            width = 2
+        if seen >= byte_offset:
+            break
+        seen += width
+        units += 2 if v >= 0x10000 else 1
+    return units

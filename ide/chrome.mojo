@@ -58,6 +58,7 @@ comptime EMBER = 0xFF8C37  # the one accent
 comptime INK = 0xDFE3EA  # primary text
 comptime DIM = 0x8B93A1  # secondary text
 comptime SELECT = 0x2A3A55  # selected text, behind the glyphs
+comptime MATCH = 0x4A3D1E  # every other match of the current search
 
 
 @fieldwise_init

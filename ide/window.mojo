@@ -21,12 +21,14 @@ Windows keeps for the window: the `Chrome`, and through it the `Doc`.
 from std.ffi import c_int
 from std.memory import OpaquePointer, Pointer
 from std.sys._winkb import winkb_constant
+from std.time import perf_counter_ns
 
 from ide.caret import is_simple
 from ide.chrome import Chrome, Layout
 from ide.doc import Doc, Grid
 from ide.edit import (
     backspace,
+    byte_at,
     delete_forward,
     insert,
     move_horizontal,
@@ -39,6 +41,7 @@ from ide.edit import (
     selected_text,
     undo,
 )
+from ide.find import find_next, find_prev, select_match
 from ide.gridview import (
     GUTTER_W,
     advance_of,
@@ -349,6 +352,117 @@ def follow_caret(hwnd: Int) raises:
         _ = scroll_to(hwnd, doc[].caret_line)
     elif doc[].caret_line >= doc[].grid.top_line + page:
         _ = scroll_to(hwnd, doc[].caret_line - page + 1)
+
+
+def find_text(hwnd: Int, needle: String) raises -> String:
+    """Search for text and select the first match after the caret.
+
+    Searching from the caret rather than from the top is what makes F3 mean
+    "the next one" instead of "the first one, again".
+    """
+    var doc = _doc_at(hwnd)
+    if needle.byte_length() > 0:
+        doc[].needle = needle
+    if doc[].needle.byte_length() == 0:
+        return String("nothing to find; try: find <text>")
+
+    var from_byte = byte_at(doc[].rope, doc[].caret_line, doc[].caret_col)
+    var started = perf_counter_ns()
+    var hit = find_next(doc[], doc[].needle, from_byte)
+    var took = perf_counter_ns() - started
+    if hit < 0:
+        _touch(hwnd)
+        return String("no match for ") + doc[].needle
+    select_match(doc[], hit, doc[].needle)
+    var page = page_lines(hwnd)
+    var top = doc[].caret_line - page // 2
+    _ = scroll_to(hwnd, top if top > 0 else 0)
+    _touch(hwnd)
+    return (
+        String("found at byte ") + String(hit)
+        + ", line " + String(doc[].caret_line + 1)
+        + " in " + String(Float64(took) / 1_000_000.0) + " ms"
+    )
+
+
+def find_again(hwnd: Int, backwards: Bool) raises -> String:
+    """What F3 and Shift+F3 do: the next match, or the one before."""
+    var doc = _doc_at(hwnd)
+    if doc[].needle.byte_length() == 0:
+        return String("nothing to find yet")
+
+    var hit = 0
+    var started = perf_counter_ns()
+    if backwards:
+        # From the anchor rather than the caret: after a forward find the
+        # match is selected, and searching back from its end would find the
+        # same one again.
+        var from_byte = byte_at(
+            doc[].rope, doc[].anchor_line, doc[].anchor_col
+        )
+        hit = find_prev(doc[], doc[].needle, from_byte)
+    else:
+        var from_byte = byte_at(doc[].rope, doc[].caret_line, doc[].caret_col)
+        hit = find_next(doc[], doc[].needle, from_byte)
+    var took = perf_counter_ns() - started
+    if hit < 0:
+        return String("no match for ") + doc[].needle
+    select_match(doc[], hit, doc[].needle)
+    var page = page_lines(hwnd)
+    var top = doc[].caret_line - page // 2
+    _ = scroll_to(hwnd, top if top > 0 else 0)
+    _touch(hwnd)
+    return (
+        String("found at byte ") + String(hit)
+        + ", line " + String(doc[].caret_line + 1)
+        + " in " + String(Float64(took) / 1_000_000.0) + " ms"
+    )
+
+
+def find_bench(hwnd: Int, needle: String) raises -> String:
+    """Time one search of the whole document, both directions.
+
+    The sprint acceptance is a number over a large document, and a number
+    wants measuring rather than asserting. Forward is a walk to the first
+    match; backward is a walk of the whole document, which the rope says
+    plainly in `find_last` and which this reports rather than hides.
+    """
+    var doc = _doc_at(hwnd)
+    var want = needle if needle.byte_length() > 0 else doc[].needle
+    if want.byte_length() == 0:
+        return String("usage: find-bench <text>")
+
+    doc[].needle = want
+    var t0 = perf_counter_ns()
+    var forward = doc[].rope.find(want, 0)
+    var t1 = perf_counter_ns()
+    var last = find_prev(doc[], want, doc[].rope.byte_length())
+    var t2 = perf_counter_ns()
+    # A needle that is not there is the only honest full-scan measurement: a
+    # forward find that stopped at byte 24 has measured the first two lines.
+    # The absent needle is built from the real one so it cannot accidentally
+    # be shorter, and a short needle is a faster scan.
+    var absent = want + String("~~no~~")
+    var t3 = perf_counter_ns()
+    var miss = doc[].rope.find(absent, 0)
+    var t4 = perf_counter_ns()
+    # And the same scan the other way, which is the one that used to be slow.
+    var t5 = perf_counter_ns()
+    var miss_back = find_prev(doc[], absent, doc[].rope.byte_length())
+    var t6 = perf_counter_ns()
+
+    return (
+        String("bytes=") + String(doc[].rope.byte_length())
+        + " needle=" + want
+        + "\nforward: first match at " + String(forward)
+        + " in " + String(Float64(t1 - t0) / 1_000_000.0) + " ms"
+        + "\nbackward: last match at " + String(last)
+        + " in " + String(Float64(t2 - t1) / 1_000_000.0) + " ms"
+        + "\nfull scan forward (no match, " + String(miss) + "): "
+        + String(Float64(t4 - t3) / 1_000_000.0) + " ms"
+        + "\nfull scan backward (no match, " + String(miss_back) + "): "
+        + String(Float64(t6 - t5) / 1_000_000.0) + " ms"
+    )
 
 
 def type_text(hwnd: Int, text: String) raises -> String:

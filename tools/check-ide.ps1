@@ -369,7 +369,84 @@ if ($out -match 'setselection: anchor=1 caret=3') {
     Record 'tsf-selection' 'FAIL' (($out -split "`n" | Where-Object { $_ -match 'setselection' })[0])
 }
 
-# 22. No address is laundered through an integer on its way into a call.
+# ---- 22-26. find ------------------------------------------------------------
+# Sprint 1.6. The rope already searched by walking leaves rather than
+# flattening; these check the editor built on top of it, and then the number
+# the sprint actually names.
+$findDoc = Join-Path $env:TEMP ("griddle-find-{0}.txt" -f (Get-Random))
+[System.IO.File]::WriteAllText($findDoc,
+    "the quick brown fox`njumps over the lazy dog`nthe fox again`nand the end`n",
+    (New-Object System.Text.UTF8Encoding $false))
+function AskFind($command) {
+    # Line endings normalised and the startup banner dropped: an answer
+    # matched with (?m)^word$ fails against a trailing carriage return, which
+    # looks exactly like the editor not having found the word.
+    $raw = cmd /c "`"$Exe`" --open `"$findDoc`" --cmd `"$command`" 2>&1" | Out-String
+    return (($raw -split "`r?`n") | Where-Object { $_ -notmatch '^griddle: ' }) -join "`n"
+}
+
+$out = AskFind 'find brown;;sel'
+if ($out -match 'found at byte 10' -and $out -match '(?m)^brown$') {
+    Record 'find-literal' 'PASS' 'found and selected, so the next keystroke replaces it'
+} else {
+    Record 'find-literal' 'FAIL' (($out -split "`n")[0])
+}
+
+# From the caret, not from the top: that is what makes F3 mean "the next one".
+$out = AskFind 'find the;;findnext;;sel'
+if ($out -match 'found at byte 31' -and $out -match '(?m)^the$') {
+    Record 'find-next' 'PASS' 'the second match, not the first again'
+} else {
+    Record 'find-next' 'FAIL' (($out -split "`n" | Where-Object { $_ -match 'found|no match' })[-1])
+}
+
+# Backwards from the anchor rather than the caret, or a forward find followed
+# by Shift+F3 would land on the match it just found.
+$out = AskFind 'find fox;;findnext;;findprev;;sel'
+if ($out -match '(?m)^fox$') {
+    $hits = @([regex]::Matches($out, 'found at byte (\d+)'))
+    if ($hits.Count -eq 3 -and $hits[2].Groups[1].Value -eq $hits[0].Groups[1].Value) {
+        Record 'find-prev' 'PASS' "forward then back returns to byte $($hits[0].Groups[1].Value)"
+    } else {
+        Record 'find-prev' 'FAIL' "went $(($hits | ForEach-Object { $_.Groups[1].Value }) -join ' -> ')"
+    }
+} else {
+    Record 'find-prev' 'FAIL' 'nothing selected after searching backwards'
+}
+
+# A search starting past the last match must come back to the first.
+$out = AskFind 'goto 4;;move end;;find fox;;sel'
+if ($out -match 'found at byte 16' -or $out -match 'found at byte 40') {
+    Record 'find-wraps' 'PASS' 'a search past the last match wrapped to the first'
+} else {
+    Record 'find-wraps' 'FAIL' (($out -split "`n" | Where-Object { $_ -match 'found|no match' })[-1])
+}
+Remove-Item $findDoc -ErrorAction SilentlyContinue
+
+# The sprint acceptance: a literal search over 100 MB in under 200 ms. A
+# needle that is present stops at the first match and measures nothing, so
+# this is timed on one that is absent -- the whole document, both ways.
+# It costs about four seconds to build the document, which is why it is one
+# check rather than five.
+$out = (cmd /c "`"$Exe`" --lines 1900000 --cmd `"find-bench fox`" 2>&1" | Out-String)
+if ($out -match 'bytes=(\d+)' ) {
+    $bytes = [int64]$matches[1]
+    $fwd = if ($out -match 'full scan forward[^:]*: ([\d.]+) ms') { [double]$matches[1] } else { -1 }
+    $back = if ($out -match 'full scan backward[^:]*: ([\d.]+) ms') { [double]$matches[1] } else { -1 }
+    $mb = [int]($bytes / 1MB)
+    if ($bytes -lt 100MB) {
+        Record 'find-100mb' 'FAIL' "the document was only $mb MB"
+    } elseif ($fwd -gt 0 -and $fwd -lt 200 -and $back -gt 0 -and $back -lt 200) {
+        Record 'find-100mb' 'PASS' `
+            "$mb MB scanned in $([math]::Round($fwd,1)) ms forward, $([math]::Round($back,1)) ms backward"
+    } else {
+        Record 'find-100mb' 'FAIL' "$mb MB: forward $fwd ms, backward $back ms, budget 200"
+    }
+} else {
+    Record 'find-100mb' 'FAIL' 'the benchmark did not report'
+}
+
+# 27. No address is laundered through an integer on its way into a call.
 # `Int(Pointer(to=x))` erases the origin, so the compiler is no longer told
 # that x is read after the call, and dropping its store is then correct. See
 # docs/addresses-and-optimization.md. `com_addr` states the fact instead.

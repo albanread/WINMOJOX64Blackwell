@@ -47,6 +47,7 @@ from ide.gridview import (
 )
 from ide.window import (
     caret_click,
+    find_again,
     edit_key,
     move_key,
     move_page,
@@ -213,6 +214,7 @@ def griddle_wndproc(
                             doc[].caret_col,
                             doc[].anchor_line,
                             doc[].anchor_col,
+                            doc[].needle,
                         )
                 except err:
                     print("griddle: paint failed:", String(err))
@@ -300,6 +302,12 @@ def griddle_wndproc(
                     _ = edit_key(hwnd, "redo")
                 elif wparam == ord("A"):
                     _ = move_key(hwnd, "all", False)
+                return 0
+
+            # F3 repeats the search; shift reverses it. The needle lives on
+            # the document, so it survives focus moving away and back.
+            if wparam == winkb_constant["VK_F3"]():
+                _ = find_again(hwnd, shift)
                 return 0
 
             if wparam == winkb_constant["VK_DELETE"]():
