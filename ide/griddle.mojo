@@ -10,14 +10,20 @@ Run it:
     mojo build --no-optimization -I mojo/stdlib -o build/griddle.exe \\
         ide/griddle.mojo
 
-`--seconds N` closes the window on its own after N seconds, and
-`--selftest` resizes it and reports the client area before and after, which
+`--ms N` closes the window on its own after N milliseconds -- milliseconds
+because a second is far too coarse both ways: a check wants to be quick, and
+a person watching wants time to see the thing rather than a flash. `--cmd "<verb>"` sends one command to our own window and prints the answer,
+which is how the agent surface is checked with no second process involved --
+a self-send dispatches straight into the window procedure, so it exercises
+the whole path (message, handler, dispatcher, reply) without needing a
+caller that shares our desktop. And `--selftest` resizes it and reports the client area before and after, which
 is how the check drives it with nobody at the keyboard. The app inspects
 itself rather than being inspected: a window created from a build harness is
 not always on the interactive desktop, so cross-process EnumWindows can come
 up empty for a window that plainly exists.
 """
 
+from std.os import getenv
 from std.sys import argv
 
 from std.ffi import c_int
@@ -27,7 +33,16 @@ from std.sys.info import size_of
 from std.sys._win32 import Win32Module
 from std.sys._winkb import winkb_constant, winkb_struct_size
 
-from ide.win32 import MSG, RECT, WNDCLASSEXW, WndProcType, wide, win32
+from ide.agent import agent_command
+from ide.win32 import (
+    COPYDATASTRUCT,
+    MSG,
+    RECT,
+    WNDCLASSEXW,
+    WndProcType,
+    wide,
+    win32,
+)
 
 
 # ===----------------------------------------------------------------------===#
@@ -44,6 +59,32 @@ def griddle_wndproc(
     hwnd: Int, message: UInt32, wparam: Int, lparam: Int
 ) abi("C") -> Int:
     try:
+        # A command from outside. Windows has already copied the bytes into
+        # this process, so the pointer is ours to read for the length of
+        # this call and no longer.
+        if message == UInt32(winkb_constant["WM_COPYDATA"]()):
+            var cds = Pointer[COPYDATASTRUCT, MutAnyOrigin](
+                unsafe_from_address=lparam
+            )
+            var bytes = Pointer[UInt8, MutAnyOrigin](
+                unsafe_from_address=cds[].lpData
+            )
+            var request = String("")
+            for i in range(Int(cds[].cbData)):
+                request += chr(Int(bytes.unsafe_offset(i)[]))
+            # First line names the file the answer goes in; the rest is the
+            # command. Answering into a file is what lets a caller be a
+            # shell script with no window of its own -- see ide/agent.mojo.
+            var newline = request.find("\n")
+            if newline < 0:
+                return 0
+            var reply_path = String(request[byte=:newline]).strip()
+            var command = String(request[byte=newline + 1 :])
+            var reply = agent_command(hwnd, command)
+            with open(reply_path, "w") as f:
+                f.write(reply)
+            return 1
+
         # Closing the window ends the program: without this the loop waits
         # forever for messages from a window that no longer exists.
         if message == UInt32(winkb_constant["WM_DESTROY"]()):
@@ -65,6 +106,23 @@ def griddle_wndproc(
 # ===----------------------------------------------------------------------===#
 # Startup
 # ===----------------------------------------------------------------------===#
+
+
+# Our own close timer's id. Named because the loop must be able to tell it
+# from every other timer in the process: the runtime sets thread timers of
+# its own, and a WM_TIMER that is not ours must not be read as "shut down".
+comptime CLOSE_TIMER_ID = 0x6721
+
+
+def env_or(name: StringSlice, fallback: StringSlice) -> String:
+    """An environment variable, or a fallback when it is unset."""
+    try:
+        var value = getenv(String(name))
+        if value.byte_length() > 0:
+            return value
+    except:
+        pass
+    return String(fallback)
 
 
 def dark_titlebar(hwnd: Int) raises -> Int32:
@@ -108,14 +166,20 @@ def main() raises:
     ), "MSG does not match Windows"
 
     # `--seconds N`: close on our own, for unattended runs.
-    var seconds = 0
+    var close_ms = 0
     var selftest = False
+    var command = String("")
+    var trace = False
     var args = argv()
     for i in range(len(args)):
-        if args[i] == "--seconds" and i + 1 < len(args):
-            seconds = Int(args[i + 1])
+        if args[i] == "--ms" and i + 1 < len(args):
+            close_ms = Int(args[i + 1])
         if args[i] == "--selftest":
             selftest = True
+        if args[i] == "--trace":
+            trace = True
+        if args[i] == "--cmd" and i + 1 < len(args):
+            command = String(args[i + 1])
 
     var GetModuleHandleW = win32[
         def (Int) thin abi("C") -> Int, "GetModuleHandleW"
@@ -192,12 +256,53 @@ def main() raises:
         )
 
     # Before the window is shown, so it never flashes light chrome.
+    # Publish the window handle. A second process could FindWindowW our
+    # class instead, and a person's tooling may well prefer to -- but a file
+    # needs no window station in common with us, which a build harness
+    # launching Griddle does not always have. One line, no failure mode.
+    var handle_path = String(env_or("TEMP", ".")) + "\\griddle.hwnd"
+    with open(handle_path, "w") as f:
+        f.write(String(hwnd))
+
     var dark = dark_titlebar(hwnd)
     _ = ShowWindow(hwnd, c_int(winkb_constant["SW_SHOW"]()))
     print(
         "griddle: window", hwnd, "open  dark-titlebar hr =", dark,
         "(0 = accepted)",
     )
+
+    if command.byte_length() > 0:
+        # Ask ourselves, through the real message path. SendMessage to our
+        # own window dispatches inline -- Windows calls the procedure
+        # directly rather than queueing -- so this exercises the transport,
+        # the handler and the dispatcher without a message loop and without
+        # a second process. It is also why the check needs no second
+        # desktop: nothing here crosses a process boundary.
+        var SendMessageW = win32[
+            def (
+                Int, UInt32, Int, Pointer[COPYDATASTRUCT, MutAnyOrigin]
+            ) thin abi("C") -> Int,
+            "SendMessageW",
+        ]()
+        var reply_path = String(env_or("TEMP", ".")) + "\\griddle-selfcmd.txt"
+        var payload = reply_path + "\n" + command
+        var bytes = payload.as_bytes()
+        var cds = COPYDATASTRUCT()
+        cds.cbData = UInt32(len(bytes))
+        cds.lpData = Int(bytes.unsafe_ptr())
+        var accepted = SendMessageW(
+            hwnd,
+            UInt32(winkb_constant["WM_COPYDATA"]()),
+            0,
+            Pointer(to=cds).unsafe_origin_cast[MutAnyOrigin](),
+        )
+        _ = payload
+        if accepted != 1:
+            raise Error("the window did not accept the command")
+        with open(reply_path, "r") as f:
+            print(f.read(), end="")
+        print()
+        return
 
     if selftest:
         # Resize through the same call a user's drag ends in, and read the
@@ -229,15 +334,32 @@ def main() raises:
         var IsWindow = win32[def (Int) thin abi("C") -> c_int, "IsWindow"]()
         print("griddle: alive after resize:", IsWindow(hwnd) != 0)
 
-    if seconds > 0:
+        # Can anything find us by class name? The agent surface depends on a
+        # second process doing exactly this, so ask from inside first: if we
+        # cannot find ourselves, the class name is wrong, not the observer.
+        var FindWindowW = win32[
+            def (
+                Pointer[UInt16, MutAnyOrigin], Int
+            ) thin abi("C") -> Int,
+            "FindWindowW",
+        ]()
+        var probe = wide("GriddleWindow")
+        var found = FindWindowW(
+            probe.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](), 0
+        )
+        _ = probe
+        print("griddle: FindWindowW('GriddleWindow') ->", found,
+              "(ours is", String(hwnd) + ")")
+
+    if close_ms > 0:
         # Unattended: a timer whose tick destroys the window, so the timed
         # exit rejoins the human one at WM_DESTROY -- the same quit message,
         # the same clean-up, no second path to keep working.
         var SetTimer = win32[
             def (Int, Int, UInt32, Int) thin abi("C") -> Int, "SetTimer"
         ]()
-        _ = SetTimer(hwnd, 1, UInt32(seconds * 1000), 0)
-        print("griddle: closing in", seconds, "second(s)")
+        _ = SetTimer(hwnd, CLOSE_TIMER_ID, UInt32(close_ms), 0)
+        print("griddle: closing in", close_ms, "ms")
 
     # The message loop. GetMessageW blocks, which is right for an editor:
     # idle costs no CPU, and the D2D redraw is driven by WM_PAINT rather than
@@ -247,13 +369,24 @@ def main() raises:
         var got = GetMessageW(Pointer(to=msg).unsafe_origin_cast[MutAnyOrigin](), 0, 0, 0)
         if got == 0:
             break
+        if trace:
+            print("griddle: msg", msg.message, "hwnd", msg.hwnd)
         if got == -1:
             raise Error(
                 "GetMessageW failed, GetLastError = " + String(GetLastError())
             )
-        # A timer tick means the unattended run is over; destroy the window
-        # and let WM_DESTROY post the quit exactly as a real close would.
-        if msg.message == UInt32(winkb_constant["WM_TIMER"]()):
+        # OUR timer means the unattended run is over; destroy the window and
+        # let WM_DESTROY post the quit exactly as a real close would. The
+        # identity checks are not defensive padding: the runtime posts
+        # thread-level timers (WM_TIMER with a null hwnd) all by itself, and
+        # treating one of those as the close signal shut the window within a
+        # second of opening -- which reads exactly like "the window does not
+        # stay up" and is nothing of the kind.
+        if (
+            msg.message == UInt32(winkb_constant["WM_TIMER"]())
+            and msg.hwnd == hwnd
+            and msg.wParam == CLOSE_TIMER_ID
+        ):
             var DestroyWindow = win32[
                 def (Int) thin abi("C") -> c_int, "DestroyWindow"
             ]()

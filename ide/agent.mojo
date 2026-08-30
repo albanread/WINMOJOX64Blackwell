@@ -1,0 +1,78 @@
+"""The agent surface: one dispatcher, text in, text out.
+
+Griddle is drivable from outside from its second sprint, before it can edit
+a character, because that is what makes every later sprint checkable with
+nobody at the keyboard. The Mac team's IDE gained this late and their own
+notes say it is what made the back half cheap; we start with it.
+
+The shape is theirs, translated. One function turns a line of text into a
+line of text, and everything a menu or a button will eventually do arrives
+here as a verb. So an agent run exercises the same code a person does, and
+a verb that breaks under a script breaks under the pointer too.
+
+Windows makes the transport simpler than the Mac's: no permission wall
+exists, so `WM_COPYDATA` -- a message whose whole purpose is handing bytes
+to another process -- needs no registration and no grant. What it does not
+give is a way to hand bytes back: the reply would need the sender to own a
+window and pump messages, which a shell script or a CI step should not have
+to do. So a request names a file for its answer, and because `SendMessage`
+is synchronous the answer is on disk by the time the call returns. No
+polling, no race, no window required of the caller.
+"""
+
+
+comptime GRIDDLE_VERSION = StaticString("0.1.0")
+
+
+def agent_command(hwnd: Int, text: StringSlice) raises -> String:
+    """Answer one command.
+
+    Every verb the IDE grows is added here, and menus and buttons are wired
+    to the same functions, so this stays the one description of what Griddle
+    can be asked to do.
+
+    Args:
+        hwnd: The window the command arrived at, so `status` can report it.
+        text: The command line: a verb, then its arguments.
+
+    Returns:
+        The reply, as text. Errors are replies too -- a caller reads one
+        stream, not two.
+    """
+    # strip() answers a span; make it a String so the pieces below are
+    # values with their own storage rather than views into a temporary.
+    var trimmed = String(String(text).strip())
+    if trimmed.byte_length() == 0:
+        return String("error: empty command")
+
+    # The verb is the first word; the rest is its argument, unsplit, because
+    # a path may contain spaces and re-joining is how that gets broken.
+    var verb = trimmed
+    var rest = String("")
+    var space = trimmed.find(" ")
+    if space >= 0:
+        verb = String(trimmed[byte=:space])
+        rest = String(String(trimmed[byte=space + 1 :]).strip())
+
+    if verb == "status":
+        return (
+            String("griddle ")
+            + String(GRIDDLE_VERSION)
+            + " hwnd="
+            + String(hwnd)
+            + " state=idle"
+        )
+
+    if verb == "help":
+        # Listed rather than described: the surface IS the command language,
+        # so `help` is its documentation and has to stay complete.
+        return String(
+            "status            what Griddle is and which window it is\n"
+            "help              this list\n"
+            "echo <text>       answer with <text>, for round-trip checks"
+        )
+
+    if verb == "echo":
+        return rest
+
+    return String("error: unknown verb '") + verb + "' (try 'help')"

@@ -156,6 +156,26 @@ struct MSG(Defaultable, Copyable, Movable):
         self.lPrivate = 0
 
 
+@fieldwise_init
+struct COPYDATASTRUCT(Defaultable, Copyable, Movable):
+    """The payload of a WM_COPYDATA message.
+
+    Windows copies `cbData` bytes from `lpData` into the receiving process
+    before the handler runs, which is the whole point of the message: the
+    pointer is never dereferenced across the process boundary.
+    """
+
+    var dwData: Int
+    var cbData: UInt32
+    var lpData: Int
+
+    def __init__(out self):
+        """An empty payload."""
+        self.dwData = 0
+        self.cbData = 0
+        self.lpData = 0
+
+
 # ===----------------------------------------------------------------------===#
 # Signatures
 #

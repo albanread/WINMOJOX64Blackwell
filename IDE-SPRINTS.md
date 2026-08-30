@@ -183,8 +183,42 @@ renders our own view hierarchy for the same reason.*
 One dispatcher: `agent_command(text) -> text`. Verbs: `status`, `help`.
 `tools/griddle-cmd.ps1` wraps send/receive for scripts, and
 `tools/check-ide.ps1` is born with one check.
-*Acceptance: `check-ide.ps1` reports `OK agent round trip` from a process
-that never touches the UI.*
+*Acceptance MET (2026-08-30): `check-ide.ps1` reports **5 checks: 5
+passed** -- `OK agent round trip`, the echoed argument surviving the trip,
+an unknown verb refused with words, the window staying up (1266ms for a
+1200ms run), and the resize.*
+
+*Two things this sprint had to settle. **The transport answers into a
+file.** `WM_COPYDATA` hands bytes to another process with no registration
+and no permission -- Windows has no TCC to fight -- but it offers no way to
+hand bytes back, and a reply through a second `WM_COPYDATA` would require
+the caller to own a window and pump messages. A shell script or a CI step
+should not have to. So a request names a file for its answer, and because
+`SendMessage` is synchronous the answer is on disk when the call returns:
+no polling, no race, no window required of the caller.*
+
+*And **the check drives Griddle through `--cmd`, a self-send.** This is the
+Mac team's own discovery arriving here: their sprint 1 found that a
+self-post dispatches inline, so the whole handler path is testable in one
+process. It matters more on Windows than it did for them, because a window
+created by a process this build harness launches is not on the harness's
+window station -- `FindWindowW` and even `IsWindow` come back empty for a
+window that plainly exists and answers its own calls. `griddle-cmd.ps1` is
+the same protocol from outside, for a person or an agent at a real desktop;
+the check does not depend on it.*
+
+*One real bug, found because the window kept "flashing past" for a human
+watching: the loop treated **any** `WM_TIMER` as its shutdown signal, and
+the runtime posts thread-level timers (`hwnd 0`) of its own. So the window
+closed within a second of opening regardless of arguments -- which reads
+exactly like a message loop that does not work. It now honours only a timer
+addressed to its own window with its own id, and `window-stays-up` times
+the wait rather than trusting it.*
+
+*Griddle's runtime DLLs are staged beside the executable by
+`tools/build-ide.ps1`, so it runs by double-click rather than only from a
+shell that has bazel-bin on PATH -- the difference between a program and a
+demo.*
 
 **0.3 — the app photographs itself (S).** `screenshot <path>`: render our
 own client area to PNG (WIC encoder; `PrintWindow` on our own HWND as the
