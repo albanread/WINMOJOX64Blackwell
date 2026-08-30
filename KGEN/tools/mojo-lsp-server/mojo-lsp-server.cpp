@@ -24,8 +24,6 @@
 #include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
 
-#include <unistd.h>
-
 using namespace M;
 using namespace M::KGEN::LIT;
 using namespace llvm::lsp;
@@ -136,7 +134,11 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  if (isatty(STDOUT_FILENO)) {
+  // llvm::sys::Process rather than isatty(STDOUT_FILENO): the POSIX
+  // spelling needs <unistd.h>, which Windows does not have, and this
+  // was the only thing in the file that wanted it. Process.h was
+  // already included for other reasons.
+  if (llvm::sys::Process::StandardOutIsDisplayed()) {
     llvm::errs()
         << "The Mojo Language Server is not intended to be executed directly. "
            "Please refer to your editor documentation for instructions on "

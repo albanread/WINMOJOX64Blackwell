@@ -539,11 +539,17 @@ private:
   std::string generateToken() {
     thread_local std::default_random_engine rng(std::random_device{}());
     // generate a 32-character ASCII string
-    std::uniform_int_distribution<unsigned char> distribution('a', 'z');
+    //
+    // `unsigned` rather than `unsigned char`: [rand.req.genl]/1.5 lists the
+    // types uniform_int_distribution accepts and char types are not among
+    // them. libstdc++ allows it anyway; the MSVC standard library enforces
+    // the rule with a static_assert, so this is a portability fix rather
+    // than a preference.
+    std::uniform_int_distribution<unsigned> distribution('a', 'z');
     std::string id(32, 'a');
 
     for (size_t i = 0; i < id.size(); ++i)
-      id[i] = distribution(rng);
+      id[i] = static_cast<char>(distribution(rng));
 
     return id;
   }

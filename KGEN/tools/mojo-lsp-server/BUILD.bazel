@@ -2,8 +2,22 @@ load("//bazel:api.bzl", "modular_cc_binary")
 
 package(default_visibility = ["//KGEN:consumers"])
 
+# System libraries the Windows link needs, the same two every other tool in
+# this tree names -- see KGEN/tools/mojo/BUILD.bazel, which explains why:
+#   normaliz  curl is built with USE_WIN32_IDN, which resolves IdnToAscii and
+#             IdnToUnicode from this library.
+#   ws2_32    the sockets API is not in libc here.
+_LSP_LINKOPTS = select({
+    "@platforms//os:windows": [
+        "-lnormaliz",
+        "-lws2_32",
+    ],
+    "//conditions:default": [],
+})
+
 modular_cc_binary(
     name = "mojo-lsp-server",
+    linkopts = _LSP_LINKOPTS,
     srcs = glob([
         "*.cpp",
         "*.h",
