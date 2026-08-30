@@ -41,12 +41,17 @@ from ide.chrome import Chrome, bring_up, draw, finish, release
 from ide.drop import register as register_drop, revoke as revoke_drop
 from ide.doc import Doc
 from ide.gridview import (
+    draw_issues,
     draw_text,
     release_cache,
     status_line,
 )
 from ide.window import (
     caret_click,
+    file_uri,
+    pump as lsp_pump,
+    start_server,
+    stop_server,
     find_again,
     mark_drawn,
     mark_keystroke,
@@ -61,6 +66,7 @@ from ide.window import (
     type_unit,
 )
 from ide.menu import build as build_menu
+from ide.lsp import is_running as lsp_running
 from ide.rope import Rope
 from ide.tsf import Tsf, activate, deactivate
 from ide.win32 import (
@@ -219,7 +225,12 @@ def griddle_wndproc(
                             doc[].anchor_line,
                             doc[].anchor_col,
                             doc[].needle,
+                            lsp_running(),
                         )
+                        if lsp_running():
+                            draw_issues(
+                                doc[].grid, chrome[], layout.issues()
+                            )
                 except err:
                     print("griddle: paint failed:", String(err))
                 # Every drawing command is issued; what remains is the
@@ -354,6 +365,16 @@ def griddle_wndproc(
                 _ = move_page(hwnd, -page, shift)
             return 0
 
+        # The language server, drained. Its own timer id, checked against
+        # its own window, for the reason the close timer's comment gives.
+        if message == UInt32(winkb_constant["WM_TIMER"]()):
+            if wparam == LSP_TIMER_ID:
+                try:
+                    _ = lsp_pump(hwnd)
+                except:
+                    pass
+                return 0
+
         # A menu item was chosen -- by a person or by the agent, which sends
         # the same command the menu does.
         if message == UInt32(winkb_constant["WM_COMMAND"]()):
@@ -391,6 +412,11 @@ def griddle_wndproc(
 # from every other timer in the process: the runtime sets thread timers of
 # its own, and a WM_TIMER that is not ours must not be read as "shut down".
 comptime CLOSE_TIMER_ID = 0x6721
+# The language server is drained from here. Fifty milliseconds is three
+# frames: often enough that a diagnostic appears while a person is still
+# looking at the line, rare enough that an idle editor is idle.
+comptime LSP_TIMER_ID = 0x6722
+comptime LSP_POLL_MS = 50
 
 
 def env_or(name: StringSlice, fallback: StringSlice) -> String:
@@ -512,6 +538,9 @@ def main() raises:
     # which is right for looking at and useless for measuring: the mean comes
     # back as 16.67 ms whether a frame took one millisecond or fifteen.
     var no_vsync = False
+    # The checks that measure drawing do not want a language server
+    # parsing in the background while they time a frame.
+    var no_lsp = False
     var args = argv()
     for i in range(len(args)):
         if args[i] == "--ms" and i + 1 < len(args):
@@ -528,6 +557,8 @@ def main() raises:
             synth_lines = Int(args[i + 1])
         if args[i] == "--no-vsync":
             no_vsync = True
+        if args[i] == "--no-lsp":
+            no_lsp = True
 
     var GetModuleHandleW = win32[
         def (Int) thin abi("C") -> Int, "GetModuleHandleW"
@@ -648,6 +679,8 @@ def main() raises:
     # window procedure reaches it through the one pointer Windows keeps.
     var doc_store = alloc[Doc](1, alignment=8)
     doc_store.unsafe_write(Doc(load_document(open_path, synth_lines)))
+    if open_path.byte_length() > 0:
+        doc_store[].uri = file_uri(absolute(open_path))
     chrome_store[].doc = Int(doc_store)
     print(
         "griddle: document", doc_store[].rope.line_count(), "lines,",
@@ -690,6 +723,33 @@ def main() raises:
         "(0 = accepted)",
     )
 
+    # The language server, if there is a real file to diagnose and a server
+    # to ask. Neither is fatal: an editor with no server is the editor every
+    # sprint before this one had.
+    # Only for Mojo. A Mojo language server has nothing to say about a text
+    # file, and starting one anyway costs a process and a parse for every
+    # document a person opens -- which the check suite, whose fixtures are
+    # .txt, would pay on every one of its sixty-odd runs.
+    if open_path.endswith(".mojo") and not no_lsp:
+        var server = String(env_or("WINMOJO_LSP", ""))
+        if server.byte_length() == 0:
+            server = String(
+                "bazel-bin/KGEN/tools/mojo-lsp-server/mojo-lsp-server.exe"
+            )
+        var stdlib = String(env_or("WINMOJO_STDLIB", "mojo/stdlib"))
+        # Absolute, and with the separators Windows expects. CreateProcessW
+        # with no application name parses the command line itself, and a
+        # relative path full of forward slashes is not a path it finds --
+        # it fails with "cannot find the file", naming a file that is there.
+        print(
+            "griddle:",
+            start_server(hwnd, absolute(server), absolute(stdlib)),
+        )
+        var SetTimer = win32[
+            def (Int, Int, UInt32, Int) thin abi("C") -> Int, "SetTimer"
+        ]()
+        _ = SetTimer(hwnd, LSP_TIMER_ID, UInt32(LSP_POLL_MS), 0)
+
     if command.byte_length() > 0:
         # Ask ourselves, through the real message path. SendMessage to our
         # own window dispatches inline -- Windows calls the procedure
@@ -729,6 +789,10 @@ def main() raises:
             with open(reply_path, "r") as f:
                 print(f.read(), end="")
             print()
+        try:
+            stop_server()
+        except:
+            pass
         return
 
     if selftest:
@@ -822,6 +886,11 @@ def main() raises:
         _ = TranslateMessage(Pointer(to=msg).unsafe_origin_cast[MutAnyOrigin]())
         _ = DispatchMessageW(Pointer(to=msg).unsafe_origin_cast[MutAnyOrigin]())
 
+    try:
+        stop_server()
+    except:
+        pass
+
     # Text services first: TSF holds a reference to a store that reaches the
     # document, so it has to let go before the document does.
     if tsf_live:
@@ -855,3 +924,41 @@ def frame_budget_ns(hwnd: Int) raises -> Int:
     bought in the last few years.
     """
     return 1_000_000_000 // refresh_hz(hwnd)
+
+
+def absolute(path: String) raises -> String:
+    """A relative path made absolute, because a URI cannot be relative.
+
+    The server resolves nothing: a `file://` URI with a relative path in it is
+    a URI pointing at the root of the drive, and every diagnostic comes back
+    for a file that does not exist.
+    """
+    var GetFullPathNameW = win32[
+        def (
+            Pointer[UInt16, MutAnyOrigin],
+            UInt32,
+            Pointer[UInt16, MutAnyOrigin],
+            Int,
+        ) thin abi("C") -> UInt32,
+        "GetFullPathNameW",
+    ]()
+    var wide_path = List[UInt16]()
+    for byte in path.as_bytes():
+        wide_path.append(UInt16(Int(byte)))
+    wide_path.append(0)
+    var buffer = List[UInt16]()
+    for _ in range(1024):
+        buffer.append(0)
+    var n = GetFullPathNameW(
+        wide_path.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+        UInt32(1024),
+        buffer.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+        0,
+    )
+    _ = wide_path
+    if n == 0 or n >= UInt32(1024):
+        return path
+    var out = String("")
+    for k in range(Int(n)):
+        out += chr(Int(buffer[k]))
+    return out^

@@ -34,6 +34,9 @@ from ide.window import (
     caret_report,
     counters,
     edit_key,
+    goto_issue,
+    issues_report,
+    lsp_wait,
     keystorm,
     latency_report,
     latency_reset,
@@ -158,7 +161,9 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             "findnext | findprev   repeat the search, F3 and Shift+F3\n"
             "find-bench <text>     time one search of the whole document\n"
             "storm [N]         N keystrokes through the real message path\n"
-            "latency [reset]   keystroke to presented frame"
+            "latency [reset]   keystroke to presented frame\n"
+            "issues [N]        the language server's complaints, or jump to one\n"
+            "lsp wait [ms]     wait for the server to have something to say"
         )
 
     if verb == "echo":
@@ -425,6 +430,24 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             latency_reset(hwnd)
             return String("latency counters zeroed")
         return latency_report(hwnd)
+
+    if verb == "lsp":
+        # `lsp wait [ms]`. The window drains the server from a timer; a check
+        # has no timer, so it says when to wait and for how long.
+        if rest.startswith("wait"):
+            var ms = 8000
+            var space2 = rest.find(" ")
+            if space2 > 0:
+                ms = Int(String(rest[byte=space2 + 1 :]).strip())
+            return lsp_wait(hwnd, ms)
+        return String("usage: lsp wait [milliseconds]")
+
+    if verb == "issues":
+        # The issues pane, as text. The same list the pane draws and the same
+        # order, so a check and a person are reading one thing.
+        if rest.byte_length() > 0:
+            return goto_issue(hwnd, Int(rest) - 1)
+        return issues_report(hwnd)
 
     if verb == "grid":
         # The counters, and a way to zero them. Measuring a scroll means

@@ -33,13 +33,22 @@ from ide.chrome import (
     D2D_COLOR_F,
     D2D_RECT_F,
     EMBER,
+    ERROR,
     INK,
     Layout,
     MATCH,
     SELECT,
+    WARN,
 )
 from ide.doc import Doc, Grid
+from ide.diagnostics import (
+    SEVERITY_ERROR,
+    count_for_shown,
+    nth_visible,
+    on_line,
+)
 from ide.find import matches_in_line
+from ide.lsp import g_diag_col, g_diag_end, g_diag_line, g_diag_msg, g_diag_sev
 from ide.rope import Rope
 
 
@@ -73,6 +82,7 @@ def draw_text(
     anchor_line: Int = -1,
     anchor_col: Int = 0,
     needle: StringSlice = "",
+    show_diagnostics: Bool = False,
 ) raises:
     """Draw the visible slice of `rope` into `region`.
 
@@ -87,6 +97,10 @@ def draw_text(
         anchor_line: The selection's other end, or -1 for none.
         anchor_col: Its UTF-16 offset.
         needle: The current search, highlighted wherever it appears.
+        show_diagnostics: Whether to underline what the language server
+            objected to. Off when no server is running, so a document with no
+            diagnostics and a document nobody has looked at are not drawn the
+            same.
 
     Raises:
         If DirectWrite refuses to lay out a line.
@@ -227,6 +241,47 @@ def draw_text(
         if num_layout != 0:
             _draw_layout(this, num_layout, gutter_brush, region.left + 6, y)
             _release(num_layout)
+
+        # What the language server objected to, underlined. Drawn after
+        # the line's text so it is not painted over, and inside the clip so a
+        # long range stops at the edge of the field like everything else.
+        if show_diagnostics:
+            var which = on_line(line)
+            if which >= 0:
+                var from_col = g_diag_col()[][which]
+                var to_col = g_diag_end()[][which]
+                if to_col <= from_col:
+                    to_col = from_col + 1
+                var ax = caret_x(
+                    grid, dwrite, chrome, rope, line, from_col, revision
+                )
+                var bx = caret_x(
+                    grid, dwrite, chrome, rope, line, to_col, revision
+                )
+                if bx <= ax:
+                    bx = ax + grid.advance
+                var colour = ERROR
+                if g_diag_sev()[][which] != SEVERITY_ERROR:
+                    colour = WARN
+                _squiggle(
+                    this,
+                    chrome.target,
+                    region.left + Float32(GUTTER_W) + ax,
+                    region.left + Float32(GUTTER_W) + bx,
+                    y + grid.line_height - 2,
+                    colour,
+                )
+                # And a mark in the gutter, which survives the text being
+                # scrolled off the right edge.
+                _fill_rect(
+                    this,
+                    chrome.target,
+                    region.left + 2,
+                    y + 4,
+                    region.left + 5,
+                    y + grid.line_height - 4,
+                    colour,
+                )
 
         row += 1
 
@@ -750,3 +805,151 @@ def _units_before(text: String, byte_offset: Int) -> Int:
         seen += width
         units += 2 if v >= 0x10000 else 1
     return units
+
+
+def _squiggle(
+    this: OpaquePointer[MutUntrackedOrigin],
+    target: Int,
+    left: Float32,
+    right: Float32,
+    y: Float32,
+    colour: Int,
+) raises:
+    """A wavy underline, as a run of two-pixel blocks alternating height.
+
+    Not a real sine wave and not a dotted line: at this size the eye reads
+    "not straight" and nothing more, and a run of rectangles costs one brush
+    and no geometry. Direct2D can stroke a path, but a path per diagnostic per
+    frame is a lot of allocation for something two pixels tall.
+    """
+    var brush = _brush(target, colour)
+    if brush == 0:
+        return
+    var x = left
+    var up = True
+    while x < right:
+        var top = y if up else y + 1.5
+        var r = D2D_RECT_F(x, top, x + 2, top + 1.5)
+        com_method_of[
+            def (
+                OpaquePointer[MutUntrackedOrigin],
+                Pointer[D2D_RECT_F, MutAnyOrigin],
+                Int,
+            ) thin abi("C") -> NoneType,
+            "ID2D1RenderTarget",
+            "FillRectangle",
+        ](this)(this, com_addr(r), brush)
+        x += 2
+        up = not up
+    _release(brush)
+
+
+comptime ISSUE_ROW_H = 18
+comptime ISSUE_TOP_PAD = 26
+
+
+def draw_issues(
+    mut grid: Grid,
+    chrome: Chrome,
+    region: D2D_RECT_F,
+) raises:
+    """List the language server's complaints in the issues pane.
+
+    One row each, newest interpretation of the file first -- which is to say
+    in the order the server sent them, because that is document order and a
+    person reading a list of problems in a file reads it top to bottom.
+
+    Rows are laid out fresh rather than cached. The pane holds six of them and
+    they change only when the server speaks, so the cache would be six entries
+    that never get a hit worth having.
+
+    Args:
+        grid: The view, for its measured advance.
+        chrome: The render target and text format.
+        region: The issues pane.
+
+    Raises:
+        If DirectWrite refuses.
+    """
+    if chrome.target == 0 or chrome.text_format == 0:
+        return
+    var total = count_for_shown()
+    if total == 0:
+        return
+
+    var this = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.target
+    )
+    var dwrite = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.dwrite
+    )
+    var ink = _brush(chrome.target, INK)
+    if ink == 0:
+        return
+
+    var clip = region
+    com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[D2D_RECT_F, MutAnyOrigin],
+            UInt32,
+        ) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PushAxisAlignedClip",
+    ](this)(this, com_addr(clip), UInt32(0))
+    _ = clip
+
+    var rows = Int(
+        (region.bottom - region.top - Float32(ISSUE_TOP_PAD))
+        / Float32(ISSUE_ROW_H)
+    )
+    var n = 0
+    while n < total and n < rows:
+        var which = nth_visible(n)
+        if which < 0:
+            break
+        var y = region.top + Float32(ISSUE_TOP_PAD) + Float32(n * ISSUE_ROW_H)
+        # A dot in the row's severity colour, so the list scans by shape
+        # rather than by reading every line.
+        var colour = ERROR
+        if g_diag_sev()[][which] != SEVERITY_ERROR:
+            colour = WARN
+        _fill_rect(
+            this, chrome.target,
+            region.left + 12, y + 5, region.left + 18, y + 11, colour,
+        )
+        var text = (
+            String(g_diag_line()[][which] + 1)
+            + ":" + String(g_diag_col()[][which] + 1)
+            + "  " + g_diag_msg()[][which]
+        )
+        var layout = _make_layout(
+            dwrite, chrome, text, region.right - region.left - 40
+        )
+        if layout != 0:
+            _draw_layout(this, layout, ink, region.left + 26, y)
+            _release(layout)
+        n += 1
+
+    com_method_of[
+        def (OpaquePointer[MutUntrackedOrigin]) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PopAxisAlignedClip",
+    ](this)(this)
+    _release(ink)
+
+
+def issue_row_at(region: D2D_RECT_F, y: Float32) -> Int:
+    """Which issue row a click at `y` is on, or -1.
+
+    Args:
+        region: The issues pane.
+        y: A client y coordinate.
+
+    Returns:
+        The row index, or -1 if the click is above the first row.
+    """
+    var into = y - region.top - Float32(ISSUE_TOP_PAD)
+    if into < 0:
+        return -1
+    return Int(into / Float32(ISSUE_ROW_H))

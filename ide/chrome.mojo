@@ -59,6 +59,8 @@ comptime INK = 0xDFE3EA  # primary text
 comptime DIM = 0x8B93A1  # secondary text
 comptime SELECT = 0x2A3A55  # selected text, behind the glyphs
 comptime MATCH = 0x4A3D1E  # every other match of the current search
+comptime ERROR = 0xE05252  # a squiggle under something that is wrong
+comptime WARN = 0xD8A657  # and under something that is merely doubtful
 
 
 @fieldwise_init

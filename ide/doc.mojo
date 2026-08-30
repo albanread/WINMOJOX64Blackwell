@@ -137,6 +137,11 @@ struct Doc(Movable):
     var lat_total: Int
     var lat_worst: Int
     var lat_over: Int
+    # Where this document came from, as a file URI, and which version the
+    # language server has been told about. Empty when the document is
+    # synthetic -- `--lines` -- in which case there is nothing to diagnose.
+    var uri: String
+    var sent_version: Int
     # The application half on its own: the keystroke to the last drawing
     # command, with the wait for the vertical blank left out. That wait is
     # real and a person experiences it, but it is the display's and not
@@ -163,6 +168,8 @@ struct Doc(Movable):
         self.lat_total = 0
         self.lat_worst = 0
         self.lat_over = 0
+        self.uri = String("")
+        self.sent_version = 0
         self.work_total = 0
         self.work_worst = 0
 

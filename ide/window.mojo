@@ -41,9 +41,24 @@ from ide.edit import (
     selected_text,
     undo,
 )
+from ide.diagnostics import count_for_shown, nth_visible, summary
 from ide.find import find_next, find_prev, select_match
+from ide.lsp import (
+    did_change,
+    did_open,
+    g_diag_col,
+    g_diag_line,
+    g_diag_msg,
+    is_ready,
+    is_running,
+    poll,
+    set_shown_uri,
+    start,
+    stop,
+)
 from ide.gridview import (
     GUTTER_W,
+    issue_row_at,
     advance_of,
     caret_x,
     clusters_of,
@@ -238,6 +253,21 @@ def caret_click(hwnd: Int, x: Int, y: Int) raises -> String:
     var editor = Layout(
         Int(rc.right - rc.left), Int(rc.bottom - rc.top)
     ).editor()
+    var full = Layout(Int(rc.right - rc.left), Int(rc.bottom - rc.top))
+    var pane = full.issues()
+    # The issues pane is below the editor field and to the left. A click there
+    # is a person asking to go somewhere, not to put the caret in a list.
+    if (
+        Float32(y) >= pane.top
+        and Float32(y) <= pane.bottom
+        and Float32(x) >= pane.left
+        and Float32(x) <= pane.right
+    ):
+        var row = issue_row_at(pane, Float32(y))
+        if row < 0:
+            return String("the issues heading")
+        return goto_issue(hwnd, row)
+
     if Float32(x) < editor.left or Float32(y) > editor.bottom:
         return String("outside the editor")
 
@@ -795,3 +825,173 @@ def keystorm(hwnd: Int, count: Int) raises -> String:
         _ = SendMessageW(hwnd, wm_char, ch, 0)
         _ = UpdateWindow(hwnd)
     return latency_report(hwnd)
+
+
+# ===----------------------------------------------------------------------===#
+# The language server
+#
+# Sprint 2.2. The client is MojoCocoa's, ported; this is the part that knows
+# about a window. The server is started when a real file is opened, told about
+# every edit, and drained from a timer -- a blocking read on the thread that
+# draws is an editor that stops responding whenever the server thinks.
+# ===----------------------------------------------------------------------===#
+
+
+def file_uri(path: String) -> String:
+    """A file URI Windows will accept: forward slashes, three after the colon.
+
+    `file:///E:/x` rather than `file://E:/x`: with two slashes the drive letter
+    is read as a hostname, and the server looks for a machine called E.
+    """
+    var out = String("file:///")
+    for byte in path.as_bytes():
+        var c = Int(byte)
+        out += "/" if c == ord("\\") else chr(c)
+    return out^
+
+
+def start_server(hwnd: Int, exe: String, stdlib: String) raises -> String:
+    """Start the language server for the document in this window."""
+    var doc = _doc_at(hwnd)
+    if doc[].uri.byte_length() == 0:
+        return String("no file open; nothing to diagnose")
+    if is_ready():
+        return String("already running")
+    # The document's own directory as the root: an editor that roots the
+    # server at the drive scans the drive.
+    var full = doc[].uri
+    var slash = full.rfind("/")
+    # A fresh String rather than assigning a slice of `root` back over it:
+    # the slice borrows the storage it would be overwriting.
+    var root = String(full[byte=:slash]) if slash > 0 else full
+    if not start(exe, root, stdlib):
+        return String("could not start ") + exe
+    return String("starting ") + exe
+
+
+def announce(hwnd: Int) raises:
+    """Tell the server about the open document, once it is ready.
+
+    A server that has just finished its handshake knows about no documents at
+    all, so this runs on the transition rather than once at startup -- the
+    same reason MojoCocoa watches `ready_serial`.
+    """
+    var doc = _doc_at(hwnd)
+    if doc[].uri.byte_length() == 0 or not is_ready():
+        return
+    if doc[].sent_version == 0:
+        did_open(doc[].uri, doc[].rope.to_string())
+        doc[].sent_version = 1
+        set_shown_uri(doc[].uri)
+
+
+def sync(hwnd: Int) raises:
+    """Send the document if it has changed since the server last heard.
+
+    Full text, deliberately, and worth being plain about: the sprint asks for
+    incremental didChange from the rope's edit spans, and the rope does know
+    them. What it does not have is a mapping from a byte span to the UTF-16
+    line and character range LSP wants, on the document *as the server last
+    saw it* -- which is a different document from the current one once two
+    edits have happened between polls. Getting that wrong moves every
+    diagnostic in the file by a column and looks like the server is broken.
+    Whole-document sync is correct at any version, costs one string copy per
+    idle period rather than per keystroke, and leaves the span mapping to be
+    built deliberately rather than in passing.
+    """
+    var doc = _doc_at(hwnd)
+    if doc[].uri.byte_length() == 0 or not is_ready():
+        return
+    if doc[].sent_version == 0:
+        announce(hwnd)
+        return
+    if doc[].sent_version == doc[].revision + 1:
+        return
+    doc[].sent_version = doc[].revision + 1
+    did_change(doc[].uri, doc[].sent_version, doc[].rope.to_string())
+
+
+def pump(hwnd: Int) raises -> Int:
+    """Drain whatever the server has said, and repaint if it said anything."""
+    if not is_running():
+        return 0
+    var handled = poll()
+    var was = is_ready()
+    if was:
+        announce(hwnd)
+        sync(hwnd)
+    if handled > 0:
+        _touch(hwnd)
+    return handled
+
+
+def issues_report(hwnd: Int) raises -> String:
+    """Every diagnostic for the open document, as text."""
+    if not is_running():
+        return String("the language server is not running")
+    if not is_ready():
+        return String("the language server is still starting")
+    return summary()
+
+
+def goto_issue(hwnd: Int, n: Int) raises -> String:
+    """Put the caret on the nth issue, the way clicking its row does."""
+    var which = nth_visible(n)
+    if which < 0:
+        return String("no issue ") + String(n + 1)
+    var line = g_diag_line()[][which]
+    var col = g_diag_col()[][which]
+    _ = goto(hwnd, line, col)
+    return (
+        String("issue ") + String(n + 1) + " at line " + String(line + 1)
+        + ": " + g_diag_msg()[][which]
+    )
+
+
+def lsp_wait(hwnd: Int, milliseconds: Int) raises -> String:
+    """Pump the server until it has something to say, or the time runs out.
+
+    The window's timer does this in the background while a person types. A
+    check has no timer -- `--cmd` answers and exits -- so it needs a way to
+    say "wait for the server", and this is it. Bounded, because a server that
+    never answers must not hang the check that is measuring it.
+
+    Args:
+        hwnd: The window.
+        milliseconds: How long to wait at most.
+
+    Returns:
+        What state the server reached.
+
+    Raises:
+        If the window has no document.
+    """
+    var Sleep = win32[def (UInt32) thin abi("C") -> NoneType, "Sleep"]()
+    var deadline = perf_counter_ns() + milliseconds * 1_000_000
+    var saw_ready = False
+    while perf_counter_ns() < deadline:
+        _ = pump(hwnd)
+        if is_ready():
+            saw_ready = True
+            # Ready is not the same as having parsed: the handshake finishes
+            # long before the first diagnostic arrives, and a check that
+            # stopped at "ready" would read an empty list every time.
+            if summary() != "no issues":
+                return String("ready, ") + String(count_for_shown()) + " issue(s)"
+        Sleep(UInt32(10))
+    if not is_running():
+        return String("the server is not running")
+    if not saw_ready:
+        return String("the server did not finish its handshake in time")
+    return String("ready, no issues")
+
+
+def stop_server() raises:
+    """Shut the server down.
+
+    Without this the process exits with the pipe still open, the server's next
+    write fails, and it reports a crash -- a crash caused entirely by the
+    editor walking away mid-sentence.
+    """
+    if is_running():
+        stop()
