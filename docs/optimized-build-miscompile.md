@@ -1,66 +1,104 @@
-# The optimized build does not draw
+# The optimized build did not draw
 
-**Status: open. Predates sprint 1.2. The IDE ships unoptimized, so nothing is
-currently blocked by it — but the whole point of the grid is speed, and the
-speed claims cannot be made on a build that renders a blank window.**
+**Status: fixed.** Found while adding an `-Optimized` switch to
+`tools/build-ide.ps1` during sprint 1.2, though it had been there since
+sprint 0.4. Kept because the shape of the bug is worth recognising again, and
+because the guard against it is a grep rather than a test.
 
-## What happens
+## The symptom
 
-Build `ide/griddle.mojo` with optimization on and the program is, by every
-means available to it, healthy: the window opens, the menu works, the agent
-answers every verb, the drop target registers, the rope reports its 250,001
-lines, and `EndDraw` does not complain. Almost nothing appears on screen.
+Build Griddle with optimization on and the program is, by every means
+available to it, healthy: the window opens, the menu works, the agent answers
+every verb, the drop target registers, the rope reports its 250,001 lines, and
+`EndDraw` returns success. Almost nothing appears on screen.
 
 Identical source, both ways, same machine, same session:
 
-| build | screenshot | what is visible |
+| build | screenshot | what was visible |
 | --- | --- | --- |
-| `--no-optimization` | 65 KB PNG | the whole chrome, the text grid, the labels |
-| optimized | 14.7 KB PNG | the four labels, nothing else |
+| `--no-optimization` | 65 KB PNG | the whole interface |
+| optimized (sprint 1.1) | 8.6 KB PNG | nothing at all |
+| optimized (sprint 1.2) | 14.7 KB PNG | the four text labels |
 
-At sprint 1.1 the optimized build drew *nothing* — a blank white window,
-8.6 KB. So this is not a regression from the grid work; the grid work made it
-less bad, which is its own puzzle and probably a clue.
+An unoptimized build was correct, so there was nothing to debug in the usual
+sense: no crash, no bad HRESULT, and printing every argument at every call
+site showed correct values throughout — the colour with the right components
+and an alpha of 1.0, the rectangles with the right coordinates, a live brush,
+a live text format. Adding the diagnostic was itself part of the problem, as
+it turned out, though not in the way that usually means.
 
-## What is ruled out
+## The cause
 
-**The values are correct where they are passed.** Printing the arguments at
-every call site in the optimized build shows the colour struct with the right
-components and an alpha of 1.0, the rectangles with the right coordinates, a
-non-zero brush, and a non-zero text format. Nothing arrives garbled.
+The answer was in the generated assembly, which is where this should have
+started rather than where it ended up. `_fill` at `-O2`:
 
-**It is not only a lifetime hole, though there is one.** `Int(Pointer(to=x))`
-erases the origin, so `x`'s last known use is the address-taking and Mojo is
-free to end its lifetime before the call it was taken for. That is real:
-adding `_ = size` after `rt.Resize(Int(Pointer(to=size)))` is the difference
-between `Resize` returning `D2DERR_EXCEEDS_MAX_BITMAP_SIZE` and returning
-success. Every such site in `ide/` now carries a keep-alive.
-
-But keep-alives do not fix the drawing. `_fill` has one on its colour and one
-on its rectangle, both values print correctly after the call, and the
-rectangle is still not filled. Whatever else is wrong is not this.
-
-## What has not been looked at yet
-
-- `Com[...](borrowed=...)` is a non-owning view. If its destructor releases
-  anyway, ASAP destruction under optimization would drop the render target's
-  refcount mid-frame, where in a debug build the same destructor runs at end
-  of scope. `_fill` and `_label` each construct one. This is the first thing
-  to check.
-- Whether `com_method_of`'s slot lookup resolves differently once inlined.
-- Whether the failing calls have anything in common beyond returning void:
-  `Clear` and `FillRectangle` fail, `DrawText` works, and all three take an
-  address argument through the same raw layer.
-- The generated IR for one `_fill`, both ways, diffed. This is the answer, and
-  it should probably have been the first step rather than the fourth.
-
-## How to reproduce
-
-```bash
-tools/build-ide.ps1 -Out build/griddle-opt.exe -Optimized
-build/griddle-opt.exe --cmd "paint;;screenshot build/opt.png"
-tools/build-ide.ps1 -Out build/griddle-dbg.exe
-build/griddle-dbg.exe --cmd "paint;;screenshot build/dbg.png"
+```asm
+vmovups %xmm0, 48(%rsp)      ; the colour struct
+leaq    48(%rsp), %rdx       ; &colour  -> CreateSolidColorBrush
+callq   *64(%rax)
+...
+leaq    48(%rsp), %rdx       ; &colour AGAIN -- handed to FillRectangle as the rect
+callq   *136(%r9)            ; FillRectangle
 ```
 
-The two PNGs differ by about 50 KB, which is the entire user interface.
+The rectangle and the colour had been merged into one stack slot, and the
+store that filled the rectangle had been deleted. `FillRectangle` was reading
+the colour's four floats as `left, top, right, bottom`: for the editor panel,
+a rectangle `(0.114, 0.125, 0.149, 1.0)` — three hundredths of a pixel wide,
+drawn faithfully, in the right colour, eleven times a frame.
+
+The cause is one spelling:
+
+```mojo
+com_method_of[def (..., Int, Int) thin abi("C") -> NoneType, ...](this)(
+    this, Int(Pointer(to=r)), brush)
+```
+
+`Int(Pointer(to=r))` erases the origin. `r`'s last *known* use is then the
+address-taking, so nothing records that `r` is still being read, and the
+optimizer is free to drop its initialising store and give its slot away. The
+call still happens, at the right slot, with the right widths. It reads
+whatever now occupies that memory.
+
+Two things made it hard to see. It is invisible without optimization, because
+the stores survive and the slots do not get merged. And any diagnostic added
+after the call is a use, which extends the lifetime and can make the value
+correct again — the values printed fine while the drawing stayed wrong,
+because printing `r` fixed `r` and did nothing for the eight other sites.
+
+## The fix
+
+Keep the value a pointer all the way into the call. A pointer argument is an
+escape the optimizer has to respect; an integer is just a number.
+
+```mojo
+com_method_of[
+    def (..., Pointer[D2D_RECT_F, MutAnyOrigin], Int) thin abi("C") -> NoneType,
+    ...,
+](this)(this, com_addr(r), brush)
+```
+
+`com_addr` is in `std/sys/_com.mojo`, beside `com_method_of`, because this is
+a fact about calling Windows and not a fact about the IDE. Its docstring is
+the short version of this page. After the change the optimized build is
+pixel-identical to the debug build, and a scroll-and-paint frame on the 14 MB
+document costs 0.37 ms against 0.51 ms unoptimized.
+
+## The guard
+
+`tools/check-ide.ps1` greps `ide/` for `Int(Pointer(to=` and fails if it comes
+back. That is a lint rather than a test on purpose: the defect does not show
+in the build the checks run against, so no amount of exercising the debug
+binary would ever catch a regression. The one place the old spelling is still
+correct is `spikes/com/s15_class_destructor.mojo`, where an address is stored
+in a COM object's field and outlives the expression entirely — a different
+thing from a by-pointer call argument.
+
+## Still open
+
+Whether this is a Mojo bug or a documented consequence of erasing an origin.
+It is at least a very sharp edge: the safe and the unsafe spellings differ by
+one conversion, both compile, both are correct at `-O0`, and the compiler says
+nothing. A warning when the address of a local is converted to an integer and
+the local has no later use would have caught every instance of this in one
+build.

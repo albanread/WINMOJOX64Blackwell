@@ -18,6 +18,48 @@ from std.sys._winkb import winkb_interface_iid, winkb_vtable_index
 
 
 @always_inline
+def com_addr[T: AnyType, //](mut x: T) -> Pointer[T, MutAnyOrigin]:
+    """The address of a local, in a form that survives optimization.
+
+    COM takes structures by pointer everywhere -- a colour, a rectangle, a
+    format, an out-parameter -- and the obvious spelling for that,
+    `Int(Pointer(to=x))`, is wrong in a way nothing catches.
+
+    Converting an address to an integer erases the origin, and with it every
+    trace that `x` is still being read. The optimizer is then entitled to drop
+    the store that initialised `x` and to hand its stack slot to some other
+    local. The call still happens, at the right slot, with the right widths,
+    and reads whatever now occupies that memory. Nothing warns, nothing
+    crashes, and an unoptimized build is correct, so the first sign of trouble
+    is a program that behaves differently when it is built for speed.
+
+    That is not a hypothetical. Griddle's first optimized build handed
+    `FillRectangle` the *colour* struct as its rectangle, because the two
+    locals had been merged into a single slot: a rectangle three hundredths of
+    a pixel wide, drawn faithfully, invisibly, eleven times a frame. See
+    `docs/optimized-build-miscompile.md`.
+
+    Keeping the value a `Pointer` all the way into the call is what fixes it.
+    A pointer argument is an escape the optimizer has to respect; an integer
+    is just a number. So spell every by-pointer argument with this, and give
+    the parameter a `Pointer[T, MutAnyOrigin]` in the signature rather than an
+    `Int`.
+
+    Parameters:
+        T: What is being pointed at.
+
+    Args:
+        x: The local whose address is wanted. It must outlive the call, which
+            it does when the call is in the same expression.
+
+    Returns:
+        Its address: origin-erased, so it fits a C signature, but still a
+        pointer, so the store that filled it cannot be thrown away.
+    """
+    return Pointer(to=x).unsafe_origin_cast[MutAnyOrigin]()
+
+
+@always_inline
 def com_method[
     Sig: TrivialRegisterPassable, slot: Int
 ](this: OpaquePointer[MutUntrackedOrigin]) -> Sig:

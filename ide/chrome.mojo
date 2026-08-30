@@ -30,8 +30,12 @@ from std.ffi import c_int
 from std.memory import Pointer
 from std.sys.info import size_of
 from std.memory import OpaquePointer
-from std.sys._com import ComPtr, com_method_of, _guid_bytes
-from std.sys._winkb import winkb_interface_iid, winkb_struct_size
+from std.sys._com import ComPtr, com_addr, com_method_of, _guid_bytes
+from std.sys._winkb import (
+    winkb_constant,
+    winkb_interface_iid,
+    winkb_struct_size,
+)
 from std.sys.com import Com
 
 from ide.win32 import RECT, win32
@@ -270,6 +274,10 @@ struct Chrome(ImplicitlyCopyable, Movable):
     # the window procedure has one pointer to work with and everything it
     # needs has to be reachable from it.
     var doc: Int
+    # Whether this target presents without waiting for the vertical blank.
+    # Kept because a lost device has to be rebuilt the same way it was built,
+    # and because a measurement that silently reverts to vsync is a lie.
+    var immediate: Bool
 
     def __init__(out self):
         """Nothing brought up yet."""
@@ -279,15 +287,22 @@ struct Chrome(ImplicitlyCopyable, Movable):
         self.text_format = 0
         self.drop_target = 0
         self.doc = 0
+        self.immediate = False
 
 
-def bring_up(hwnd: Int, width: Int, height: Int) raises -> Chrome:
+def bring_up(
+    hwnd: Int, width: Int, height: Int, immediate: Bool = False
+) raises -> Chrome:
     """Create the Direct2D and DirectWrite objects this window draws with.
 
     Args:
         hwnd: The window to present to.
         width: Client width in pixels.
         height: Client height in pixels.
+        immediate: Present without waiting for the vertical blank. Off, because
+            tearing is not what anyone wants to look at. On, a frame costs what
+            it costs rather than what the display refreshes at, which is the
+            only way to find out how much headroom the grid actually has.
 
     Returns:
         The chrome, ready to draw.
@@ -341,12 +356,22 @@ def bring_up(hwnd: Int, width: Int, height: Int) raises -> Chrome:
     var hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES()
     hwnd_props.hwnd = hwnd
     hwnd_props.pixelSize = D2D_SIZE_U(UInt32(width), UInt32(height))
+    chrome.immediate = immediate
+    if immediate:
+        # From the metadata, not from memory: this enumeration has a
+        # RETAIN_CONTENTS at 1 and an IMMEDIATELY at 2, and guessing picked
+        # the wrong one -- which does not fail, it just quietly keeps
+        # presenting on the vertical blank and reports the refresh rate as
+        # though it were the frame cost.
+        hwnd_props.presentOptions = UInt32(
+            winkb_constant["D2D1_PRESENT_OPTIONS_IMMEDIATELY"]()
+        )
 
     var factory = Com[StaticString("ID2D1Factory")](borrowed=chrome.factory)
     _ = factory.CreateHwndRenderTarget(
-        Int(Pointer(to=rt_props)),
-        Int(Pointer(to=hwnd_props)),
-        Pointer(to=chrome.target).unsafe_origin_cast[MutAnyOrigin](),
+        com_addr(rt_props),
+        com_addr(hwnd_props),
+        com_addr(chrome.target),
     )
     _ = rt_props
     _ = hwnd_props
@@ -357,7 +382,7 @@ def bring_up(hwnd: Int, width: Int, height: Int) raises -> Chrome:
     hr = DWriteCreateFactory(
         0,  # DWRITE_FACTORY_TYPE_SHARED
         Int(dw_iid.unsafe_ptr()),
-        Pointer(to=chrome.dwrite).unsafe_origin_cast[MutAnyOrigin](),
+        com_addr(chrome.dwrite),
     )
     _ = dw_iid
     if hr != 0 or chrome.dwrite == 0:
@@ -377,7 +402,7 @@ def bring_up(hwnd: Int, width: Int, height: Int) raises -> Chrome:
         UInt32(5),  # DWRITE_FONT_STRETCH_NORMAL
         Float32(12.0),
         Int(locale.unsafe_ptr()),
-        Pointer(to=chrome.text_format).unsafe_origin_cast[MutAnyOrigin](),
+        com_addr(chrome.text_format),
     )
     _ = family
     _ = locale
@@ -417,7 +442,7 @@ def draw(chrome: Chrome, width: Int, height: Int) raises -> Layout:
     # Resize first: a window that grew since the last paint would otherwise
     # present a stretched copy of the old surface.
     var size = D2D_SIZE_U(UInt32(width), UInt32(height))
-    _ = rt.Resize(Int(Pointer(to=size)))
+    _ = rt.Resize(com_addr(size))
     _ = size
 
     var this = OpaquePointer[MutUntrackedOrigin](
@@ -432,11 +457,12 @@ def draw(chrome: Chrome, width: Int, height: Int) raises -> Layout:
     var ground = D2D_COLOR_F.rgb(GROUND)
     com_method_of[
         def (
-            OpaquePointer[MutUntrackedOrigin], Int
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[D2D_COLOR_F, MutAnyOrigin],
         ) thin abi("C") -> NoneType,
         "ID2D1HwndRenderTarget",
         "Clear",
-    ](this)(this, Int(Pointer(to=ground)))
+    ](this)(this, com_addr(ground))
     _ = ground
 
     _fill(chrome.target, layout.editor(), PANEL)
@@ -530,11 +556,13 @@ def finish(chrome: Chrome) raises -> Int:
     var tag2 = Int(0)
     var hr = com_method_of[
         def (
-            OpaquePointer[MutUntrackedOrigin], Int, Int
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[Int, MutAnyOrigin],
+            Pointer[Int, MutAnyOrigin],
         ) thin abi("C") -> Int32,
         "ID2D1HwndRenderTarget",
         "EndDraw",
-    ](this)(this, Int(Pointer(to=tag1)), Int(Pointer(to=tag2)))
+    ](this)(this, com_addr(tag1), com_addr(tag2))
     _ = tag1
     _ = tag2
     return Int(hr)
@@ -546,9 +574,9 @@ def _fill(target: Int, rect: D2D_RECT_F, colour: Int) raises:
     var c = D2D_COLOR_F.rgb(colour)
     var brush = Int(0)
     _ = rt.CreateSolidColorBrush(
-        Int(Pointer(to=c)),
+        com_addr(c),
         0,
-        Pointer(to=brush).unsafe_origin_cast[MutAnyOrigin](),
+        com_addr(brush),
     )
     _ = c
     if brush == 0:
@@ -557,11 +585,13 @@ def _fill(target: Int, rect: D2D_RECT_F, colour: Int) raises:
     var this = OpaquePointer[MutUntrackedOrigin](unsafe_from_address=target)
     com_method_of[
         def (
-            OpaquePointer[MutUntrackedOrigin], Int, Int
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[D2D_RECT_F, MutAnyOrigin],
+            Int,
         ) thin abi("C") -> NoneType,
         "ID2D1HwndRenderTarget",
         "FillRectangle",
-    ](this)(this, Int(Pointer(to=r)), brush)
+    ](this)(this, com_addr(r), brush)
     _ = r
     _release(brush)
 
@@ -575,9 +605,9 @@ def _label(chrome: Chrome, text: StaticString, count: Int,
     var c = D2D_COLOR_F.rgb(colour)
     var brush = Int(0)
     _ = rt.CreateSolidColorBrush(
-        Int(Pointer(to=c)),
+        com_addr(c),
         0,
-        Pointer(to=brush).unsafe_origin_cast[MutAnyOrigin](),
+        com_addr(brush),
     )
     _ = c
     if brush == 0:
@@ -590,7 +620,13 @@ def _label(chrome: Chrome, text: StaticString, count: Int,
     com_method_of[
         def (
             OpaquePointer[MutUntrackedOrigin],
-            Int, UInt32, Int, Int, Int, UInt32, UInt32,
+            Int,
+            UInt32,
+            Int,
+            Pointer[D2D_RECT_F, MutAnyOrigin],
+            Int,
+            UInt32,
+            UInt32,
         ) thin abi("C") -> NoneType,
         "ID2D1HwndRenderTarget",
         "DrawText",
@@ -599,7 +635,7 @@ def _label(chrome: Chrome, text: StaticString, count: Int,
         Int(wide_text.unsafe_ptr()),
         UInt32(count),
         chrome.text_format,
-        Int(Pointer(to=box)),
+        com_addr(box),
         brush,
         UInt32(0),
         UInt32(0),

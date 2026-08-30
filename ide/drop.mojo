@@ -23,7 +23,7 @@ from std.ffi import c_int
 from std.os import getenv
 from std.memory import OpaquePointer, Pointer
 from std.sys.info import size_of
-from std.sys._com import ComPtr, com_method_of
+from std.sys._com import ComPtr, com_addr, com_method_of
 from std.sys._winkb import winkb_constant, winkb_struct_size
 
 from ide.win32 import win32
@@ -126,11 +126,13 @@ def paths_from(data_object: Int) raises -> String:
     )
     var hr = com_method_of[
         def (
-            OpaquePointer[MutUntrackedOrigin], Int, Int
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[FORMATETC, MutAnyOrigin],
+            Pointer[STGMEDIUM, MutAnyOrigin],
         ) thin abi("C") -> Int32,
         "IDataObject",
         "GetData",
-    ](this)(this, Int(Pointer(to=fmt)), Int(Pointer(to=medium)))
+    ](this)(this, com_addr(fmt), com_addr(medium))
     _ = fmt
     if hr != 0 or medium.handle == 0:
         return String("")
@@ -169,9 +171,12 @@ def paths_from(data_object: Int) raises -> String:
         out += "\n"
 
     var ReleaseStgMedium = win32[
-        def (Int) thin abi("C") -> NoneType, "ReleaseStgMedium"
+        def (
+            Pointer[STGMEDIUM, MutAnyOrigin]
+        ) thin abi("C") -> NoneType,
+        "ReleaseStgMedium",
     ]()
-    _ = ReleaseStgMedium(Int(Pointer(to=medium)))
+    _ = ReleaseStgMedium(com_addr(medium))
     _ = medium
     return out
 
@@ -319,20 +324,28 @@ def simulate(target: Int) raises -> String:
     var effect = UInt32(0)
     var enter = com_method_of[
         def (
-            OpaquePointer[MutUntrackedOrigin], Int, UInt32, Int, Int
+            OpaquePointer[MutUntrackedOrigin],
+            Int,
+            UInt32,
+            Int,
+            Pointer[UInt32, MutAnyOrigin],
         ) thin abi("C") -> Int32,
         "IDropTarget",
         "DragEnter",
-    ](this)(this, 0, UInt32(0), 0, Int(Pointer(to=effect)))
+    ](this)(this, 0, UInt32(0), 0, com_addr(effect))
 
     var drop_effect = UInt32(0)
     var dropped = com_method_of[
         def (
-            OpaquePointer[MutUntrackedOrigin], Int, UInt32, Int, Int
+            OpaquePointer[MutUntrackedOrigin],
+            Int,
+            UInt32,
+            Int,
+            Pointer[UInt32, MutAnyOrigin],
         ) thin abi("C") -> Int32,
         "IDropTarget",
         "Drop",
-    ](this)(this, 0, UInt32(0), 0, Int(Pointer(to=drop_effect)))
+    ](this)(this, 0, UInt32(0), 0, com_addr(drop_effect))
 
     return (
         String("refcount=") + String(refs)

@@ -245,6 +245,23 @@ if ($out -match '(\d+) dropped') {
     Record 'grid-frame-budget' 'FAIL' 'no frame report came back'
 }
 
+# 15. No address is laundered through an integer on its way into a call.
+# `Int(Pointer(to=x))` erases the origin, and the optimizer then drops the
+# store that filled x and reuses its slot -- correct unoptimized, silently
+# wrong optimized. `com_addr` is the spelling that survives. This check is a
+# grep because the failure it guards is invisible in a debug build, so no
+# amount of running the debug binary would ever catch it coming back.
+$ideDir = Join-Path (Split-Path -Parent $PSScriptRoot) 'ide'
+$offenders = @(Get-ChildItem $ideDir -Filter *.mojo |
+    Select-String -Pattern 'Int\(Pointer\(to=' |
+    Where-Object { $_.Line -notmatch '^\s*#' })
+if ($offenders.Count -eq 0) {
+    Record 'no-int-addresses' 'PASS' 'every by-pointer argument stays a pointer'
+} else {
+    $where = ($offenders | ForEach-Object { "$($_.Filename):$($_.LineNumber)" }) -join ', '
+    Record 'no-int-addresses' 'FAIL' "use com_addr instead: $where"
+}
+
 # ---- summary ---------------------------------------------------------------
 $bad = @($results | Where-Object Verdict -eq 'FAIL').Count
 Write-Host ""

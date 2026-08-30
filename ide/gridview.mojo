@@ -25,7 +25,7 @@ anything cleverer would be solving a problem this does not have.
 
 from std.ffi import c_int
 from std.memory import OpaquePointer, Pointer, alloc
-from std.sys._com import com_method_of
+from std.sys._com import com_addr, com_method_of
 from std.sys._winkb import winkb_constant
 
 from ide.chrome import Chrome, D2D_COLOR_F, D2D_RECT_F, INK, Layout
@@ -156,11 +156,13 @@ def draw_text(
     var clip = region
     com_method_of[
         def (
-            OpaquePointer[MutUntrackedOrigin], Int, UInt32
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[D2D_RECT_F, MutAnyOrigin],
+            UInt32,
         ) thin abi("C") -> NoneType,
         "ID2D1RenderTarget",
         "PushAxisAlignedClip",
-    ](this)(this, Int(Pointer(to=clip)), UInt32(0))
+    ](this)(this, com_addr(clip), UInt32(0))
     _ = clip
 
     var height = region.bottom - region.top
@@ -256,7 +258,12 @@ def _make_layout(
     _ = com_method_of[
         def (
             OpaquePointer[MutUntrackedOrigin],
-            Int, UInt32, Int, Float32, Float32, Int,
+            Int,
+            UInt32,
+            Int,
+            Float32,
+            Float32,
+            Pointer[Int, MutAnyOrigin],
         ) thin abi("C") -> Int32,
         "IDWriteFactory",
         "CreateTextLayout",
@@ -267,7 +274,7 @@ def _make_layout(
         chrome.text_format,
         width,
         1000.0,
-        Int(Pointer(to=layout)),
+        com_addr(layout),
     )
     _ = wide
     return layout
@@ -306,11 +313,14 @@ def _brush(target: Int, colour: Int) raises -> Int:
     var brush = Int(0)
     _ = com_method_of[
         def (
-            OpaquePointer[MutUntrackedOrigin], Int, Int, Int
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[D2D_COLOR_F, MutAnyOrigin],
+            Int,
+            Pointer[Int, MutAnyOrigin],
         ) thin abi("C") -> Int32,
         "ID2D1RenderTarget",
         "CreateSolidColorBrush",
-    ](this)(this, Int(Pointer(to=c)), 0, Int(Pointer(to=brush)))
+    ](this)(this, com_addr(c), 0, com_addr(brush))
     _ = c
     return brush
 
@@ -357,6 +367,19 @@ def doc_of(hwnd: Int) raises -> Int:
     if stored == 0:
         return 0
     return Pointer[Chrome, MutAnyOrigin](unsafe_from_address=stored)[].doc
+
+
+def presents_immediately(hwnd: Int) raises -> Bool:
+    """Whether this window's target skips the wait for the vertical blank."""
+    var GetWindowLongPtrW = win32[
+        def (Int, c_int) thin abi("C") -> Int, "GetWindowLongPtrW"
+    ]()
+    var stored = GetWindowLongPtrW(
+        hwnd, c_int(winkb_constant["GWLP_USERDATA"]())
+    )
+    if stored == 0:
+        return False
+    return Pointer[Chrome, MutAnyOrigin](unsafe_from_address=stored)[].immediate
 
 
 def page_lines(hwnd: Int) raises -> Int:

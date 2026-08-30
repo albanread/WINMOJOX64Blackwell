@@ -7,6 +7,7 @@
 # all, which is the point of having the keyword.
 
 from std.memory import Pointer
+from std.sys._com import com_addr
 from std.sys._win32 import Win32Module
 
 
@@ -20,12 +21,13 @@ fn count_window(hwnd: Int, lparam: Int) -> Int32:
 def main() raises:
     let enum_windows = Win32Module("user32.dll").function[
         def (
-            def (Int, Int) thin abi("C") -> Int32, Int
+            def (Int, Int) thin abi("C") -> Int32,
+            Pointer[Int, MutAnyOrigin],
         ) thin abi("C") -> Int32
     ]("EnumWindows")
 
     var count: Int = 0
-    let ok = enum_windows(count_window, Int(Pointer(to=count)))
+    let ok = enum_windows(count_window, com_addr(count))
     print("EnumWindows returned", ok, "and visited", count, "windows")
     if ok == 0 or count == 0:
         raise Error("enumeration failed or found nothing")

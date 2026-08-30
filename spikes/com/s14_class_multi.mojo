@@ -10,7 +10,7 @@
 # This proves the keyword reaches it.
 
 from std.memory import Pointer, OpaquePointer
-from std.sys._com import ComPtr, com_method_of
+from std.sys._com import ComPtr, com_addr, com_method_of
 from std.sys.com import _guid_bytes
 from std.sys._winkb import winkb_interface_iid
 
@@ -48,10 +48,12 @@ def main() raises:
     var iid = _guid_bytes(winkb_interface_iid["IDropSource"]())
     var out = Int(0)
     var hr = com_method_of[
-        def (OpaquePointer[MutUntrackedOrigin], Int, Int) thin abi("C") -> Int32,
+        def (
+            OpaquePointer[MutUntrackedOrigin], Int, Pointer[Int, MutAnyOrigin]
+        ) thin abi("C") -> Int32,
         "IUnknown", "QueryInterface",
     ](obj.interface())(obj.interface(), Int(iid.unsafe_ptr()),
-                       Int(Pointer(to=out)))
+                       com_addr(out))
     _ = iid
     print("class with two interfaces: QI hr", hr, " distinct ptr:", out != primary)
     if hr != 0 or out == primary:

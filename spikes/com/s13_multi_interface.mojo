@@ -21,14 +21,14 @@
 # interface keeps the object alive and the last Release frees it once.
 
 from std.memory import Pointer, OpaquePointer
-from std.sys._com import ComPtr, com_method_of
+from std.sys._com import ComPtr, com_addr, com_method_of
 from std.sys.com import ComClassBuilder, _guid_bytes
 from std.sys._winkb import winkb_interface_iid
 
 comptime DROPEFFECT_COPY = UInt32(1)
 
 comptime QI_SIG = def (
-    OpaquePointer[MutUntrackedOrigin], Int, Int
+    OpaquePointer[MutUntrackedOrigin], Int, Pointer[Int, MutAnyOrigin]
 ) thin abi("C") -> Int32
 comptime UNK_SIG = def (
     OpaquePointer[MutUntrackedOrigin]
@@ -95,7 +95,7 @@ def query[iface: StaticString](p: Int) raises -> Int:
     )(
         OpaquePointer[MutUntrackedOrigin](unsafe_from_address=p),
         Int(iid.unsafe_ptr()),
-        Int(Pointer(to=out)),
+        com_addr(out),
     )
     # The IID bytes must outlive the call: ASAP destruction would otherwise
     # free them while QueryInterface is still comparing against them, and the

@@ -90,8 +90,9 @@ def recreate(chrome: Pointer[Chrome, MutAnyOrigin], hwnd: Int, width: Int,
     var drop = chrome[].drop_target
     if doc != 0:
         release_cache(Pointer[Doc, MutAnyOrigin](unsafe_from_address=doc)[].grid)
+    var immediate = chrome[].immediate
     release(chrome[])
-    chrome[] = bring_up(hwnd, width, height)
+    chrome[] = bring_up(hwnd, width, height, immediate)
     chrome[].doc = doc
     chrome[].drop_target = drop
 
@@ -390,6 +391,10 @@ def main() raises:
     # empty one" claim gets tested without shipping a 12 MB fixture.
     var open_path = String("")
     var synth_lines = 0
+    # Presenting on the vertical blank pins every frame to the refresh rate,
+    # which is right for looking at and useless for measuring: the mean comes
+    # back as 16.67 ms whether a frame took one millisecond or fifteen.
+    var no_vsync = False
     var args = argv()
     for i in range(len(args)):
         if args[i] == "--ms" and i + 1 < len(args):
@@ -404,6 +409,8 @@ def main() raises:
             open_path = String(args[i + 1])
         if args[i] == "--lines" and i + 1 < len(args):
             synth_lines = Int(args[i + 1])
+        if args[i] == "--no-vsync":
+            no_vsync = True
 
     var GetModuleHandleW = win32[
         def (Int) thin abi("C") -> Int, "GetModuleHandleW"
@@ -508,7 +515,10 @@ def main() raises:
     # all integers so it would survive that; the document below is not, and
     # the two should not be spelled differently for a reason that subtle.
     chrome_store.unsafe_write(bring_up(
-        hwnd, Int(rc0.right - rc0.left), Int(rc0.bottom - rc0.top)
+        hwnd,
+        Int(rc0.right - rc0.left),
+        Int(rc0.bottom - rc0.top),
+        immediate=no_vsync,
     ))
     var SetWindowLongPtrW = win32[
         def (Int, c_int, Int) thin abi("C") -> Int, "SetWindowLongPtrW"

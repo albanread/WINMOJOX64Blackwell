@@ -15,12 +15,12 @@
 # so a call made through the base pointer reaches the same implementation.
 
 from std.memory import Pointer, OpaquePointer
-from std.sys._com import ComPtr, com_method_of, _guid_bytes
+from std.sys._com import ComPtr, com_addr, com_method_of, _guid_bytes
 from std.sys.com import ComClassBuilder
 from std.sys._winkb import winkb_interface_iid
 
 comptime QI_SIG = def (
-    OpaquePointer[MutUntrackedOrigin], Int, Int
+    OpaquePointer[MutUntrackedOrigin], Int, Pointer[Int, MutAnyOrigin]
 ) thin abi("C") -> Int32
 comptime UNK_SIG = def (
     OpaquePointer[MutUntrackedOrigin]
@@ -63,7 +63,7 @@ def query[iface: StaticString](p: Int) raises -> Int:
     )(
         OpaquePointer[MutUntrackedOrigin](unsafe_from_address=p),
         Int(iid.unsafe_ptr()),
-        Int(Pointer(to=out)),
+        com_addr(out),
     )
     _ = iid
     if hr != 0:

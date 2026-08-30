@@ -27,6 +27,7 @@ from ide.drop import last as last_drop, simulate
 from ide.gridview import (
     counters,
     page_lines,
+    presents_immediately,
     reset_counters,
     scroll_by,
     scroll_to,
@@ -190,16 +191,27 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             # twice -- which is what a person sees as a stutter.
             if took > 25_000_000:
                 dropped += 1
-        var each = Float64(perf_counter_ns() - start) / Float64(runs)
-        # The mean is pinned to the refresh interval by the present, so it is
-        # not the interesting number: what a scroll actually costs cannot be
-        # read off it. The dropped count can, and that is the claim an editor
-        # has to make -- every frame arrived on the refresh it was due.
+        var each = Float64(perf_counter_ns() - start) / 1_000_000.0 / Float64(
+            runs
+        )
+        var high = Float64(worst) / 1_000_000.0
+        # Two different measurements, and saying which one this is matters.
+        # Presenting on the vertical blank pins the mean to the refresh
+        # interval whatever the drawing cost, so the honest claim there is the
+        # dropped count: every frame arrived on the refresh it was due. With
+        # --no-vsync the mean is the drawing cost, and the budget ratio means
+        # something.
+        if presents_immediately(hwnd):
+            return (
+                String(runs) + " frames, " + String(each)
+                + " ms mean, worst " + String(high)
+                + " ms  (vsync off: " + String(16.6667 / each)
+                + "x the 60Hz budget)\n" + counters(hwnd)
+            )
         return (
-            String(runs) + " frames, "
-            + String(each / 1_000_000.0) + " ms mean (vsync-bound), worst "
-            + String(Float64(worst) / 1_000_000.0) + " ms, "
-            + String(dropped) + " dropped\n" + counters(hwnd)
+            String(runs) + " frames, " + String(each)
+            + " ms mean (pinned to the vertical blank), worst " + String(high)
+            + " ms, " + String(dropped) + " dropped\n" + counters(hwnd)
         )
 
     if verb == "grid":
