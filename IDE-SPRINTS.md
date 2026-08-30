@@ -108,15 +108,33 @@ and not in our tree; each is small and named:
 - **Diagnostics hand-off**: errors were cleared unconditionally after
   broadcast, so every expression failure printed as nothing; make the
   hand-off conditional on a listener.
-*Acceptance: `expr String("hi ") + String(42)` evaluates in the debuggee
-from the CLI, and a deliberately bad expression fails with words.*
+*Acceptance MET: `expr String("hi ") + String(42)` evaluates in the
+debuggee, and `expr nonexistent_thing + 1` answers "use of unknown
+declaration". The order mattered: the diagnostics fix had to land first,
+because until it did the stdlib failure was an EMPTY error that read as the
+debugger dying. One new export --
+`Broadcaster::BroadcasterImpl::EventTypeHasListeners` -- is what makes
+"is anyone listening?" answerable from a plugin. Self-location is
+`GetModuleHandleEx` on our own address plus `GetModuleFileNameW`, the
+Windows spelling of their `dladdr`, and it works with no environment set.*
+
+*Known frontier, inherited not introduced: the CLI's fix-it rewrites
+`1 + 41` to `_ = 1 + 41`, which runs and answers nothing. Frame locals are
+still not injected into the JIT, so `total + 41` cannot work yet -- the Mac
+spike's two erasures. Both are the semantic-type work, deferred with their
+map.*
 
 **0.0.5 — the check and the ship (S).** `check-ide.ps1` gains the dap-probe
 as a required check whenever the plugin ships; the release manifest gains
 `lldb-dap.exe`; a missing-variables regression is treated as packaging
 breakage, exactly the Mac rule.
-*Acceptance: the probe runs green against the RELEASE layout with an empty
-environment.*
+*Acceptance MET against the build tree: `tools/check-debugger.ps1` reports
+**5 checks: 5 passed** -- fixture builds, DWARF in the image, breakpoint
+binds, `frame variable` returns a/b/sum, DAP probe gets 3 variables -- with
+no `WINMOJO_ROOT` set, so plugin self-location carries it. `-Root <release>`
+runs the same five against a packaged layout, which is how a packaging
+regression gets caught; running it that way waits on the next release build.
+The manifest now ships `lldb-dap.exe`.*
 
 **Deliberately deferred, with their map in hand:** semantic types. The Mac
 spike proved the deep problem is two compiler erasures (representation and
