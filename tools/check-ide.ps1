@@ -144,6 +144,20 @@ if ($out -match "no menu 'Nope'") {
     Record 'menu-unknown' 'FAIL' 'a missing menu was not refused'
 }
 
+# ---- 9. the window is a live OLE drop target -------------------------------
+# The refcount is the load-bearing number: two means Windows took a
+# reference to an object this IDE implemented in Mojo with the `class`
+# keyword, and is holding it across the process boundary. The paths a real
+# drag carries need Explorer, which is the documented manual half.
+$out = Ask 'drop-test'
+if ($out -match 'refcount=2' -and $out -match 'DragEnter hr=0' -and $out -match 'Drop hr=0') {
+    Record 'drop-target' 'PASS' 'OLE holds it; DragEnter and Drop dispatch'
+} elseif ($out -match 'refcount=(\d+)') {
+    Record 'drop-target' 'FAIL' "refcount $($matches[1]), wanted 2"
+} else {
+    Record 'drop-target' 'FAIL' (($out -split "`n")[-2])
+}
+
 # ---- summary ---------------------------------------------------------------
 $bad = @($results | Where-Object Verdict -eq 'FAIL').Count
 Write-Host ""

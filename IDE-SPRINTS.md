@@ -309,8 +309,34 @@ for it before a grid exists to scroll.*
 `class DropTarget(IDropTarget)` — the C3 milestone was named for this
 window before the window existed. Dropped file paths echo to the status
 line (the editor arrives in M1).
-*Acceptance: the s10 harness drives a simulated drop and the path appears;
-one manual drag from Explorer, documented as manual.*
+*Acceptance MET (2026-08-30): `check-ide.ps1` is at **10 checks: 10
+passed**, the new one being*
+
+    refcount=2 (2 = ours + OLE's)  DragEnter hr=0 effect=1
+    Drop hr=0 effect=1  recorded: (a drop carrying no file paths)
+
+*The load-bearing number is the refcount. Two means **Windows took a
+reference to an object this IDE implemented in Mojo** -- `class
+DropTarget(IDropTarget)`, the keyword this repository added to the language
+-- and is holding it across the process boundary. `s10` proved that was
+possible with an object assembled by hand out of raw function pointers;
+this is the same proof for code a person would actually write. The
+simulated drop drives the object's own vtable at the metadata's slots,
+which is what OLE's proxy does on a real drag.*
+
+***The manual half, stated as manual:*** *only Explorer supplies a real
+`IDataObject`, so path extraction -- `GetData` for `CF_HDROP`, then
+`DragQueryFileW` -- is exercised by dragging a file onto the window by hand
+and reading `griddle-cmd drops`. It is written and compiled but the
+automated check cannot reach it, and saying otherwise would be the kind of
+check that passes while the feature is broken.*
+
+*One find, from the compile-time layout guard rather than from a crash:
+**`STGMEDIUM` is 32 bytes, not 24.** The obvious reading -- a tag, a handle
+and a release pointer -- gives 24, and Windows would have written past the
+end of a struct that looked right. The guard is the reason that was a build
+failure instead of a memory bug, and it is exactly what the metadata rule
+exists for.*
 
 ---
 

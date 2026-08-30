@@ -261,6 +261,10 @@ struct Chrome(ImplicitlyCopyable, Movable):
     var target: Int
     var dwrite: Int
     var text_format: Int
+    # The drop target's interface pointer. It lives here because this struct
+    # is what the window keeps, and a captureless procedure has exactly one
+    # place to look for anything.
+    var drop_target: Int
 
     def __init__(out self):
         """Nothing brought up yet."""
@@ -268,6 +272,7 @@ struct Chrome(ImplicitlyCopyable, Movable):
         self.target = 0
         self.dwrite = 0
         self.text_format = 0
+        self.drop_target = 0
 
 
 def bring_up(hwnd: Int, width: Int, height: Int) raises -> Chrome:

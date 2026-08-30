@@ -22,6 +22,8 @@ polling, no race, no window required of the caller.
 
 
 from ide.chrome import D2D_RECT_F, Layout
+from ide.chrome import Chrome
+from ide.drop import last as last_drop, simulate
 from ide.menu import invoke as invoke_menu
 from ide.screenshot import capture
 from ide.win32 import RECT, win32
@@ -98,7 +100,9 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             "echo <text>       answer with <text>, for round-trip checks\n"
             "screenshot [path] photograph this window to a PNG\n"
             "views             where every region of the chrome sits\n"
-            "menu T > I        invoke a menu item by its visible name"
+            "menu T > I        invoke a menu item by its visible name\n"
+            "drops             the paths from the most recent drop\n"
+            "drop-test         drive the drop target through its own vtable"
         )
 
     if verb == "echo":
@@ -127,6 +131,29 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         out += _region("output", l.output())
         out += _region("status", l.status())
         return out
+
+    if verb == "drops":
+        # What was dropped most recently. The callbacks are reached through a
+        # C-ABI vtable and cannot answer up the stack, so they leave the
+        # paths somewhere both the status line and this verb can read.
+        var dropped = last_drop()
+        if dropped.byte_length() == 0:
+            return String("nothing dropped yet")
+        return dropped
+
+    if verb == "drop-test":
+        # Drive our own drop target the way OLE's proxy does on a real drag:
+        # straight through its vtable at the metadata's slots. It proves the
+        # object is live and callable and that its callbacks run; the paths
+        # a real drag carries come from Explorer, which is the manual half.
+        var GetWindowLongPtrW = win32[
+            def (Int, c_int) thin abi("C") -> Int, "GetWindowLongPtrW"
+        ]()
+        var stored = GetWindowLongPtrW(hwnd, c_int(-21))  # GWLP_USERDATA
+        if stored == 0:
+            return String("error: this window has no state")
+        var chrome = Pointer[Chrome, MutAnyOrigin](unsafe_from_address=stored)
+        return simulate(chrome[].drop_target)
 
     if verb == "menu":
         return invoke_menu(hwnd, rest)

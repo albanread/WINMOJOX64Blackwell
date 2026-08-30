@@ -32,11 +32,13 @@ from std.python._cpython import _fn_ptr_as_opaque
 from std.sys.info import size_of
 from std.sys._win32 import Win32Module
 from std.sys._winkb import winkb_constant, winkb_struct_size
+from std.sys.com import Apartment
 
 from std.memory import alloc
 
 from ide.agent import agent_command
 from ide.chrome import Chrome, bring_up, draw, release
+from ide.drop import register as register_drop, revoke as revoke_drop
 from ide.menu import build as build_menu
 from ide.win32 import (
     COPYDATASTRUCT,
@@ -355,6 +357,14 @@ def main() raises:
         hwnd, c_int(winkb_constant["GWLP_USERDATA"]()), Int(chrome_store)
     )
 
+    # Drag and drop. OleInitialize (not CoInitializeEx) is what the drag
+    # subsystem requires, and the apartment stays open for the life of the
+    # window -- revoking happens before it closes.
+    var ole = Apartment(ole=True)
+    ole.__enter__()
+    var drop = register_drop(hwnd)
+    chrome_store[].drop_target = drop.address()
+
     var dark = dark_titlebar(hwnd)
     _ = ShowWindow(hwnd, c_int(winkb_constant["SW_SHOW"]()))
     print(
@@ -486,6 +496,11 @@ def main() raises:
         _ = TranslateMessage(Pointer(to=msg).unsafe_origin_cast[MutAnyOrigin]())
         _ = DispatchMessageW(Pointer(to=msg).unsafe_origin_cast[MutAnyOrigin]())
 
+    # Give the target back before the window goes: OLE holds a reference to
+    # it, and revoking is what returns that one.
+    revoke_drop(hwnd)
+    _ = drop
+    ole.__exit__()
     release(chrome_store[])
     chrome_store.unsafe_free()
     print("griddle: closed cleanly")
