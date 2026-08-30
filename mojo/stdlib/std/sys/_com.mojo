@@ -23,27 +23,26 @@ def com_addr[T: AnyType, //](mut x: T) -> Pointer[T, MutAnyOrigin]:
 
     COM takes structures by pointer everywhere -- a colour, a rectangle, a
     format, an out-parameter -- and the obvious spelling for that,
-    `Int(Pointer(to=x))`, is wrong in a way nothing catches.
+    `Int(Pointer(to=x))`, throws away exactly what the compiler needs to keep.
 
     Converting an address to an integer erases the origin, and with it every
-    trace that `x` is still being read. The optimizer is then entitled to drop
-    the store that initialised `x` and to hand its stack slot to some other
-    local. The call still happens, at the right slot, with the right widths,
-    and reads whatever now occupies that memory. Nothing warns, nothing
-    crashes, and an unoptimized build is correct, so the first sign of trouble
-    is a program that behaves differently when it is built for speed.
+    trace that `x` is still being read. Dropping the store that initialised
+    `x` and handing its slot to another local is then the correct thing for an
+    optimizer to do with what it was told. The call still happens, at the
+    right slot, with the right widths, and reads whatever now occupies that
+    memory. An unoptimized build is correct, so the first sign of trouble is a
+    program that behaves differently when it is built for speed.
 
     That is not a hypothetical. Griddle's first optimized build handed
     `FillRectangle` the *colour* struct as its rectangle, because the two
     locals had been merged into a single slot: a rectangle three hundredths of
     a pixel wide, drawn faithfully, invisibly, eleven times a frame. See
-    `docs/optimized-build-miscompile.md`.
+    `docs/addresses-and-optimization.md`.
 
-    Keeping the value a `Pointer` all the way into the call is what fixes it.
-    A pointer argument is an escape the optimizer has to respect; an integer
-    is just a number. So spell every by-pointer argument with this, and give
-    the parameter a `Pointer[T, MutAnyOrigin]` in the signature rather than an
-    `Int`.
+    Keeping the value a `Pointer` all the way into the call is what states the
+    fact rather than discarding it. So spell every by-pointer argument with
+    this, and give the parameter a `Pointer[T, MutAnyOrigin]` in the signature
+    rather than an `Int`.
 
     Parameters:
         T: What is being pointed at.

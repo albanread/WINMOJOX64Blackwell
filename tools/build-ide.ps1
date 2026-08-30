@@ -11,9 +11,9 @@ param(
     [switch]$Check,
     # Debug is the default because that is the build the debugger work in
     # sprint 0.0 exists to serve, and because -O2 inlines the frames a person
-    # wants to stand in. -Optimized is what the frame-budget runs use; both
-    # draw identically, which was not true until
-    # docs/optimized-build-miscompile.md got written.
+    # wants to stand in, and because debugging belongs at -O0. -Optimized is
+    # what the frame-budget runs use; both draw identically, which was not
+    # true until docs/addresses-and-optimization.md got written.
     [switch]$Optimized
 )
 $ErrorActionPreference = 'Stop'

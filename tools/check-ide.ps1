@@ -246,11 +246,11 @@ if ($out -match '(\d+) dropped') {
 }
 
 # 15. No address is laundered through an integer on its way into a call.
-# `Int(Pointer(to=x))` erases the origin, and the optimizer then drops the
-# store that filled x and reuses its slot -- correct unoptimized, silently
-# wrong optimized. `com_addr` is the spelling that survives. This check is a
-# grep because the failure it guards is invisible in a debug build, so no
-# amount of running the debug binary would ever catch it coming back.
+# `Int(Pointer(to=x))` erases the origin, so the compiler is no longer told
+# that x is read after the call, and dropping its store is then correct. See
+# docs/addresses-and-optimization.md. `com_addr` states the fact instead.
+# This check is a grep because what it guards is invisible in a debug build,
+# so no amount of running the debug binary would ever catch it coming back.
 $ideDir = Join-Path (Split-Path -Parent $PSScriptRoot) 'ide'
 $offenders = @(Get-ChildItem $ideDir -Filter *.mojo |
     Select-String -Pattern 'Int\(Pointer\(to=' |
