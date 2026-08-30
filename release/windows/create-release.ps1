@@ -56,6 +56,10 @@ $artifacts = [ordered]@{
     'bin\lld.exe' = 'bazel-bin\external\+llvm_configure+llvm-project\lld\lld.exe'
     'bin\lld-link.exe' = 'bazel-bin\external\+llvm_configure+llvm-project\lld\lld.exe'
     'bin\lldb-argdumper.exe' = 'bazel-bin\external\+llvm_configure+llvm-project\lldb\lldb-argdumper.exe'
+    # The DAP adapter an IDE talks to. Ships beside the CLI debugger because
+    # a release that debugs from a terminal but not from an editor is half a
+    # debugger; tools/dap-probe.py checks it against this very layout.
+    'bin\lldb-dap.exe' = 'bazel-bin\external\+llvm_configure+llvm-project\lldb\lldb-dap.exe'
     'bin\llvm-symbolizer.exe' = 'bazel-bin\external\+llvm_configure+llvm-project\llvm\llvm-symbolizer.exe'
     'bin\lldb24.0.0git.dll' = 'bazel-bin\external\+llvm_configure+llvm-project\lldb\lldb24.0.0git.dll'
     'bin\modular-crashpad-handler.exe' = 'bazel-bin\external\+http_archive+crashpad\modular-crashpad-handler.exe'
