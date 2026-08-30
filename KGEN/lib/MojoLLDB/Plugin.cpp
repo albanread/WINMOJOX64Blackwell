@@ -30,6 +30,7 @@
 #include "lldb/API/SBCommandInterpreter.h"
 #include "lldb/API/SBDebugger.h"
 #include "llvm/ExecutionEngine/MCJIT.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
 
 #include <cstdlib>
@@ -98,10 +99,26 @@ static ContextRef getGlobalContext() {
 /// enabled, initialization will go through `lldb::PluginInitialize`.
 
 MODULAR_EXPORT bool LLDBPluginInitialize() {
-  llvm::InitializeAllTargets();
-  llvm::InitializeAllTargetMCs();
-  llvm::InitializeAllAsmParsers();
-  llvm::InitializeAllAsmPrinters();
+  // Register targets only if nobody has. Inside lldb the registry is already
+  // populated -- lldb registered its own on startup -- and registering again
+  // appends duplicates to a registry whose list head is shared, so the next
+  // lookup dies with "Cannot choose between targets". The Mac port hit
+  // exactly that: it surfaced three frames away as a null TargetInfoAttr and
+  // a segfault at `breakpoint set`, with nothing naming the cause. Embedded
+  // standalone (MojoJupyter links this plugin directly) the registry is
+  // empty and the block must run, so ask rather than assume.
+  //
+  // Windows has not reproduced the crash -- each DLL keeps its own copy of
+  // LLVM's statics rather than unifying them the way Mach-O's two-level
+  // namespace does -- but the guard is correct in both worlds and this is
+  // the one place a future static link would go wrong silently.
+  if (llvm::TargetRegistry::targets().begin() ==
+      llvm::TargetRegistry::targets().end()) {
+    llvm::InitializeAllTargets();
+    llvm::InitializeAllTargetMCs();
+    llvm::InitializeAllAsmParsers();
+    llvm::InitializeAllAsmPrinters();
+  }
   LLVMLinkInMCJIT();
 
   // Ensure we have a legitimate context.

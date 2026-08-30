@@ -38,6 +38,17 @@
 #include "Support/Compiler/MLIRDType.h"
 #include "Support/Compiler/OperationUtils.h"
 #include "Support/SymbolExport.h"
+#include "llvm/Support/ConvertUTF.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+/// Import directories for expression evaluation. Defined near the bottom,
+/// beside the rest of the standard-library lookup; declared here because the
+/// type system's constructor needs it long before that point in the file.
+static std::vector<std::string> findStdlibImportDirs();
 #include "lldb/API/SBDebugger.h"
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/DumpDataExtractor.h"
@@ -135,6 +146,10 @@ struct MojoTypeSystem::Impl {
     // for ORC JIT but not always for MCJIT. Disable splitting for REPL.
     compilationOptions.enableLLVMPerFunctionSplitting = false;
     compilationOptions.enableParallelLLC = false;
+
+    // Point the parser at the standard library before anything asks it to
+    // compile an expression; without this every `expr` fails to import std.
+    sourceMgr.setIncludeDirs(findStdlibImportDirs());
 
     // Configure the parser context.
     LIT::ParserConfig parserConfig(&mlirContext, compilationOptions);
@@ -275,6 +290,83 @@ void MojoTypeSystem::Initialize(CreateContextFn ctxFn) {
 
 void MojoTypeSystem::Terminate() {
   lldb_private::PluginManager::UnregisterPlugin(createInstance);
+}
+
+//===----------------------------------------------------------------------===//
+// Locating the standard library
+//===----------------------------------------------------------------------===//
+
+/// Import directories for expression evaluation, discovered by asking where
+/// this plugin itself lives.
+///
+/// An expression is real Mojo, compiled by the type system's own parser, so
+/// it has to be able to `import std` -- and nothing had ever told the
+/// parser where the standard library is. Every expression failed with
+/// "unable to locate module 'std'", which (until the diagnostics hand-off
+/// was fixed) arrived as an empty message.
+///
+/// The driver learns this from `-I` on its command line. A plugin has no
+/// command line, so it locates itself: the DLL sits at `<root>/lib` in an
+/// installed toolchain and beside the compiler in a build tree, and the
+/// library is a known distance from there either way. `WINMOJO_ROOT`
+/// overrides, for a harness pointing somewhere deliberate.
+static std::vector<std::string> findStdlibImportDirs() {
+  std::vector<std::string> dirs;
+  auto addIfDirectory = [&dirs](const llvm::Twine &path) {
+    std::string candidate = path.str();
+    if (llvm::sys::fs::is_directory(candidate))
+      dirs.push_back(std::move(candidate));
+  };
+
+  // Candidates relative to a toolchain root, in the order a lookup should
+  // prefer them: the packaged library first, then a source tree.
+  auto addRootCandidates = [&addIfDirectory](StringRef root) {
+    addIfDirectory(root + "/lib/mojo");
+    addIfDirectory(root + "/lib");
+    addIfDirectory(root + "/mojo/stdlib");
+  };
+
+  if (const char *root = std::getenv("WINMOJO_ROOT"))
+    addRootCandidates(root);
+
+#ifdef _WIN32
+  // Find this DLL by taking the address of a function inside it. Unchanged
+  // refcount: we are only reading a path, not keeping the module alive.
+  HMODULE self = nullptr;
+  if (::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&findStdlibImportDirs),
+                           &self) &&
+      self) {
+    std::vector<wchar_t> wide(MAX_PATH);
+    DWORD length = 0;
+    for (;;) {
+      length = ::GetModuleFileNameW(self, wide.data(),
+                                    static_cast<DWORD>(wide.size()));
+      // A truncated answer fills the buffer exactly; grow and ask again
+      // rather than silently using a cut path.
+      if (length == 0 || length < wide.size())
+        break;
+      wide.resize(wide.size() * 2);
+    }
+    if (length > 0) {
+      std::string path;
+      if (llvm::convertUTF16ToUTF8String(
+              llvm::ArrayRef<llvm::UTF16>(reinterpret_cast<const llvm::UTF16 *>(
+                                        wide.data()),
+                                    length),
+              path)) {
+        // <root>/lib/MojoLLDB.dll -> <root>, and the build tree's
+        // bazel-bin/KGEN/MojoLLDB.dll -> bazel-bin.
+        StringRef libDir = llvm::sys::path::parent_path(path);
+        addRootCandidates(llvm::sys::path::parent_path(libDir));
+        addIfDirectory(libDir);
+      }
+    }
+  }
+#endif
+
+  return dirs;
 }
 
 //===----------------------------------------------------------------------===//

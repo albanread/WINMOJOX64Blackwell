@@ -66,3 +66,4 @@ EXPORTS
   ?shared_from_this@?$enable_shared_from_this@VTarget@lldb_private@@@std@@QEAA?AV?$shared_ptr@VTarget@lldb_private@@@2@XZ
   ?GetHomeDirectory@FileSystem@lldb_private@@QEBA_NAEAV?$SmallVectorImpl@D@llvm@@@Z
   ?Instance@FileSystem@lldb_private@@SAAEAV12@XZ
+  ?EventTypeHasListeners@BroadcasterImpl@Broadcaster@lldb_private@@QEAA_NI@Z

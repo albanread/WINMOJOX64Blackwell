@@ -285,7 +285,16 @@ bool MojoUserExpression::Parse(DiagnosticManager &diagnosticManager,
   // On exit, log all of the diagnostics that were collected.
   auto broadcastDiagnostics = llvm::scope_exit([&] {
     impl->expressionLogger.broadcastDiagnostics(diagnosticManager);
-    diagnosticManager.Clear();
+    // Only consume them if something is actually listening. Jupyter listens
+    // and renders them itself; lldb and lldb-dap do not -- they read this
+    // very manager to build the message the user sees. Clearing it
+    // unconditionally left every expression failure as an EMPTY error, so a
+    // failed expression looked like the debugger dying (batch lldb stops on
+    // an error and exits 1, printing nothing) rather than an error with
+    // words. Broadcast for the listener, keep for the caller.
+    if (impl->expressionLogger.EventTypeHasListeners(
+            MojoExpressionLogger::eErrorLog))
+      diagnosticManager.Clear();
   });
 
   // Process any magics used in the cell.
