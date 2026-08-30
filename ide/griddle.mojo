@@ -80,7 +80,15 @@ def griddle_wndproc(
                 return 0
             var reply_path = String(request[byte=:newline]).strip()
             var command = String(request[byte=newline + 1 :])
-            var reply = agent_command(hwnd, command)
+            # A verb that raises is still an answer. Reporting "the window
+            # did not accept the command" tells the caller nothing about
+            # what went wrong, and the outer handler cannot say more because
+            # it has already lost the error.
+            var reply = String("")
+            try:
+                reply = agent_command(hwnd, command)
+            except err:
+                reply = String("error: ") + String(err)
             with open(reply_path, "w") as f:
                 f.write(reply)
             return 1

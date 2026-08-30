@@ -21,6 +21,9 @@ polling, no race, no window required of the caller.
 """
 
 
+from ide.screenshot import capture
+
+
 comptime GRIDDLE_VERSION = StaticString("0.1.0")
 
 
@@ -69,10 +72,20 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         return String(
             "status            what Griddle is and which window it is\n"
             "help              this list\n"
-            "echo <text>       answer with <text>, for round-trip checks"
+            "echo <text>       answer with <text>, for round-trip checks\n"
+            "screenshot [path] photograph this window to a PNG"
         )
 
     if verb == "echo":
         return rest
+
+    if verb == "screenshot":
+        # The window photographs itself: no screen capture, so nothing to
+        # ask permission for, and it works while covered.
+        var where = rest
+        if where.byte_length() == 0:
+            where = String("griddle.png")
+        var size = capture(hwnd, where)
+        return String("wrote ") + where + " (" + String(size) + " bytes)"
 
     return String("error: unknown verb '") + verb + "' (try 'help')"

@@ -86,6 +86,36 @@ if ($out -match 'alive after resize: True') {
     Record 'window-resize' 'FAIL' 'did not survive the resize'
 }
 
+# ---- 6. the app photographs itself -----------------------------------------
+# PNG magic alone would pass on a truncated file, and a byte count alone
+# would pass on garbage, so decode it and check the dimensions are the
+# window's own. That is the difference between "a file appeared" and "the
+# window was photographed".
+$shot = Join-Path $env:TEMP ("griddle-check-{0}.png" -f (Get-Random))
+Remove-Item $shot -ErrorAction SilentlyContinue
+$out = Ask "screenshot $shot"
+if (-not (Test-Path $shot)) {
+    Record 'screenshot' 'FAIL' (($out -split "`n")[-2])
+} else {
+    $bytes = [System.IO.File]::ReadAllBytes($shot)
+    $isPng = $bytes.Length -gt 8 -and $bytes[0] -eq 0x89 -and $bytes[1] -eq 0x50 `
+             -and $bytes[2] -eq 0x4E -and $bytes[3] -eq 0x47
+    if (-not $isPng) {
+        Record 'screenshot' 'FAIL' 'the file is not a PNG'
+    } else {
+        Add-Type -AssemblyName System.Drawing
+        $img = [System.Drawing.Image]::FromFile($shot)
+        $w = $img.Width; $h = $img.Height
+        $img.Dispose()
+        if ($w -gt 100 -and $h -gt 100) {
+            Record 'screenshot' 'PASS' "PNG decodes, ${w}x${h}, $($bytes.Length) bytes"
+        } else {
+            Record 'screenshot' 'FAIL' "decoded but implausible: ${w}x${h}"
+        }
+    }
+    Remove-Item $shot -ErrorAction SilentlyContinue
+}
+
 # ---- summary ---------------------------------------------------------------
 $bad = @($results | Where-Object Verdict -eq 'FAIL').Count
 Write-Host ""

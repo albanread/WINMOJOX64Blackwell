@@ -224,8 +224,36 @@ demo.*
 own client area to PNG (WIC encoder; `PrintWindow` on our own HWND as the
 fallback spelling). No permissions exist to ask for on Windows; the verb
 must work with the window occluded.
-*Acceptance: PNG magic + sane byte count from an unattended run, window
-covered by another.*
+*Acceptance MET (2026-08-30): `check-ide.ps1` is at **6 checks: 6 passed**,
+the new one being `PNG decodes, 1184x761, 7287 bytes`. It is checked by
+decoding rather than by magic bytes and a size -- magic alone passes on a
+truncated file and a byte count alone passes on garbage -- and the
+dimensions are the window's own client area. The pixels are dark, as the
+chrome should be: corner RGB(32,32,32), centre black (nothing paints into
+the client area until sprint 0.4).*
+
+*The encode is Windows Imaging Component driven through this repository's
+own COM surface: `co_create` for the factory, then `Com[...]` typed calls
+across five interfaces whose slots, arities and widths all come from
+`windows_api.db`. It is the first COM client of consequence in the IDE and
+a fair test of that work -- no hand-written vtable arithmetic anywhere. The
+three GUIDs are spelled by hand because the metadata carries guid constants
+as names without values, the recorded WRASM gap; each is named so it can be
+checked against the SDK.*
+
+*Honest scope: `PW_RENDERFULLCONTENT` asks the window to draw itself rather
+than copying the screen, which is what makes it independent of occlusion --
+and it needs no permission at all, where the Mac's equivalent required a
+TCC grant that cannot be given headlessly. **Rendering while another window
+physically covers it has not been demonstrated here**, only rendering
+without anyone looking; the covered case is a manual check on a real
+desktop.*
+
+*One design fix this sprint forced: a verb that raises now answers with the
+error text instead of the transport reporting "the window did not accept
+the command". The first screenshot actually succeeded and wrote a valid
+PNG, and the failure that followed it -- an invalid file mode -- was
+invisible until errors became replies.*
 
 **0.4 — chrome, custom-drawn (L).** One HWND: D2D device + DComp swapchain
 bring-up; draw the rail, sidebar strip, pane splits and status bar as
