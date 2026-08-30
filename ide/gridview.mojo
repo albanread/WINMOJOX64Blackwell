@@ -923,9 +923,11 @@ def draw_issues(
             + ":" + String(g_diag_col()[][which] + 1)
             + "  " + g_diag_msg()[][which]
         )
-        var layout = _make_layout(
-            dwrite, chrome, text, region.right - region.left - 40
-        )
+        # Wide enough never to wrap: a wrapped row is two rows tall, and
+        # every row below it then sits a line lower than the click handler
+        # thinks it does. The clip cuts a long message off instead, which is
+        # what a one-line list should do.
+        var layout = _make_layout(dwrite, chrome, text, 100000.0)
         if layout != 0:
             _draw_layout(this, layout, ink, region.left + 26, y)
             _release(layout)

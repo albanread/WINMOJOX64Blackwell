@@ -4181,6 +4181,21 @@ ParseResult StmtParser::parseClassStmt(LexerCursor startCursor,
   std::string bodyOwned(lineStart, bodyEnd);
   StringRef bodyText(bodyOwned);
 
+  // Where the body sits in the user's own file. The generated buffer is
+  // padded below so the body lands on these same line numbers, which is what
+  // lets a diagnostic inside it name the file a person actually wrote.
+  unsigned userBufId =
+      getSourceMgr().FindBufferContainingLoc(SMLoc::getFromPointer(lineStart));
+  unsigned bodyLine = 0;
+  StringRef userFile;
+  if (userBufId) {
+    bodyLine = getSourceMgr()
+                   .getLineAndColumn(SMLoc::getFromPointer(lineStart),
+                                     userBufId)
+                   .first;
+    userFile = getSourceMgr().getMemoryBuffer(userBufId)->getBufferIdentifier();
+  }
+
   // Scan the body for method names: any `def` at the base indent. A COM slot
   // is filled per method, and the metadata gives the slot -- so only names are
   // needed here, not arities (ComClassBuilder.method picks the trampoline).
@@ -4203,13 +4218,20 @@ ParseResult StmtParser::parseClassStmt(LexerCursor startCursor,
   llvm::raw_svector_ostream os(src);
   std::string alias = ("__wincom_" + className).str();
   std::string ualias = ("__winunk_" + className).str();
-  os << "import std.sys.com as " << alias << "\n";
-  os << "import std.sys._com as " << ualias << "\n";
+  // The imports go at the END of this buffer, not the front, and the reason
+  // is line numbers. Every line above the body is a line the padding below
+  // has to make up for, and a class declared near the top of its file cannot
+  // be aligned if the preamble is four lines tall -- which is most classes,
+  // since a file usually opens with one. Module-level names are resolved
+  // after the whole buffer is parsed, so where the imports sit matters to
+  // nothing except how far down the body starts.
   os << "@fieldwise_init\n";
   // Movable, not Copyable: into_com consumes `self^` and finish_state needs
   // only Movable & Deinitable, while deriving Copyable would refuse any class
   // holding a move-only field -- an owned ComPtr being the obvious one.
   os << "struct " << className << "(Movable):\n";
+  // Everything before this point is preamble; the body follows verbatim.
+  size_t bodyOffset = src.size();
   os << bodyText;
   if (!bodyText.ends_with("\n"))
     os << "\n";
@@ -4229,6 +4251,9 @@ ParseResult StmtParser::parseClassStmt(LexerCursor startCursor,
     os << baseIndent << baseIndent << "__b.wire_if_com[\"" << m << "\", "
        << className << "." << m << "]()\n";
   os << baseIndent << baseIndent << "return __b^.finish_state(self^)\n";
+  // And the imports, below everything, for the reason given above.
+  os << "import std.sys.com as " << alias << "\n";
+  os << "import std.sys._com as " << ualias << "\n";
 
   // Own the text in the source manager and sub-parse it into this module. The
   // struct's own body defers and re-parses from this buffer, so it must
@@ -4240,8 +4265,40 @@ ParseResult StmtParser::parseClassStmt(LexerCursor startCursor,
     llvm::errs().write(os.str().data(), os.str().size());
     llvm::errs() << "==== end ====\n";
   }
-  auto memBuf = llvm::MemoryBuffer::getMemBufferCopy(
-      os.str(), "<class " + className.str() + ">");
+  // Put the body on the line numbers it has in the user's file.
+  //
+  // A diagnostic inside a class body used to read `<class Target>:14:20` --
+  // a line in a buffer the user has never seen, in a file that does not
+  // exist. The body is copied verbatim, indentation and all, so if the
+  // generated preamble is padded out to the same height as everything above
+  // the body in the original, then every line and every column inside the
+  // body agrees with the original exactly. Name the buffer after that file
+  // and the diagnostic is indistinguishable from a real one, because it is
+  // one: same file, same line, same column, same text.
+  //
+  // The generated factory that follows the body then occupies the lines just
+  // after the class -- which is where a person looks for a problem with the
+  // class anyway. Its errors are notes on a primary diagnostic that already
+  // points at the user's `into_com()` call, so nothing that was right becomes
+  // wrong.
+  //
+  // Padding is only possible when the body is further down its file than the
+  // preamble is tall. A class declared in the first few lines of a file
+  // cannot be aligned; that keeps the old buffer name, now with the origin
+  // in it so a person can at least find the class.
+  unsigned preambleLines = llvm::count(StringRef(src).take_front(bodyOffset),
+                                       '\n');
+  std::string bufName;
+  if (bodyLine > preambleLines && !userFile.empty()) {
+    src.insert(src.begin(), bodyLine - 1 - preambleLines, '\n');
+    bufName = userFile.str();
+  } else {
+    bufName = ("<class " + className + " at " + userFile + ":" +
+               llvm::Twine(bodyLine) + ">")
+                  .str();
+  }
+
+  auto memBuf = llvm::MemoryBuffer::getMemBufferCopy(os.str(), bufName);
   unsigned bufId =
       getSourceMgr().AddNewSourceBuffer(std::move(memBuf), SMLoc());
   StringRef synth = getSourceMgr().getMemoryBuffer(bufId)->getBuffer();

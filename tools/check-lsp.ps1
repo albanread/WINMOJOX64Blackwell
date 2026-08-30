@@ -118,7 +118,46 @@ if ($out -match 'caret line=5 col=12') {
     Record 'lsp-click-issue' 'FAIL' (($out -split "`n" | Where-Object { $_ -match 'caret' })[-1])
 }
 
-# 7. A text file gets no server at all. A Mojo language server has nothing to
+# 7. A mistake inside a `class` body lands on the user's own line.
+# The class keyword is a source-level desugar, so the body is parsed in a
+# generated buffer. Before sprint 2.3 a diagnostic in one came back against
+# `<class Target>:14:20` -- a buffer nobody has seen -- and the server dropped
+# it, so there was no squiggle at all. Now the buffer is padded and named so
+# its coordinates match the original, and the server keeps it.
+$inclass = Join-Path $dir 'inclass.mojo'
+[System.IO.File]::WriteAllText($inclass, @'
+# A class whose body has a mistake in it, on line 13.
+class Target(IDropTarget):
+    var drops: Int
+
+    def DragEnter(mut self, d: Int, k: UInt32, p: Int, e: Int) raises:
+        pass
+
+    def DragOver(mut self, k: UInt32, p: Int, e: Int) raises:
+        pass
+
+    def DragLeave(mut self) raises:
+        var oops = definitely_not_a_function()
+
+    def Drop(mut self, d: Int, k: UInt32, p: Int, e: Int) raises:
+        self.drops += 1
+
+
+def main() raises:
+    var t = Target(0).into_com()
+    _ = t
+'@.Replace("`r`n", "`n"), (New-Object System.Text.UTF8Encoding $false))
+
+$out = Ask $inclass 'lsp wait 25000;;issues'
+if ($out -match '(?m)^error 12:20\s+use of unknown declaration') {
+    Record 'lsp-class-body' 'PASS' "a class body's mistake reports at its own line 12"
+} elseif ($out -match 'no issues') {
+    Record 'lsp-class-body' 'FAIL' 'the diagnostic was dropped; no squiggle at all'
+} else {
+    Record 'lsp-class-body' 'FAIL' (($out -split "`n" | Where-Object { $_ -match 'error' })[0])
+}
+
+# 8. A text file gets no server at all. A Mojo language server has nothing to
 # say about one, and starting a compiler per opened document is a cost the
 # rest of the check suite would pay on every run.
 $txt = Join-Path $dir 'plain.txt'

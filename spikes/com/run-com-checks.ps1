@@ -139,6 +139,39 @@ if ($LASTEXITCODE -eq 0 -and $out -match 'S12 PASS') {
 Remove-Item $crlfTmp -ErrorAction SilentlyContinue
 
 # ---- summary --------------------------------------------------------------
+# ---- where a diagnostic points ---------------------------------------------
+# A `class` body is copied into a generated buffer and parsed there, so a
+# mistake inside one used to be reported against `<class Target>:14:20` -- a
+# line in a buffer nobody has seen, in a file that does not exist. Sprint 2.3
+# made the generated buffer agree with the original instead of translating
+# afterwards. What is checked is not that the file fails to compile, which it
+# must, but exactly where the compiler says the problem is.
+Write-Host "== diagnostic locations =="
+$diagSpikes = Get-ChildItem (Join-Path $repo 'spikes\com') -Filter 'd??_*.mojo' |
+    Sort-Object Name
+foreach ($f in $diagSpikes) {
+    $r = Invoke-Mojo "`"$mojo`" run -I mojo/stdlib spikes/com/$($f.Name)"
+    # The file names the line and column it expects, in its own header.
+    $want = [regex]::Match((Get-Content $f.FullName -Raw),
+        'mistake below is on line (\d+), column (\d+)')
+    if (-not $want.Success) {
+        Record $f.Name 'FAIL' 'the spike does not say where its mistake is'
+        continue
+    }
+    $line, $col = $want.Groups[1].Value, $want.Groups[2].Value
+    $expect = [regex]::Escape($f.Name) + ":${line}:${col}: error:"
+    if ($r.Output -match $expect) {
+        Record $f.Name 'PASS' "reported at its own line ${line}, column ${col}"
+    } elseif ($r.Output -match '<class ') {
+        $got = [regex]::Match($r.Output, '<class [^>]*>:\d+:\d+').Value
+        Record $f.Name 'FAIL' "reported against the generated buffer: $got"
+    } else {
+        $first = (($r.Output -split "`n") | Where-Object { $_ -match 'error:' } |
+            Select-Object -First 1)
+        Record $f.Name 'FAIL' "wanted ${line}:${col}, got: $($first -replace '\s+', ' ')"
+    }
+}
+
 $bad = @($results | Where-Object Verdict -eq 'FAIL').Count
 $skipped = @($results | Where-Object Verdict -eq 'SKIP').Count
 Write-Host ""

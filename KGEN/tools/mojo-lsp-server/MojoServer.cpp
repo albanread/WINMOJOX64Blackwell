@@ -871,9 +871,41 @@ void MojoDocument::parseDocument(LSPTelemetryContext &ctx,
         for (auto &uri : uris)
           fileToDiags[uri.file()].emplace(uri, version);
 
+        // A diagnostic from a buffer other than the main one is normally
+        // somebody else's problem -- an included file, the standard library --
+        // and is dropped. There is one exception: a buffer the parser
+        // synthesised FROM this file and named after it.
+        //
+        // `class Name(IFace):` is a source-level desugar. The body is copied
+        // verbatim into a generated buffer, and since sprint 2.3 that buffer
+        // is padded so every line and column inside the body matches the
+        // original exactly, and is named after the original file. A
+        // diagnostic in it is about the user's own code at coordinates that
+        // are already right -- so it belongs to this document, and dropping
+        // it means a mistake inside a `class` body produces no squiggle at
+        // all, which is what happened until this was noticed.
+        //
+        // The test is the buffer's name, not its id, and that is the point:
+        // the generated buffer is a different buffer with the same identity.
+        // Only the aligned case shares the name; a class too near the top of
+        // its file to align keeps the old `<class Name at file:line>` name
+        // and is still dropped, correctly, since its coordinates would not
+        // agree with anything.
+        auto &sm = sourceMgr;
+        StringRef mainName =
+            sm.getMemoryBuffer(sm.getMainFileID())->getBufferIdentifier();
+        auto belongsHere = [&](llvm::SMLoc loc) {
+          if (containsLocation(loc))
+            return true;
+          unsigned id = sm.FindBufferContainingLoc(loc);
+          if (!id)
+            return false;
+          return sm.getMemoryBuffer(id)->getBufferIdentifier() == mainName;
+        };
+
         for (ArrayRef<llvm::SMDiagnostic> diags : handlerCtx.smDiagnostics) {
           // Skip diagnostics that weren't emitted within the main file.
-          if (!containsLocation(diags.front().getLoc()))
+          if (!belongsHere(diags.front().getLoc()))
             continue;
           // Get the URI for the file this diagnostic is in. In the case of a
           // text document, this is always the main URI.
