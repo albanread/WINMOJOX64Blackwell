@@ -347,8 +347,35 @@ B-tree, 4 KB UTF-8 leaves, fanout 32, `(bytes, newlines)` on every node;
 persistent replace; line↔offset walks; snapshot = root copy. Port their
 test suite shape (37 checks) rather than inventing one. Flag for the
 oracle: this file is platform-free and shared.
-*Acceptance: 250k lines built < 100 ms on this box; replace µs-scale;
-rope checks green.*
+*Acceptance MET (2026-08-30), on this box, optimized build:*
+
+    63 checks green
+    250,000 lines / 14,539 KB    build 19.9 ms      (budget 100 ms)
+    edit on 14 MB                5.96 us/keystroke  (budget one frame, 6.9 ms)
+    line lookup                  1.83 us average over 1000 scattered lines
+    snapshot                     133 ns on 14 MB, 9.6 ns on 1 byte
+
+*Ported from MojoCocoa's `ide/rope.mojo` and it **compiled unchanged** --
+the strongest evidence yet that the rope is genuinely platform-free and
+belongs back through the oracle as shared code rather than as a finding. The
+UTF-16 counts they keep because Cocoa thinks in them are more load-bearing
+here, not less: TSF hands positions in UTF-16, DirectWrite measures in it,
+and every W-suffixed entry point speaks it.*
+
+*Two changes, both to the test rather than the rope, and both worth sending
+back. **The snapshot benchmark was measuring warm-up.** It timed 1000
+unwarmed copies of a 14 MB rope and read 1271 ns each; warmed, the same
+measurement is 133 ns, and a direct sweep shows the cost is flat -- 9.4 ns
+at 22 bytes, 9.0 ns at 6.6 MB. The property was never in doubt; the
+benchmark was reporting a cold cache line as the thing it measured. **And
+the assertion is now a ratio rather than a nanosecond count**, because the
+claim is O(1) and only a ratio says that -- an absolute threshold tuned on
+one machine fails on a slower one while the property it exists to check is
+perfectly intact, which is exactly what happened on the first run here.*
+
+*Also worth recording: the unoptimized build takes 401 ms to build the same
+rope and 124 us per keystroke -- twenty times slower. Debug builds are for
+the debugger; every number in this plan is from an optimized one.*
 
 **1.2 — the grid draws (L).** `ide/gridview.mojo`: DWrite text format
 (Cascadia → Consolas), viewport→line-range mapping, glyph-run cache keyed
