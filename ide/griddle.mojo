@@ -41,17 +41,19 @@ from ide.chrome import Chrome, bring_up, draw, finish, release
 from ide.drop import register as register_drop, revoke as revoke_drop
 from ide.doc import Doc
 from ide.gridview import (
+    draw_text,
+    release_cache,
+    status_line,
+)
+from ide.window import (
     caret_click,
     edit_key,
     move_key,
     move_page,
-    status_line,
-    type_unit,
-    draw_text,
     page_lines,
-    release_cache,
     scroll_by,
     scroll_to,
+    type_unit,
 )
 from ide.menu import build as build_menu
 from ide.rope import Rope

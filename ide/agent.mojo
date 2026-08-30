@@ -26,6 +26,8 @@ from ide.chrome import Chrome
 from ide.drop import last as last_drop, simulate
 from ide.gridview import (
     GUTTER_W,
+)
+from ide.window import (
     all_text,
     caret_click,
     caret_move,
@@ -36,14 +38,14 @@ from ide.gridview import (
     hittest_report,
     line_text,
     move_key,
-    selection_report,
-    state_report,
-    type_text,
     page_lines,
     presents_immediately,
     reset_counters,
     scroll_by,
     scroll_to,
+    selection_report,
+    state_report,
+    type_text,
 )
 from ide.menu import invoke as invoke_menu
 from ide.screenshot import capture
