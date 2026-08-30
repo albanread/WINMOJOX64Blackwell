@@ -121,7 +121,7 @@ struct WNDCLASSEXW(Defaultable, Copyable, Movable):
 
 
 @fieldwise_init
-struct RECT(Defaultable, Copyable, Movable):
+struct RECT(Defaultable, ImplicitlyCopyable, Movable):
     """A rectangle, as the window APIs report one."""
 
     var left: Int32
@@ -135,6 +135,19 @@ struct RECT(Defaultable, Copyable, Movable):
         self.top = 0
         self.right = 0
         self.bottom = 0
+
+
+@fieldwise_init
+struct POINT(Defaultable, ImplicitlyCopyable, Movable):
+    """A point, as the window APIs take one."""
+
+    var x: Int32
+    var y: Int32
+
+    def __init__(out self):
+        """The origin."""
+        self.x = 0
+        self.y = 0
 
 
 @fieldwise_init

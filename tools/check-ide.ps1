@@ -309,7 +309,67 @@ if ($textX -eq 0 -or $caretX -lt 0) {
 }
 Remove-Item $mixed -ErrorAction SilentlyContinue
 
-# 17. No address is laundered through an integer on its way into a call.
+# ---- 17-21. the text store ---------------------------------------------------
+# Sprint 1.5. `tsf` drives the store through its own vtable with a real sink
+# advised, which is what an input method does -- so these check the contract
+# TSF actually depends on rather than a simulation of it. What they cannot
+# cover is a real IME choosing to make those calls; that half is manual and
+# is written down in docs/tsf-manual-check.md.
+# A known, small document: the store clamps a read to the caller buffer, so a
+# check run against whatever happened to be open cannot tell a correct clamp
+# from a short read.
+$tsfDoc = Join-Path $env:TEMP ("griddle-tsf-{0}.txt" -f (Get-Random))
+[System.IO.File]::WriteAllText($tsfDoc, "alpha beta`ngamma delta`n",
+    (New-Object System.Text.UTF8Encoding $false))
+$out = (cmd /c "`"$Exe`" --open `"$tsfDoc`" --cmd tsf 2>&1" | Out-String)
+Remove-Item $tsfDoc -ErrorAction SilentlyContinue
+
+if ($out -match 'lock-before-sink: refused') {
+    Record 'tsf-lock-needs-sink' 'PASS' 'a lock with nowhere to call back is refused'
+} else {
+    Record 'tsf-lock-needs-sink' 'FAIL' 'a lock was granted with no sink advised'
+}
+
+# flags=6 is TS_LF_READWRITE: the lock the store was asked for is the lock the
+# sink was called back with, which is the whole of the protocol.
+if ($out -match '(?m)^lock: hr=0 session=0' -and $out -match 'flags=6') {
+    Record 'tsf-lock-granted' 'PASS' 'read-write lock granted, sink called back inside it'
+} else {
+    Record 'tsf-lock-granted' 'FAIL' (($out -split "`n" | Where-Object { $_ -match 'lock:' })[0])
+}
+
+# The nine-argument GetText, called from inside the lock, reading to the end
+# of the document without having asked how long it was.
+if ($out -match 'end=(\d+) expected=(\d+) units=(\d+)') {
+    $end, $want, $units = [int]$matches[1], [int]$matches[2], [int]$matches[3]
+    # The sink asks for 256 units, so a document longer than that must come
+    # back clamped -- a store that overruns the caller buffer is the one bug
+    # in a text store that corrupts the input method rather than the document.
+    $expected = [Math]::Min($want, 256)
+    if ($end -eq $want -and $units -eq $expected -and $want -gt 0) {
+        Record 'tsf-gettext' 'PASS' "read $units of $want units under the lock"
+    } else {
+        Record 'tsf-gettext' 'FAIL' "end=$end units=$units, wanted $expected of $want"
+    }
+} else {
+    Record 'tsf-gettext' 'FAIL' 'no read came back from inside the lock'
+}
+
+# SetText is how a committed composition arrives. The change report is what
+# the input method uses to keep its own idea of the document in step.
+if ($out -match 'settext: hr=0 change=0\.\.0->3' -and $out -match 'first line now: TSFalpha') {
+    Record 'tsf-settext' 'PASS' 'text committed, change reported as 0..0->3'
+} else {
+    Record 'tsf-settext' 'FAIL' (($out -split "`n" | Where-Object { $_ -match 'settext' })[0])
+}
+
+if ($out -match 'setselection: anchor=1 caret=3') {
+    Record 'tsf-selection' 'PASS' 'selection set through the store, read back from the editor'
+} else {
+    Record 'tsf-selection' 'FAIL' (($out -split "`n" | Where-Object { $_ -match 'setselection' })[0])
+}
+
+# 22. No address is laundered through an integer on its way into a call.
 # `Int(Pointer(to=x))` erases the origin, so the compiler is no longer told
 # that x is read after the call, and dropping its store is then correct. See
 # docs/addresses-and-optimization.md. `com_addr` states the fact instead.

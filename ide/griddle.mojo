@@ -57,6 +57,7 @@ from ide.window import (
 )
 from ide.menu import build as build_menu
 from ide.rope import Rope
+from ide.tsf import Tsf, activate, deactivate
 from ide.win32 import (
     COPYDATASTRUCT,
     MSG,
@@ -633,6 +634,20 @@ def main() raises:
     var drop = register_drop(hwnd)
     chrome_store[].drop_target = drop.address()
 
+    # Text services, after the document: activation hands TSF a store that
+    # reaches the document through this window, so the document has to be
+    # there first. A machine without TSF, or one that refuses, is not fatal --
+    # the editor falls back to WM_CHAR, which is what it had before 1.5.
+    var tsf_store = alloc[Tsf](1, alignment=8)
+    var tsf_live = False
+    try:
+        tsf_store.unsafe_write(activate(hwnd))
+        chrome_store[].tsf = Int(tsf_store)
+        tsf_live = True
+        print("griddle: text services active, client", tsf_store[].client_id)
+    except err:
+        print("griddle: no text services (", String(err), ")")
+
     var dark = dark_titlebar(hwnd)
     _ = ShowWindow(hwnd, c_int(winkb_constant["SW_SHOW"]()))
     # Paint now rather than when the loop first idles: a command that reads
@@ -778,6 +793,16 @@ def main() raises:
             continue
         _ = TranslateMessage(Pointer(to=msg).unsafe_origin_cast[MutAnyOrigin]())
         _ = DispatchMessageW(Pointer(to=msg).unsafe_origin_cast[MutAnyOrigin]())
+
+    # Text services first: TSF holds a reference to a store that reaches the
+    # document, so it has to let go before the document does.
+    if tsf_live:
+        try:
+            deactivate(tsf_store[])
+        except err:
+            print("griddle: text services would not deactivate:", String(err))
+        _ = tsf_store.unsafe_take_pointee()
+    tsf_store.unsafe_free()
 
     # Give the target back before the window goes: OLE holds a reference to
     # it, and revoking is what returns that one.

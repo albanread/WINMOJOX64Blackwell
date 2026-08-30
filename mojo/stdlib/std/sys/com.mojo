@@ -1523,6 +1523,211 @@ struct ComClassBuilder[*interfaces: StaticString]:
         _check_arg[Self.interfaces[_c], name, "3", A3]()
         self.slot[name](com_tramp4[m])
 
+    def method[
+        T: AnyType,
+        A0: AnyType,
+        A1: AnyType,
+        A2: AnyType,
+        A3: AnyType,
+        A4: AnyType,
+        //,
+        name: StaticString,
+        m: def (mut T, A0, A1, A2, A3, A4) raises thin -> None,
+    ](mut self):
+        """Fills slot `name` with a five-argument method.
+
+        Parameters:
+            T: The implementing struct.
+            A0: The first argument type.
+            A1: The second argument type.
+            A2: The third argument type.
+            A3: The fourth argument type.
+            A4: The fifth argument type.
+            name: The COM method name.
+            m: The method.
+        """
+        comptime _c = Self._cell_of[name]()
+        comptime assert _c >= 0, (
+            "no implemented interface declares this method"
+        )
+        _check_hresult_method[Self.interfaces[_c], name, 5]()
+        _check_arg[Self.interfaces[_c], name, "0", A0]()
+        _check_arg[Self.interfaces[_c], name, "1", A1]()
+        _check_arg[Self.interfaces[_c], name, "2", A2]()
+        _check_arg[Self.interfaces[_c], name, "3", A3]()
+        _check_arg[Self.interfaces[_c], name, "4", A4]()
+        self.slot[name](com_tramp5[m])
+
+    def method[
+        T: AnyType,
+        A0: AnyType,
+        A1: AnyType,
+        A2: AnyType,
+        A3: AnyType,
+        A4: AnyType,
+        A5: AnyType,
+        //,
+        name: StaticString,
+        m: def (mut T, A0, A1, A2, A3, A4, A5) raises thin -> None,
+    ](mut self):
+        """Fills slot `name` with a six-argument method.
+
+        Parameters:
+            T: The implementing struct.
+            A0: The first argument type.
+            A1: The second argument type.
+            A2: The third argument type.
+            A3: The fourth argument type.
+            A4: The fifth argument type.
+            A5: The sixth argument type.
+            name: The COM method name.
+            m: The method.
+        """
+        comptime _c = Self._cell_of[name]()
+        comptime assert _c >= 0, (
+            "no implemented interface declares this method"
+        )
+        _check_hresult_method[Self.interfaces[_c], name, 6]()
+        _check_arg[Self.interfaces[_c], name, "0", A0]()
+        _check_arg[Self.interfaces[_c], name, "1", A1]()
+        _check_arg[Self.interfaces[_c], name, "2", A2]()
+        _check_arg[Self.interfaces[_c], name, "3", A3]()
+        _check_arg[Self.interfaces[_c], name, "4", A4]()
+        _check_arg[Self.interfaces[_c], name, "5", A5]()
+        self.slot[name](com_tramp6[m])
+
+    def method[
+        T: AnyType,
+        A0: AnyType,
+        A1: AnyType,
+        A2: AnyType,
+        A3: AnyType,
+        A4: AnyType,
+        A5: AnyType,
+        A6: AnyType,
+        //,
+        name: StaticString,
+        m: def (mut T, A0, A1, A2, A3, A4, A5, A6) raises thin -> None,
+    ](mut self):
+        """Fills slot `name` with a seven-argument method.
+
+        Parameters:
+            T: The implementing struct.
+            A0: The first argument type.
+            A1: The second argument type.
+            A2: The third argument type.
+            A3: The fourth argument type.
+            A4: The fifth argument type.
+            A5: The sixth argument type.
+            A6: The seventh argument type.
+            name: The COM method name.
+            m: The method.
+        """
+        comptime _c = Self._cell_of[name]()
+        comptime assert _c >= 0, (
+            "no implemented interface declares this method"
+        )
+        _check_hresult_method[Self.interfaces[_c], name, 7]()
+        _check_arg[Self.interfaces[_c], name, "0", A0]()
+        _check_arg[Self.interfaces[_c], name, "1", A1]()
+        _check_arg[Self.interfaces[_c], name, "2", A2]()
+        _check_arg[Self.interfaces[_c], name, "3", A3]()
+        _check_arg[Self.interfaces[_c], name, "4", A4]()
+        _check_arg[Self.interfaces[_c], name, "5", A5]()
+        _check_arg[Self.interfaces[_c], name, "6", A6]()
+        self.slot[name](com_tramp7[m])
+
+    def method[
+        T: AnyType,
+        A0: AnyType,
+        A1: AnyType,
+        A2: AnyType,
+        A3: AnyType,
+        A4: AnyType,
+        A5: AnyType,
+        A6: AnyType,
+        A7: AnyType,
+        //,
+        name: StaticString,
+        m: def (mut T, A0, A1, A2, A3, A4, A5, A6, A7) raises thin -> None,
+    ](mut self):
+        """Fills slot `name` with an eight-argument method.
+
+        Parameters:
+            T: The implementing struct.
+            A0: The first argument type.
+            A1: The second argument type.
+            A2: The third argument type.
+            A3: The fourth argument type.
+            A4: The fifth argument type.
+            A5: The sixth argument type.
+            A6: The seventh argument type.
+            A7: The eighth argument type.
+            name: The COM method name.
+            m: The method.
+        """
+        comptime _c = Self._cell_of[name]()
+        comptime assert _c >= 0, (
+            "no implemented interface declares this method"
+        )
+        _check_hresult_method[Self.interfaces[_c], name, 8]()
+        _check_arg[Self.interfaces[_c], name, "0", A0]()
+        _check_arg[Self.interfaces[_c], name, "1", A1]()
+        _check_arg[Self.interfaces[_c], name, "2", A2]()
+        _check_arg[Self.interfaces[_c], name, "3", A3]()
+        _check_arg[Self.interfaces[_c], name, "4", A4]()
+        _check_arg[Self.interfaces[_c], name, "5", A5]()
+        _check_arg[Self.interfaces[_c], name, "6", A6]()
+        _check_arg[Self.interfaces[_c], name, "7", A7]()
+        self.slot[name](com_tramp8[m])
+
+    def method[
+        T: AnyType,
+        A0: AnyType,
+        A1: AnyType,
+        A2: AnyType,
+        A3: AnyType,
+        A4: AnyType,
+        A5: AnyType,
+        A6: AnyType,
+        A7: AnyType,
+        A8: AnyType,
+        //,
+        name: StaticString,
+        m: def (mut T, A0, A1, A2, A3, A4, A5, A6, A7, A8) raises thin -> None,
+    ](mut self):
+        """Fills slot `name` with a nine-argument method.
+
+        Parameters:
+            T: The implementing struct.
+            A0: The first argument type.
+            A1: The second argument type.
+            A2: The third argument type.
+            A3: The fourth argument type.
+            A4: The fifth argument type.
+            A5: The sixth argument type.
+            A6: The seventh argument type.
+            A7: The eighth argument type.
+            A8: The ninth argument type.
+            name: The COM method name.
+            m: The method.
+        """
+        comptime _c = Self._cell_of[name]()
+        comptime assert _c >= 0, (
+            "no implemented interface declares this method"
+        )
+        _check_hresult_method[Self.interfaces[_c], name, 9]()
+        _check_arg[Self.interfaces[_c], name, "0", A0]()
+        _check_arg[Self.interfaces[_c], name, "1", A1]()
+        _check_arg[Self.interfaces[_c], name, "2", A2]()
+        _check_arg[Self.interfaces[_c], name, "3", A3]()
+        _check_arg[Self.interfaces[_c], name, "4", A4]()
+        _check_arg[Self.interfaces[_c], name, "5", A5]()
+        _check_arg[Self.interfaces[_c], name, "6", A6]()
+        _check_arg[Self.interfaces[_c], name, "7", A7]()
+        _check_arg[Self.interfaces[_c], name, "8", A8]()
+        self.slot[name](com_tramp9[m])
+
     def wire_if_com[
         T: AnyType, //, name: StaticString, m: def (mut T) raises thin -> None
     ](mut self):
@@ -1648,6 +1853,156 @@ struct ComClassBuilder[*interfaces: StaticString]:
         # reaches `method`'s constraints. It does not prune overload
         # conversion, which is why the catch-all overload below is also
         # needed: together they cover every shape a class body can hold.
+        comptime if Self._cell_of[name]() >= 0:
+            self.method[name, m]()
+
+    def wire_if_com[
+        T: AnyType,
+        A0: AnyType,
+        A1: AnyType,
+        A2: AnyType,
+        A3: AnyType,
+        A4: AnyType,
+        //,
+        name: StaticString,
+        m: def (mut T, A0, A1, A2, A3, A4) raises thin -> None,
+    ](mut self):
+        """Wires a five-argument method into its slot, if it is a COM method.
+
+        Parameters:
+            T: The implementing struct.
+            A0: The first argument type.
+            A1: The second argument type.
+            A2: The third argument type.
+            A3: The fourth argument type.
+            A4: The fifth argument type.
+            name: The method's name.
+            m: The method.
+        """
+        comptime if Self._cell_of[name]() >= 0:
+            self.method[name, m]()
+
+    def wire_if_com[
+        T: AnyType,
+        A0: AnyType,
+        A1: AnyType,
+        A2: AnyType,
+        A3: AnyType,
+        A4: AnyType,
+        A5: AnyType,
+        //,
+        name: StaticString,
+        m: def (mut T, A0, A1, A2, A3, A4, A5) raises thin -> None,
+    ](mut self):
+        """Wires a six-argument method into its slot, if it is a COM method.
+
+        Parameters:
+            T: The implementing struct.
+            A0: The first argument type.
+            A1: The second argument type.
+            A2: The third argument type.
+            A3: The fourth argument type.
+            A4: The fifth argument type.
+            A5: The sixth argument type.
+            name: The method's name.
+            m: The method.
+        """
+        comptime if Self._cell_of[name]() >= 0:
+            self.method[name, m]()
+
+    def wire_if_com[
+        T: AnyType,
+        A0: AnyType,
+        A1: AnyType,
+        A2: AnyType,
+        A3: AnyType,
+        A4: AnyType,
+        A5: AnyType,
+        A6: AnyType,
+        //,
+        name: StaticString,
+        m: def (mut T, A0, A1, A2, A3, A4, A5, A6) raises thin -> None,
+    ](mut self):
+        """Wires a seven-argument method into its slot, if it is a COM method.
+
+        Parameters:
+            T: The implementing struct.
+            A0: The first argument type.
+            A1: The second argument type.
+            A2: The third argument type.
+            A3: The fourth argument type.
+            A4: The fifth argument type.
+            A5: The sixth argument type.
+            A6: The seventh argument type.
+            name: The method's name.
+            m: The method.
+        """
+        comptime if Self._cell_of[name]() >= 0:
+            self.method[name, m]()
+
+    def wire_if_com[
+        T: AnyType,
+        A0: AnyType,
+        A1: AnyType,
+        A2: AnyType,
+        A3: AnyType,
+        A4: AnyType,
+        A5: AnyType,
+        A6: AnyType,
+        A7: AnyType,
+        //,
+        name: StaticString,
+        m: def (mut T, A0, A1, A2, A3, A4, A5, A6, A7) raises thin -> None,
+    ](mut self):
+        """Wires an eight-argument method into its slot, if it is a COM method.
+
+        Parameters:
+            T: The implementing struct.
+            A0: The first argument type.
+            A1: The second argument type.
+            A2: The third argument type.
+            A3: The fourth argument type.
+            A4: The fifth argument type.
+            A5: The sixth argument type.
+            A6: The seventh argument type.
+            A7: The eighth argument type.
+            name: The method's name.
+            m: The method.
+        """
+        comptime if Self._cell_of[name]() >= 0:
+            self.method[name, m]()
+
+    def wire_if_com[
+        T: AnyType,
+        A0: AnyType,
+        A1: AnyType,
+        A2: AnyType,
+        A3: AnyType,
+        A4: AnyType,
+        A5: AnyType,
+        A6: AnyType,
+        A7: AnyType,
+        A8: AnyType,
+        //,
+        name: StaticString,
+        m: def (mut T, A0, A1, A2, A3, A4, A5, A6, A7, A8) raises thin -> None,
+    ](mut self):
+        """Wires a nine-argument method into its slot, if it is a COM method.
+
+        Parameters:
+            T: The implementing struct.
+            A0: The first argument type.
+            A1: The second argument type.
+            A2: The third argument type.
+            A3: The fourth argument type.
+            A4: The fifth argument type.
+            A5: The sixth argument type.
+            A6: The seventh argument type.
+            A7: The eighth argument type.
+            A8: The ninth argument type.
+            name: The method's name.
+            m: The method.
+        """
         comptime if Self._cell_of[name]() >= 0:
             self.method[name, m]()
 
@@ -1932,6 +2287,106 @@ fn com_tramp4[
     """Slot adapter for a four-argument COM method."""
     try:
         m(_com_self[T](this)[], a0, a1, a2, a3)
+        return 0
+    except:
+        return _E_FAIL_RAW
+
+
+fn com_tramp5[
+    T: AnyType,
+    A0: AnyType,
+    A1: AnyType,
+    A2: AnyType,
+    A3: AnyType,
+    A4: AnyType,
+    //,
+    m: def (mut T, A0, A1, A2, A3, A4) raises thin -> None,
+](this: Int, a0: A0, a1: A1, a2: A2, a3: A3, a4: A4) -> Int32:
+    """Slot adapter for a five-argument COM method."""
+    try:
+        m(_com_self[T](this)[], a0, a1, a2, a3, a4)
+        return 0
+    except:
+        return _E_FAIL_RAW
+
+
+fn com_tramp6[
+    T: AnyType,
+    A0: AnyType,
+    A1: AnyType,
+    A2: AnyType,
+    A3: AnyType,
+    A4: AnyType,
+    A5: AnyType,
+    //,
+    m: def (mut T, A0, A1, A2, A3, A4, A5) raises thin -> None,
+](this: Int, a0: A0, a1: A1, a2: A2, a3: A3, a4: A4, a5: A5) -> Int32:
+    """Slot adapter for a six-argument COM method."""
+    try:
+        m(_com_self[T](this)[], a0, a1, a2, a3, a4, a5)
+        return 0
+    except:
+        return _E_FAIL_RAW
+
+
+fn com_tramp7[
+    T: AnyType,
+    A0: AnyType,
+    A1: AnyType,
+    A2: AnyType,
+    A3: AnyType,
+    A4: AnyType,
+    A5: AnyType,
+    A6: AnyType,
+    //,
+    m: def (mut T, A0, A1, A2, A3, A4, A5, A6) raises thin -> None,
+](this: Int, a0: A0, a1: A1, a2: A2, a3: A3, a4: A4, a5: A5, a6: A6) -> Int32:
+    """Slot adapter for a seven-argument COM method."""
+    try:
+        m(_com_self[T](this)[], a0, a1, a2, a3, a4, a5, a6)
+        return 0
+    except:
+        return _E_FAIL_RAW
+
+
+fn com_tramp8[
+    T: AnyType,
+    A0: AnyType,
+    A1: AnyType,
+    A2: AnyType,
+    A3: AnyType,
+    A4: AnyType,
+    A5: AnyType,
+    A6: AnyType,
+    A7: AnyType,
+    //,
+    m: def (mut T, A0, A1, A2, A3, A4, A5, A6, A7) raises thin -> None,
+](this: Int, a0: A0, a1: A1, a2: A2, a3: A3, a4: A4, a5: A5, a6: A6, a7: A7) -> Int32:
+    """Slot adapter for an eight-argument COM method."""
+    try:
+        m(_com_self[T](this)[], a0, a1, a2, a3, a4, a5, a6, a7)
+        return 0
+    except:
+        return _E_FAIL_RAW
+
+
+fn com_tramp9[
+    T: AnyType,
+    A0: AnyType,
+    A1: AnyType,
+    A2: AnyType,
+    A3: AnyType,
+    A4: AnyType,
+    A5: AnyType,
+    A6: AnyType,
+    A7: AnyType,
+    A8: AnyType,
+    //,
+    m: def (mut T, A0, A1, A2, A3, A4, A5, A6, A7, A8) raises thin -> None,
+](this: Int, a0: A0, a1: A1, a2: A2, a3: A3, a4: A4, a5: A5, a6: A6, a7: A7, a8: A8) -> Int32:
+    """Slot adapter for a nine-argument COM method."""
+    try:
+        m(_com_self[T](this)[], a0, a1, a2, a3, a4, a5, a6, a7, a8)
         return 0
     except:
         return _E_FAIL_RAW

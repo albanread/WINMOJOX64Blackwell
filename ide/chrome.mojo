@@ -279,6 +279,10 @@ struct Chrome(ImplicitlyCopyable, Movable):
     # Kept because a lost device has to be rebuilt the same way it was built,
     # and because a measurement that silently reverts to vsync is a lie.
     var immediate: Bool
+    # The TSF activation, as a `Tsf*`. Here for the same reason the drop
+    # target is: the window procedure has one pointer to work with, and
+    # everything the window owns has to be reachable from it.
+    var tsf: Int
 
     def __init__(out self):
         """Nothing brought up yet."""
@@ -289,6 +293,7 @@ struct Chrome(ImplicitlyCopyable, Movable):
         self.drop_target = 0
         self.doc = 0
         self.immediate = False
+        self.tsf = 0
 
 
 def bring_up(
