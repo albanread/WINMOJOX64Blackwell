@@ -155,8 +155,28 @@ window (`CreateWindowExW`), run the message loop, dark title bar via
 `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)`, clean exit. All
 calls metadata-typed; no hand-declared prototypes anywhere in the IDE, ever
 — the first violation is a design bug, not a shortcut.
-*Acceptance: the window opens dark-chromed, survives resize, exits 0; a
-second launch gets its own window.*
+*Acceptance MET (2026-08-30):*
+
+    griddle: window 525510 open  dark-titlebar hr = 0 (0 = accepted)
+    griddle: client 1184 x 761
+    griddle: client 624 x 441 after resize
+    griddle: alive after resize: True
+    griddle: closed cleanly            exit=0
+
+*Two instances run at once and get distinct windows. The dark caption is
+reported as an HRESULT rather than assumed -- "the call was made" and
+"Windows accepted it" are different claims. Every call is metadata-typed and
+every constant comes from `windows_api.db`: `WS_OVERLAPPEDWINDOW`,
+`CW_USEDEFAULT`, `SW_SHOW`, `WM_DESTROY`, `SWP_NOZORDER` and
+`DWMWA_USE_IMMERSIVE_DARK_MODE` are all queried, not spelled, and
+`WNDCLASSEXW`/`MSG` layouts are asserted against Windows at compile time.*
+
+*One environment fact worth having early, found here: a window created by a
+process this build harness launches is not on the harness's interactive
+desktop, so cross-process `EnumWindows` finds nothing for a window that
+plainly exists and has a valid HWND. The app therefore inspects itself
+(`--selftest`), which is also the honest shape -- sprint 0.3's screenshot
+renders our own view hierarchy for the same reason.*
 
 **0.2 — the agent surface, first light (M).** `WM_COPYDATA` in:
 `verb args…` plus the sender's HWND; `WM_COPYDATA` back with the reply.
