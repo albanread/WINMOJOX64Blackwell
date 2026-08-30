@@ -894,7 +894,20 @@ static int linkOutput(OutputType outputType, const State &state,
 
   // Apply options for stripping unused code.
 #if defined(_WIN32)
-  linkerArgs.emplace_back("/OPT:REF");
+  // Debug info survives compilation into the COFF objects as DWARF, and
+  // then lld-link silently drops it: without /debug the image gets no debug
+  // sections at all, so `--debug-level full` produced binaries LLDB could
+  // not set one breakpoint in -- pending forever, which reads as a debugger
+  // defect rather than a link line missing one flag. /debug:dwarf keeps the
+  // DWARF in the image (Windows has no dsymutil; the executable IS the
+  // debug artifact), and /OPT:NOREF stops reference stripping from deleting
+  // the code a breakpoint would land on.
+  if (options.debugLevel != CompilationOptions::kNoDebug) {
+    linkerArgs.emplace_back("/debug:dwarf");
+    linkerArgs.emplace_back("/OPT:NOREF");
+  } else {
+    linkerArgs.emplace_back("/OPT:REF");
+  }
 #elif defined(__APPLE__)
   linkerArgs.emplace_back("-Wl,-dead_strip");
 #else

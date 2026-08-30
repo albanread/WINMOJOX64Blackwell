@@ -812,6 +812,20 @@ translateModuleToLLVMIR(llvm::LLVMContext &ctx, ModuleOp module,
   if (!llvmModule)
     return nullptr;
 
+  // MojoLLDB is a DWARF debugger: MojoDWARFParser translates DWARF into
+  // MLIR, and CodeView never reaches it. MLIR's DebugTranslation force-sets
+  // the "CodeView" module flag for MSVC triples "unless set explicitly", so
+  // Mojo debug builds on Windows produced .debug$S/.debug$T our own
+  // debugger cannot read -- and the linker then dropped even those. Be the
+  // explicit setting: flip the flag to 0 and the backend emits
+  // DWARF-in-COFF, which mojo-lldb reads and /debug:dwarf links into the
+  // image. If Visual Studio debugging of Mojo ever matters this becomes an
+  // option; today the only debugger anyone ships for Mojo is ours.
+  if (llvmModule->getTargetTriple().isKnownWindowsMSVCEnvironment())
+    llvmModule->setModuleFlag(
+        llvm::Module::Warning, "CodeView",
+        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0));
+
   // Attach any necessary instrumentation to the module.
   attachInstrumentationAttributes(*llvmModule, options);
   return llvmModule;
