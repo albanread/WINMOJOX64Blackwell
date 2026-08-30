@@ -1,6 +1,7 @@
 # Griddle sprints — each lands on main, each with its acceptance line
 
-*The working breakdown of `IDE-DESIGN.md`'s milestones. The rules are the
+*The working breakdown of `IDE-DESIGN.md`'s milestones — beginning with
+sprint 0.0, the debugger, which stands before the window. The rules are the
 Mac team's, because they were earned: every sprint lands on main green, every
 sprint ends with an acceptance line that a script or a screenshot can check,
 and the agent surface exists from sprint 2 so that every later sprint is
@@ -11,6 +12,121 @@ two sprints.*
 *Effort marks: (S) an afternoon · (M) a day or two · (L) the better part of
 a week. The Mac calibration held for them; ours gets recalibrated after
 milestone 0 against actuals.*
+
+---
+
+## Sprint 0.0 — the debugger stands up first
+
+*Added after the first cut of this plan shipped without it. The Mac team's
+design mentions `lldb-dap` in a services list; their reality was a compiler
+campaign — an 886-line spike (`spikes/MOJOLLDB-SPIKE.md`) and dozens of
+commits to get a variable's name and value from a stopped program to their
+IDE. An IDE that cannot show `total = 10` at a breakpoint is a text editor
+with opinions. This stands up before the window does, because it depends on
+nothing the window provides — and because every later milestone gets to
+assume a debugger that answers.*
+
+**0.0.1 — the compiler emits debug info our debugger can read (M).** The
+battle opened immediately, two layers deep. Format: MLIR's
+`DebugTranslation` force-sets the `CodeView` module flag on MSVC triples
+"unless set explicitly", so Mojo emitted `.debug$S`/`.debug$T` — CodeView,
+unreadable by `MojoDWARFParser`, which is a DWARF parser by construction.
+`ObjectCompiler` now sets `CodeView=0` explicitly; the backend emits
+DWARF-in-COFF. Link: no `/debug` flag of any kind was passed, so even those
+sections were dropped and `--debug-level full` produced images with **zero
+debug info** — every breakpoint pending forever. `mojo-build.cpp` now links
+`/debug:dwarf /OPT:NOREF` for debug builds. Windows has no dsymutil: the
+executable IS the debug artifact, which quietly deletes the Mac's post-link
+DIE-offset-rewrite problem from our future sidecar work.
+*Acceptance MET (2026-08-30): the image carries `.debug_info` (61 KB),
+`.debug_line`, `.debug_str`, `.debug_abbrev`, `.debug_ranges`, `.debug_loc`,
+and `breakpoint set --file dbgfix.mojo --line 3` resolves to
+`dbgfix.exe`dbgfix::add(...) + 24 at dbgfix.mojo:3:5` instead of staying
+pending.*
+
+*Standing rule for every debug sprint: the debuggee is built
+`--no-optimization --debug-level full`. Optimized-with-symbols is a valid
+build a user can ask for, and the debugger must not lie about it (locals
+report as optimized out, honestly) — but it is never what the Debug button
+produces.*
+
+**0.0.2 — the CLI answers `frame variable` (M).** The fork already ships
+`mojo-lldb.exe`, `lldb24.0.0git.dll` and `MojoLLDB.dll` (the export-`.def`
+fight was this battle's opening move, months early). Load the plugin, break
+in the five-line fixture, and ask.
+*Acceptance MET:*
+
+    (lldb) frame variable
+    (__mlir_type.`!kgen.scalar<index>`) a = 0
+    (__mlir_type.`!kgen.scalar<index>`) b = 0
+    (__mlir_type.`!kgen.scalar<index>`) sum = 0
+
+*and `bt` demangles the whole stack: `dbgfix::add(a=0, b=0)` →
+`dbgfix::main()` → `std::builtin::_startup::__wrap_and_execute_main`. The
+type rendering is the Mac's level-1 storage debugging, character for
+character -- the same known frontier, not a Windows shortfall.*
+
+**0.0.3 — lldb-dap builds and the probe passes (M).** `lldb-dap` was never
+built here (the release manifest stops at the CLI), and building it
+re-fought the exports war on the front only Windows has: `dllimport` is
+prescriptive where Mach-O visibility is additive, so class-annotating
+`FileSystem` (header-inline ctor), and the SB API's own
+`LLDB_API=dllimport` meeting `SBCommand`'s implicit destructor and
+`Status::takeError` (inline-only), each demanded imports no object defines
+under `-O2`. This is why the Mac tree built dap "first try" and their
+commits cannot help here. Fixes: `FileSystem` un-annotated with the reason
+recorded beside it, two out-of-line members added to the export def, and
+`llvm-lldb-dap-windows-inline-api.patch` compiles dap with **both**
+annotation macros empty on Windows (`LLDB_API=`, `LLDB_PRIVATE_EXPORT=` —
+the second needed an `#ifndef` guard added to the exports patch to be
+overridable at all) — inline members inline, everything else through the
+import library's thunks. `tools/dap-probe.py` is the
+`lsp-probe` sibling: framing, `launch` with `initCommands: ["plugin load
+MojoLLDB.dll"]`, breakpoint, stop, `stackTrace`, `scopes`, `variables` —
+pass **only** if variables come back with values.
+*Acceptance MET: `DAP PROBE PASS -- breakpoint verified, 3 variable(s) with
+values`, headless, against `lldb-dap.exe` (2.4 MB, built here for the first
+time). The session runs initialize → launch(initCommands: plugin load) →
+setBreakpoints(verified) → stopped → stackTrace(`dbgfix::add(...)`) →
+scopes(`Locals`) → variables.*
+
+*One rendering note the IDE inherits: lldb-dap returns scalars as sixteen
+hex digits, two spaces, then the decimal — `'0000000000000000  0'`. The Mac
+team's `variable_value()` drops the hex when the shape matches exactly and
+passes anything else through unchanged; ours needs the same, and the probe
+prints the raw string so the shape stays visible rather than being quietly
+prettified.*
+
+**0.0.4 — port the Mac plugin fixes (M).** Their fixes are on their main
+and not in our tree; each is small and named:
+- **Idempotent target registration** (`Plugin.cpp`): ask the registry
+  before `InitializeAllTargets`. Their one real crash ("Cannot choose
+  between targets"); harmless here today because Windows DLLs do not unify
+  symbols, load-bearing the moment the plugin is linked statically.
+- **Expression parser self-location**: `dladdr` → `GetModuleFileNameW` on
+  the DLL, `WINMOJO_ROOT` as override, so `expr` finds the stdlib.
+- **Diagnostics hand-off**: errors were cleared unconditionally after
+  broadcast, so every expression failure printed as nothing; make the
+  hand-off conditional on a listener.
+*Acceptance: `expr String("hi ") + String(42)` evaluates in the debuggee
+from the CLI, and a deliberately bad expression fails with words.*
+
+**0.0.5 — the check and the ship (S).** `check-ide.ps1` gains the dap-probe
+as a required check whenever the plugin ships; the release manifest gains
+`lldb-dap.exe`; a missing-variables regression is treated as packaging
+breakage, exactly the Mac rule.
+*Acceptance: the probe runs green against the RELEASE layout with an empty
+environment.*
+
+**Deliberately deferred, with their map in hand:** semantic types. The Mac
+spike proved the deep problem is two compiler erasures (representation and
+declaration), decided per-type by `decl.isSingleElement()`, contagious
+through members — `Int` and every one-field wrapper share one storage DIE.
+Their remedy is a semantic sidecar joined on `(binary identity, canonical
+DIE offset)`, one record to many dies (81% of variable dies are
+multiplicity). We inherit that design wholesale when we get there; sprint
+0.0 delivers storage-level debugging — real names, real values, raw types —
+which is what their IDE shipped first too.
 
 ---
 

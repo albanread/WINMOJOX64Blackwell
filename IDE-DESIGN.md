@@ -35,7 +35,7 @@ inventory.
 | AOT build and run | `mojo.exe build` | the release pipeline; every spike |
 | GPU at interactive rates | CUDA sm_75 (T1000 here, sm_120a on the Blackwell box) | the mandelbrot; the matmul competition |
 | language intelligence | `//KGEN/tools/mojo-lsp-server` | target in tree — **not yet exercised on Windows**; milestone 2 starts by probing it |
-| debugger | LLDB builds here (the `-c opt` export-def work) | DAP wiring is later work, listed honestly |
+| debugger | `mojo-lldb.exe`, `lldb24.0.0git.dll`, `MojoLLDB.dll` all build and ship in the release | sprint 0.0 (below and in `IDE-SPRINTS.md`): the `/debug:dwarf` link fix, `lldb-dap`, and `tools/dap-probe.py` |
 
 One verified fact carries more of this design than any other: **the entire
 IDE surface is rows in the database.** `ITextStoreACP` (26 methods),
@@ -177,6 +177,126 @@ why.
 
 Dead keys, AltGr, and the emoji panel (Win+.) all arrive through the same
 machinery; none of them get special cases.
+
+## The debugger — the battle the first draft of this document forgot
+
+The Mac team's design mentions `lldb-dap` in a services list, and that
+understates their reality so badly it nearly misled this one: getting
+variable names and values from a stopped Mojo program to their IDE was a
+**compiler campaign**, fought across dozens of commits and an 886-line spike
+document (`spikes/MOJOLLDB-SPIKE.md`, read in full at `5d823062`). This
+section exists so we inherit the war, not just the treaty.
+
+**Their findings, imported.** Variables fail to inspect not for lack of
+DWARF — the DWARF is rich — but because `DW_AT_language(DW_LANG_Mojo)`
+makes LLDB demand a TypeSystem plugin: no plugin, no variables, even for a
+plain `Int`. `KGEN/lib/MojoLLDB` is that plugin (TypeSystem, DWARF parser,
+formatters, a JIT expression parser, break-on-raise). It must load into an
+lldb built from the **same tree** — ABI, `lldb_private` symbol visibility,
+and LLVM global state each independently rule out anyone else's lldb. Their
+deeper discovery is a compiler truth we now hold too: **debug info suffers
+two erasures**, representation (`Meters` lowers to `index`) and declaration
+(the tie to the real decl is gone), decided per-type by
+`decl.isSingleElement()` — so `Int` and every one-field wrapper share one
+storage DIE, and the erasure is contagious through members (`p.x` falls even
+when `Point` survives). Their remedy-in-progress is a **semantic sidecar**
+beside the debug info, joined by `(binary identity, canonical DIE offset)`,
+one record to many dies — 81% of variable dies are multiplicity, so a 1:1
+map presents as flakiness. None of that is Mac-specific; when we reach
+semantic types, we implement their contract rather than rediscovering it.
+
+**Where this fork already was**, verified: the release manifest ships
+`mojo-lldb.exe`, `lldb24.0.0git.dll`, `MojoLLDB.dll`, `lldb-argdumper.exe`
+and `mojo-repl-entry-point.exe` — the export-`.def` fight
+(`lldb-windows-private.exports.def`, and the `opt`-elided-destructor scar
+recorded in project memory) was this battle's Windows opening, already won
+before the IDE existed.
+
+**The verdict (2026-08-30): the debugger answers on Windows.**
+
+    (lldb) frame variable
+    (__mlir_type.`!kgen.scalar<index>`) a = 0
+    (__mlir_type.`!kgen.scalar<index>`) b = 0
+    (__mlir_type.`!kgen.scalar<index>`) sum = 0
+
+    DAP PROBE PASS -- breakpoint verified, 3 variable(s) with values
+
+Both paths: the CLI, and the DAP wire the IDE will actually use. The stack
+demangles whole (`dbgfix::add(a=0, b=0)` → `dbgfix::main()` →
+`__wrap_and_execute_main`), and the type rendering matches the Mac's
+character for character — the same level-1 storage frontier, not a Windows
+shortfall. Sprints 0.0.1-0.0.3 are done; what follows is the story of what
+had to be fixed to get there.
+
+**What the spike found, each with its fix:**
+
+- **Debug info was wrong twice before the debugger ever saw it.** First
+  the format: MLIR's `DebugTranslation` force-sets the `CodeView` module
+  flag on MSVC triples "unless set explicitly", so Mojo emitted
+  `.debug$S`/`.debug$T` — CodeView, which `MojoDWARFParser` cannot read;
+  the plugin is a DWARF debugger by construction. `ObjectCompiler` now sets
+  `CodeView=0` explicitly and the backend emits DWARF-in-COFF. Second the
+  link: the Windows link line passed no `/debug` flag in any form, so even
+  those sections were dropped and the image had **no debug info at all** —
+  LLDB left every breakpoint pending forever, which reads as a debugger
+  defect and was two missing decisions. `mojo-build.cpp` now links
+  `/debug:dwarf /OPT:NOREF` for debug builds. Windows has no dsymutil; the
+  executable *is* the debug artifact — which also deletes the Mac's
+  post-link DIE-offset rewrite problem from our sidecar future.
+- **`dllimport` and inline members, the Windows-only trench.** The
+  exports patch class-annotated `FileSystem`, whose default constructor is
+  header-inline; class-level `dllimport` *forbids* using the inline body,
+  and `lldb-dap` was the first consumer to touch it. The same disease in
+  the SB API: `SBCommand`'s implicit destructor and `Status::takeError`
+  exist only inline, so dap's default `LLDB_API=dllimport` demanded
+  imports no object ever defines. Mach-O never meets any of this —
+  visibility annotations are additive, which is why the Mac tree built
+  dap "first try, no source changes" and their commits cannot carry this
+  part. Fixes: `FileSystem` un-annotated (functions resolve through the
+  import library's thunks with no annotation), two out-of-line
+  `FileSystem` members added to the export def, and a new overlay patch
+  compiles dap with `LLDB_API=` empty on Windows.
+- **`lldb-dap` was never built here** — the target exists; the release
+  manifest stops at the CLI. Built now, probed by `tools/dap-probe.py`
+  (our `lsp-probe` sibling: framing, launch-with-`initCommands`,
+  breakpoint, stop, scopes, variables — pass only if variables come back
+  with values).
+- **Their plugin fixes are not in our tree** and get ported in sprint 0.0:
+  idempotent target registration (their one real crash — harmless here
+  today because Windows DLLs don't unify symbols, load-bearing the moment
+  the plugin is ever linked statically), the expression parser's
+  self-location (`dladdr` → `GetModuleFileNameW`, `WINMOJO_ROOT`
+  override), and the diagnostics hand-off that erased every expression
+  error when no listener was attached.
+
+**Windows differences that matter, called now:** no dsymutil (offsets
+final at link — the sidecar join simplifies), no DevToolsSecurity (no
+authorization wall, nothing to hang headless runs), `link.exe` name
+collisions (the compiler shells to `link`; under an MSYS shell that
+resolves to coreutils' `/usr/bin/link` — the toolchain lookup must pin the
+real linker, not trust PATH), and Job-Object process control instead of
+their stranded-`SIGSTOP` cleanup.
+
+**The build matrix, made explicit.** Debug means
+`--no-optimization --debug-level full`, always — the IDE's Debug action
+never hands the debugger an optimized binary. The Mac team paid for this
+twice: optimized builds delete locals from the DWARF entirely (`total` and
+`sum` simply absent, breakpoints sliding out of loops), and their dap test
+passed for the wrong reason until it built `-O0`. Run stays optimized;
+Debug is a different artifact in `build\debug\`, not a flag on the same
+one — so switching between them never silently rebuilds the other's output.
+The inverse rule guards the other direction: requesting symbols must never
+secretly deoptimize, which is why `/debug:dwarf` is a linker decision and
+optimization stays exactly what the user chose. And the toolchain itself
+stays `-c opt`: the inline-member fights above are fixed by not demanding
+imports for inline members, never by deoptimizing the debugger.
+
+**In the IDE**, the surface is theirs: `lldb-dap` per session, plugin via
+`initCommands`, locals pane from `scopes`/`variables`, break-on-raise as a
+Debug-menu toggle, stepping through the real toolbar buttons, `evaluate`
+as an explicit gesture because it runs Mojo in the debuggee. The
+`Document`/console machinery they bolted it onto is the same machinery our
+milestones 2-4 build.
 
 ## Language intelligence
 
