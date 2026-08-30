@@ -41,6 +41,7 @@ from ide.chrome import Chrome, bring_up, draw, finish, release
 from ide.drop import register as register_drop, revoke as revoke_drop
 from ide.gridview import (
     Doc,
+    caret_click,
     draw_text,
     page_lines,
     release_cache,
@@ -190,6 +191,8 @@ def griddle_wndproc(
                             doc[].rope,
                             layout.editor(),
                             doc[].revision,
+                            doc[].caret_line,
+                            doc[].caret_col,
                         )
                 except err:
                     print("griddle: paint failed:", String(err))
@@ -207,6 +210,25 @@ def griddle_wndproc(
                 def (Int, Int) thin abi("C") -> c_int, "ValidateRect"
             ]()
             _ = ValidateRect(hwnd, 0)
+            return 0
+
+        # A click puts the caret where it landed. The same function the
+        # `click` verb calls, so what a person gets and what a check gets
+        # cannot drift apart -- which is the whole reason the agent surface
+        # exists before the editor does.
+        if message == UInt32(winkb_constant["WM_LBUTTONDOWN"]()):
+            # lParam packs the point as two signed 16-bit halves, and they
+            # are signed: a drag that leaves the window to the left reports a
+            # negative x, which read unsigned becomes 65,000-odd.
+            var px = lparam & 0xFFFF
+            if px >= 0x8000:
+                px -= 0x10000
+            var py = (lparam >> 16) & 0xFFFF
+            if py >= 0x8000:
+                py -= 0x10000
+            var SetFocus = win32[def (Int) thin abi("C") -> Int, "SetFocus"]()
+            _ = SetFocus(hwnd)
+            _ = caret_click(hwnd, px, py)
             return 0
 
         # Scrolling. The wheel reports in notches of 120; three lines a notch

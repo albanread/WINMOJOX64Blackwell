@@ -245,7 +245,71 @@ if ($out -match '(\d+) dropped') {
     Record 'grid-frame-budget' 'FAIL' 'no frame report came back'
 }
 
-# 15. No address is laundered through an integer on its way into a call.
+# ---- 15-16. caret truth -----------------------------------------------------
+# A monospaced grid tempts you to answer "where does the caret go" with
+# multiplication, and for ASCII that is exactly right. These two check the
+# lines where it is wrong: a CJK ideograph is two advances, an emoji is one
+# glyph of two UTF-16 units, a combining accent is zero advances and must
+# never be a caret stop, and a tab is a jump to a stop rather than a width.
+$mixed = Join-Path $env:TEMP ("griddle-mixed-{0}.txt" -f (Get-Random))
+[System.IO.File]::WriteAllText($mixed, (@(
+    'plain ascii line, arithmetic all the way'
+    "mixed: abc $([char]0x4E2D)$([char]0x6587)$([char]0x6587)$([char]0x5B57) def " +
+        "$([char]0xD83D)$([char]0xDE00)$([char]0xD83D)$([char]0xDE80) ghi " +
+        "$([char]0xE9)$([char]0xE8)$([char]0xEA) jkl"
+    "$([char]0x4ECA)$([char]0x65E5)$([char]0x306F)$([char]0x4E16)$([char]0x754C) CJK only"
+    "flags $([char]0xD83C)$([char]0xDDEC)$([char]0xD83C)$([char]0xDDE7) and a " +
+        "ZWJ $([char]0xD83D)$([char]0xDC69)$([char]0x200D)$([char]0xD83D)$([char]0xDCBB) sequence"
+    "tab`there`tand`there"
+    "combining: e$([char]0x301) a$([char]0x300) o$([char]0x302)"
+) -join "`n") + "`n", (New-Object System.Text.UTF8Encoding $false))
+
+function AskMixed($command) {
+    return (cmd /c "`"$Exe`" --open `"$mixed`" --cmd `"$command`" 2>&1" | Out-String)
+}
+
+# 15. Every caret stop on every line survives the round trip: the x the caret
+# is placed at, clicked a quarter into the glyph that follows, comes back as
+# the same stop. Walked by DirectWrite's own cluster lengths, so a stop is
+# never the middle of a surrogate pair.
+$out = AskMixed 'hittest 0;;hittest 1;;hittest 2;;hittest 3;;hittest 4;;hittest 5'
+$stops = ([regex]::Matches($out, ' OK(\r?\n|$)')).Count
+$bad = ([regex]::Matches($out, 'MISMATCH')).Count
+$fast = ([regex]::Matches($out, 'simple=True')).Count
+$slow = ([regex]::Matches($out, 'simple=False')).Count
+if ($bad -gt 0) {
+    Record 'caret-round-trip' 'FAIL' "$bad of $($stops + $bad) caret stops landed wrong"
+} elseif ($stops -lt 100) {
+    Record 'caret-round-trip' 'FAIL' "only $stops stops checked; the document did not load"
+} elseif ($fast -lt 1 -or $slow -lt 4) {
+    Record 'caret-round-trip' 'FAIL' "paths taken: $fast arithmetic, $slow DirectWrite"
+} else {
+    Record 'caret-round-trip' 'PASS' `
+        "$stops stops, none wrong ($fast line by arithmetic, $slow by DirectWrite)"
+}
+
+# 16. And a click in real client coordinates lands there too -- the same
+# function the window procedure calls on WM_LBUTTONDOWN, so what a person
+# gets and what this gets cannot drift apart.
+$out = AskMixed 'views;;caret 1 15;;click 443 24'
+$textX = if ($out -match '(?m)^text (\d+)') { [int]$matches[1] } else { 0 }
+$caretX = if ($out -match 'col=15 x=([\d.]+)') { [double]$matches[1] } else { -1 }
+# @() again: a MatchCollection does not take a negative index, and without
+# the wrap this line throws rather than failing the check -- which reads, in
+# the summary, as a check that was never there.
+$landed = @([regex]::Matches($out, 'caret line=(\d+) col=(\d+)'))[-1]
+if ($textX -eq 0 -or $caretX -lt 0) {
+    Record 'caret-click' 'FAIL' 'the window did not report its text origin'
+} elseif ($landed.Groups[1].Value -eq '1' -and $landed.Groups[2].Value -eq '15') {
+    Record 'caret-click' 'PASS' `
+        "click at x=443 landed on line 1 col 15 (text starts at $textX, caret at $caretX)"
+} else {
+    Record 'caret-click' 'FAIL' `
+        "landed on line $($landed.Groups[1].Value) col $($landed.Groups[2].Value), wanted 1/15"
+}
+Remove-Item $mixed -ErrorAction SilentlyContinue
+
+# 17. No address is laundered through an integer on its way into a call.
 # `Int(Pointer(to=x))` erases the origin, so the compiler is no longer told
 # that x is read after the call, and dropping its store is then correct. See
 # docs/addresses-and-optimization.md. `com_addr` states the fact instead.

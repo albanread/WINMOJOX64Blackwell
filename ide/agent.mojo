@@ -25,7 +25,12 @@ from ide.chrome import D2D_RECT_F, Layout
 from ide.chrome import Chrome
 from ide.drop import last as last_drop, simulate
 from ide.gridview import (
+    GUTTER_W,
+    caret_click,
+    caret_move,
+    caret_report,
     counters,
+    hittest_report,
     page_lines,
     presents_immediately,
     reset_counters,
@@ -115,7 +120,10 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             "paint             force one frame, synchronously\n"
             "frame [N]         time N scroll-and-paint frames\n"
             "grid [reset]      the layout cache counters\n"
-            "scroll N | to N | top | end | page    move the editor"
+            "scroll N | to N | top | end | page    move the editor\n"
+            "caret [L C]       report or move the caret\n"
+            "click X Y         put the caret where a click landed\n"
+            "hittest L         every caret stop on line L, round-tripped"
         )
 
     if verb == "echo":
@@ -143,6 +151,13 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         out += _region("issues", l.issues())
         out += _region("output", l.output())
         out += _region("status", l.status())
+        # Where the text itself starts, which is the editor's left edge plus
+        # the gutter. Reported rather than left for a caller to know, because
+        # a check that hardcodes the gutter width is a check that passes after
+        # someone changes it.
+        out += "gutter " + String(GUTTER_W) + "\n"
+        out += "text " + String(Int(l.editor().left) + GUTTER_W) + "\n"
+        out += "lineheight 16\n"
         return out
 
     if verb == "paint":
@@ -213,6 +228,37 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             + " ms mean (pinned to the vertical blank), worst " + String(high)
             + " ms, " + String(dropped) + " dropped\n" + counters(hwnd)
         )
+
+    if verb == "caret":
+        # No argument reports; `L C` moves. One verb rather than two because
+        # every check that moves the caret then wants to see where it went,
+        # and moving already answers with the report.
+        if rest.byte_length() == 0:
+            return caret_report(hwnd)
+        var parts = rest.split(" ")
+        if len(parts) != 2:
+            return String("usage: caret [<line> <col>]")
+        return caret_move(
+            hwnd, Int(String(parts[0])), Int(String(parts[1]))
+        )
+
+    if verb == "click":
+        # Client coordinates, the way Windows delivers them, so a check can
+        # use the numbers `views` reported without adjusting them.
+        var parts = rest.split(" ")
+        if len(parts) != 2:
+            return String("usage: click <x> <y>")
+        return caret_click(
+            hwnd, Int(String(parts[0])), Int(String(parts[1]))
+        )
+
+    if verb == "hittest":
+        # Every caret stop on one line, with where a click in the middle of
+        # the following glyph comes back as. This is sprint 1.3's acceptance
+        # in one answer.
+        if rest.byte_length() == 0:
+            return String("usage: hittest <line>")
+        return hittest_report(hwnd, Int(rest))
 
     if verb == "grid":
         # The counters, and a way to zero them. Measuring a scroll means
