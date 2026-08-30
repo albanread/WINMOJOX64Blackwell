@@ -39,9 +39,14 @@ from std.memory import alloc
 from ide.agent import agent_command
 from ide.chrome import Chrome, bring_up, draw, finish, release
 from ide.drop import register as register_drop, revoke as revoke_drop
+from ide.doc import Doc
 from ide.gridview import (
-    Doc,
     caret_click,
+    edit_key,
+    move_key,
+    move_page,
+    status_line,
+    type_unit,
     draw_text,
     page_lines,
     release_cache,
@@ -177,7 +182,17 @@ def griddle_wndproc(
                 var width = Int(rc.right - rc.left)
                 var height = Int(rc.bottom - rc.top)
                 try:
-                    var layout = draw(chrome[], width, height)
+                    # The status bar is composed here because this is where
+                    # both halves are in scope: the chrome that draws it and
+                    # the document it describes.
+                    var status = String("Ln 1, Col 1    UTF-8")
+                    if chrome[].doc != 0:
+                        status = status_line(
+                            Pointer[Doc, MutAnyOrigin](
+                                unsafe_from_address=chrome[].doc
+                            )[]
+                        )
+                    var layout = draw(chrome[], width, height, status)
                     # The text goes inside the batch the chrome opened, so
                     # both halves of the frame are presented at once and the
                     # editor never shows an empty field for a frame.
@@ -193,6 +208,8 @@ def griddle_wndproc(
                             doc[].revision,
                             doc[].caret_line,
                             doc[].caret_col,
+                            doc[].anchor_line,
+                            doc[].anchor_col,
                         )
                 except err:
                     print("griddle: paint failed:", String(err))
@@ -243,20 +260,67 @@ def griddle_wndproc(
             _ = scroll_by(hwnd, -(delta * 3) // 120)
             return 0
 
+        # Typed characters. Windows has already done the keyboard layout, the
+        # dead keys and AltGr by the time this arrives, so what turns up is
+        # the character the person meant -- which is why editors handle text
+        # here rather than trying to reconstruct it from key codes.
+        if message == UInt32(winkb_constant["WM_CHAR"]()):
+            var unit = wparam & 0xFFFF
+            if unit == 13:  # Return
+                _ = edit_key(hwnd, "enter")
+            elif unit == 8:  # Backspace
+                _ = edit_key(hwnd, "backspace")
+            elif unit == 9 or unit >= 32:
+                # WM_CHAR carries UTF-16, so anything outside the basic plane
+                # arrives as two messages. Holding the first until the second
+                # comes is the difference between typing an emoji and typing
+                # two replacement characters.
+                _ = type_unit(hwnd, unit)
+            return 0
+
         if message == UInt32(winkb_constant["WM_KEYDOWN"]()):
+            var GetKeyState = win32[
+                def (c_int) thin abi("C") -> Int16, "GetKeyState"
+            ]()
+            var held = GetKeyState(c_int(winkb_constant["VK_SHIFT"]()))
+            var shift = (Int(held) & 0x8000) != 0
+            var ctrl_held = GetKeyState(c_int(winkb_constant["VK_CONTROL"]()))
+            var ctrl = (Int(ctrl_held) & 0x8000) != 0
             var page = page_lines(hwnd)
-            if wparam == winkb_constant["VK_NEXT"]():
-                _ = scroll_by(hwnd, page)
-            elif wparam == winkb_constant["VK_PRIOR"]():
-                _ = scroll_by(hwnd, -page)
+
+            if ctrl:
+                # Z, Y and A are virtual key codes, which are the ASCII
+                # capitals for letters -- one of Win32's few kindnesses.
+                if wparam == ord("Z"):
+                    _ = edit_key(hwnd, "redo" if shift else "undo")
+                elif wparam == ord("Y"):
+                    _ = edit_key(hwnd, "redo")
+                elif wparam == ord("A"):
+                    _ = move_key(hwnd, "all", False)
+                return 0
+
+            if wparam == winkb_constant["VK_DELETE"]():
+                _ = edit_key(hwnd, "delete")
+            elif wparam == winkb_constant["VK_LEFT"]():
+                _ = move_key(hwnd, "left", shift)
+            elif wparam == winkb_constant["VK_RIGHT"]():
+                _ = move_key(hwnd, "right", shift)
             elif wparam == winkb_constant["VK_DOWN"]():
-                _ = scroll_by(hwnd, 1)
+                _ = move_key(hwnd, "down", shift)
             elif wparam == winkb_constant["VK_UP"]():
-                _ = scroll_by(hwnd, -1)
+                _ = move_key(hwnd, "up", shift)
             elif wparam == winkb_constant["VK_HOME"]():
-                _ = scroll_to(hwnd, 0)
+                _ = move_key(hwnd, "home", shift)
             elif wparam == winkb_constant["VK_END"]():
-                _ = scroll_to(hwnd, 1 << 40)
+                _ = move_key(hwnd, "end", shift)
+            # The page keys move the caret by a page as well as the view.
+            # Scrolling without the caret leaves the next keystroke jumping
+            # back to wherever it was, which reads as the editor losing your
+            # place.
+            elif wparam == winkb_constant["VK_NEXT"]():
+                _ = move_page(hwnd, page, shift)
+            elif wparam == winkb_constant["VK_PRIOR"]():
+                _ = move_page(hwnd, -page, shift)
             return 0
 
         # A menu item was chosen -- by a person or by the agent, which sends

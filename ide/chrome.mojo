@@ -57,6 +57,7 @@ comptime LINE = 0x31353F  # hairline separators
 comptime EMBER = 0xFF8C37  # the one accent
 comptime INK = 0xDFE3EA  # primary text
 comptime DIM = 0x8B93A1  # secondary text
+comptime SELECT = 0x2A3A55  # selected text, behind the glyphs
 
 
 @fieldwise_init
@@ -412,7 +413,9 @@ def bring_up(
     return chrome
 
 
-def draw(chrome: Chrome, width: Int, height: Int) raises -> Layout:
+def draw(
+    chrome: Chrome, width: Int, height: Int, status: StringSlice = "Ln 1, Col 1"
+) raises -> Layout:
     """Paint every region of the chrome, and leave the batch open.
 
     Everything Direct2D draws between `BeginDraw` and `EndDraw` is one batch,
@@ -427,6 +430,8 @@ def draw(chrome: Chrome, width: Int, height: Int) raises -> Layout:
         chrome: The render target and its friends.
         width: Client width.
         height: Client height.
+        status: What the status bar should say. Composed by the caller,
+            because this module knows about rectangles and not about carets.
 
     Returns:
         Where every region landed, for whoever draws into them next.
@@ -515,14 +520,13 @@ def draw(chrome: Chrome, width: Int, height: Int) raises -> Layout:
     # The rail's selected item, as the one piece of accent on screen.
     _fill(chrome.target, D2D_RECT_F(0, 12, 3, 44), EMBER)
 
-    _label(chrome, "GRIDDLE", 8, Float32(RAIL_W + 14), 10, DIM)
-    _label(chrome, "ISSUES", 6, Float32(RAIL_W + SIDEBAR_W + 12),
+    _label(chrome, "GRIDDLE", Float32(RAIL_W + 14), 10, DIM)
+    _label(chrome, "ISSUES", Float32(RAIL_W + SIDEBAR_W + 12),
            Float32(height - STATUS_H - PANE_H + 8), DIM)
-    _label(chrome, "OUTPUT", 6,
+    _label(chrome, "OUTPUT",
            Float32((width + RAIL_W + SIDEBAR_W) // 2 + 12),
            Float32(height - STATUS_H - PANE_H + 8), DIM)
-    _label(chrome, "Ln 1, Col 1    UTF-8", 20, 12,
-           Float32(height - STATUS_H + 7), DIM)
+    _label(chrome, status, 12, Float32(height - STATUS_H + 7), DIM)
 
     return layout
 
@@ -596,9 +600,15 @@ def _fill(target: Int, rect: D2D_RECT_F, colour: Int) raises:
     _release(brush)
 
 
-def _label(chrome: Chrome, text: StaticString, count: Int,
+def _label(chrome: Chrome, text: StringSlice,
            x: Float32, y: Float32, colour: Int) raises:
-    """Draw one short label at a point."""
+    """Draw one short label at a point.
+
+    The length comes from the text rather than from the caller. It used to be
+    a parameter, and one call site had been passing eight for a seven-letter
+    word since sprint 0.4 -- drawing the NUL, which is invisible, which is why
+    it survived.
+    """
     var rt = Com[StaticString("ID2D1HwndRenderTarget")](
         borrowed=chrome.target
     )
@@ -613,6 +623,7 @@ def _label(chrome: Chrome, text: StaticString, count: Int,
     if brush == 0:
         return
     var wide_text = utf16(text)
+    var count = len(wide_text) - 1  # the NUL is not a character
     var box = D2D_RECT_F(x, y, x + 400, y + 24)
     var this = OpaquePointer[MutUntrackedOrigin](
         unsafe_from_address=chrome.target
@@ -678,7 +689,7 @@ def iid_bytes[name: StaticString]() -> List[UInt8]:
     return _guid_bytes(String(winkb_interface_iid[name]()))
 
 
-def utf16(s: StaticString) -> List[UInt16]:
+def utf16(s: StringSlice) -> List[UInt16]:
     """A NUL-terminated UTF-16 copy of ASCII text."""
     var out = List[UInt16]()
     for byte in s.as_bytes():

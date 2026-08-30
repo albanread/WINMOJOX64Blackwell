@@ -26,11 +26,19 @@ from ide.chrome import Chrome
 from ide.drop import last as last_drop, simulate
 from ide.gridview import (
     GUTTER_W,
+    all_text,
     caret_click,
     caret_move,
     caret_report,
     counters,
+    edit_key,
+    goto,
     hittest_report,
+    line_text,
+    move_key,
+    selection_report,
+    state_report,
+    type_text,
     page_lines,
     presents_immediately,
     reset_counters,
@@ -39,7 +47,7 @@ from ide.gridview import (
 )
 from ide.menu import invoke as invoke_menu
 from ide.screenshot import capture
-from ide.win32 import RECT, win32
+from ide.win32 import RECT, private_bytes, win32
 
 
 from std.ffi import c_int
@@ -123,7 +131,19 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             "scroll N | to N | top | end | page    move the editor\n"
             "caret [L C]       report or move the caret\n"
             "click X Y         put the caret where a click landed\n"
-            "hittest L         every caret stop on line L, round-tripped"
+            "hittest L         every caret stop on line L, round-tripped\n"
+            "type <text>       insert text; \\n and \\t are a newline and a tab\n"
+            "enter             split the line at the caret\n"
+            "backspace         delete backwards, or the selection\n"
+            "delete            delete forwards, or the selection\n"
+            "move D [select]   left|right|up|down|home|end|all\n"
+            "undo | redo       step through the history\n"
+            "sel               what is selected\n"
+            "state             dirty flag, history depth, size\n"
+            "text [L]          one line, or the whole document\n"
+            "goto L[:C]        put the caret there, one-based\n"
+            "mem               what this process is holding\n"
+            "repeat N <cmd>    run one command N times"
         )
 
     if verb == "echo":
@@ -259,6 +279,104 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         if rest.byte_length() == 0:
             return String("usage: hittest <line>")
         return hittest_report(hwnd, Int(rest))
+
+    if verb == "repeat":
+        # `repeat 1000 type a`. A driver convenience, in the same spirit as
+        # `frame N`: a thousand separate edits is the only way to measure what
+        # a thousand-deep history costs, and a thousand `;;`-joined commands
+        # is longer than a Windows command line.
+        #
+        # Not recursive. `repeat` inside `repeat` is a way to ask for a very
+        # long afternoon by accident.
+        var space2 = rest.find(" ")
+        if space2 < 0:
+            return String("usage: repeat <n> <command>")
+        var times = Int(String(rest[byte=:space2]))
+        var inner = String(String(rest[byte=space2 + 1 :]).strip())
+        if inner.startswith("repeat"):
+            return String("error: repeat cannot repeat itself")
+        if times < 0 or times > 100000:
+            return String("error: repeat count out of range")
+        var last = String("")
+        for _ in range(times):
+            last = agent_command(hwnd, inner)
+        return String("repeated ") + String(times) + " times; last: " + last
+
+    if verb == "type":
+        # Typing, with a backslash-n for a newline so a multi-line edit is one
+        # command. The check suite leans on this: an editor that can only be
+        # driven one character per process launch is not really drivable.
+        var typed = String("")
+        var i = 0
+        var raw = rest.as_bytes()
+        while i < len(raw):
+            if raw[i] == UInt8(ord("\\")) and i + 1 < len(raw):
+                var next = raw[i + 1]
+                if next == UInt8(ord("n")):
+                    typed += "\n"
+                    i += 2
+                    continue
+                if next == UInt8(ord("t")):
+                    typed += "\t"
+                    i += 2
+                    continue
+                if next == UInt8(ord("\\")):
+                    typed += "\\"
+                    i += 2
+                    continue
+            typed += chr(Int(raw[i]))
+            i += 1
+        return type_text(hwnd, typed)
+
+    if verb == "goto":
+        # `goto 400` or `goto 400:12`. One-based on the way in, because that
+        # is what the status bar shows and what a compiler diagnostic says,
+        # and zero-based everywhere inside.
+        if rest.byte_length() == 0:
+            return String("usage: goto <line>[:<col>]")
+        var colon = rest.find(":")
+        var want_line = rest if colon < 0 else String(rest[byte=:colon])
+        var want_col = String("1") if colon < 0 else String(
+            rest[byte=colon + 1 :]
+        )
+        return goto(hwnd, Int(want_line) - 1, Int(want_col) - 1)
+
+    if verb == "undo" or verb == "redo" or verb == "backspace" or (
+        verb == "delete" or verb == "enter"
+    ):
+        return edit_key(hwnd, verb)
+
+    if verb == "move":
+        # `move left`, `move right select`, `move all`. One verb rather than
+        # six because every one of them does the same three things afterwards.
+        var parts = rest.split(" ")
+        if len(parts) == 0 or rest.byte_length() == 0:
+            return String(
+                "usage: move left|right|up|down|home|end|all [select]"
+            )
+        var extend = len(parts) > 1 and String(parts[1]) == "select"
+        return move_key(hwnd, String(parts[0]), extend)
+
+    if verb == "sel":
+        return selection_report(hwnd)
+
+    if verb == "state":
+        return state_report(hwnd)
+
+    if verb == "text":
+        if rest.byte_length() == 0:
+            return all_text(hwnd)
+        return line_text(hwnd, Int(rest) - 1)
+
+    if verb == "mem":
+        # What the process is actually holding. The undo depth claim is a
+        # memory claim, and a memory claim wants a number from the operating
+        # system rather than a calculation from the thing being measured.
+        var bytes = private_bytes()
+        return (
+            String("committed ") + String(bytes) + " bytes ("
+            + String(bytes // 1024) + " KB)"
+        )
 
     if verb == "grid":
         # The counters, and a way to zero them. Measuring a scroll means

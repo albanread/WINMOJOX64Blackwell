@@ -36,6 +36,22 @@ from ide.chrome import (
     EMBER,
     INK,
     Layout,
+    SELECT,
+)
+from ide.doc import Doc, Grid
+from ide.edit import (
+    backspace,
+    delete_forward,
+    insert,
+    move_horizontal,
+    move_line_edge,
+    move_to,
+    move_vertical,
+    newline,
+    redo,
+    select_all,
+    selected_text,
+    undo,
 )
 from ide.rope import Rope
 from ide.win32 import RECT, win32
@@ -60,82 +76,6 @@ comptime GUTTER_W = 56
 comptime TEXT_PAD = 10
 
 
-@fieldwise_init
-struct Grid(Movable):
-    """The editor's view onto a rope: what is visible, and what is cached."""
-
-    var top_line: Int
-    var line_height: Float32
-    var capacity: Int
-    # Direct-mapped cache: slot `line % capacity` holds this line's layout.
-    var cached_line: List[Int]
-    var cached_rev: List[Int]
-    var cached_layout: List[Int]
-    # Inspectable, because the claim needs to be checkable.
-    var hits: Int
-    var misses: Int
-    var drawn: Int
-    # One character's width in the editor face, asked of DirectWrite once and
-    # then used as arithmetic. Zero until measured; see `advance_of`.
-    var advance: Float32
-
-    def __init__(out self, capacity: Int = 128):
-        """An empty grid, scrolled to the top.
-
-        Args:
-            capacity: How many line layouts to keep. A little over a
-                screenful, so scrolling reuses rather than thrashes.
-        """
-        self.top_line = 0
-        self.line_height = 16.0
-        self.capacity = capacity
-        self.cached_line = List[Int]()
-        self.cached_rev = List[Int]()
-        self.cached_layout = List[Int]()
-        for _ in range(capacity):
-            self.cached_line.append(-1)
-            self.cached_rev.append(-1)
-            self.cached_layout.append(0)
-        self.hits = 0
-        self.misses = 0
-        self.drawn = 0
-        self.advance = 0
-
-    def visible_lines(self, height: Float32) -> Int:
-        """How many lines fit in a region this tall, partial one included."""
-        return Int(height / self.line_height) + 1
-
-
-@fieldwise_init
-struct Doc(Movable):
-    """A document and the view onto it.
-
-    The window keeps one of these. It is separate from `Chrome` -- which is
-    Direct2D's business -- because the text outlives any particular render
-    target, and because a lost device would otherwise take the file with it.
-    """
-
-    var rope: Rope
-    var grid: Grid
-    # Bumped by every edit. Layouts are keyed on it, so an edit invalidates
-    # the cache without anyone having to remember to clear it.
-    var revision: Int
-    # The caret, as a line and a UTF-16 code-unit offset within it. Code units
-    # rather than characters or bytes because that is what DirectWrite hit
-    # tests in and what the text services framework will want in sprint 1.5;
-    # having one unit throughout is worth more than having a tidy one.
-    var caret_line: Int
-    var caret_col: Int
-
-    def __init__(out self, var rope: Rope):
-        """A document scrolled to the top, with an empty cache."""
-        self.rope = rope^
-        self.grid = Grid()
-        self.revision = 0
-        self.caret_line = 0
-        self.caret_col = 0
-
-
 def draw_text(
     mut grid: Grid,
     chrome: Chrome,
@@ -144,6 +84,8 @@ def draw_text(
     revision: Int,
     caret_line: Int = -1,
     caret_col: Int = 0,
+    anchor_line: Int = -1,
+    anchor_col: Int = 0,
 ) raises:
     """Draw the visible slice of `rope` into `region`.
 
@@ -155,6 +97,8 @@ def draw_text(
         revision: The document's edit revision, part of the cache key.
         caret_line: Which line the caret is on, or -1 for no caret.
         caret_col: Its UTF-16 offset within that line.
+        anchor_line: The selection's other end, or -1 for none.
+        anchor_col: Its UTF-16 offset.
 
     Raises:
         If DirectWrite refuses to lay out a line.
@@ -193,12 +137,64 @@ def draw_text(
     var count = grid.visible_lines(height)
     var total = rope.line_count()
 
+    # The selection, normalised so the drawing loop never has to think about
+    # which end the person started from.
+    var selected = anchor_line >= 0 and (
+        anchor_line != caret_line or anchor_col != caret_col
+    )
+    var first_line = anchor_line
+    var first_col = anchor_col
+    var last_line = caret_line
+    var last_col = caret_col
+    if anchor_line > caret_line or (
+        anchor_line == caret_line and anchor_col > caret_col
+    ):
+        first_line = caret_line
+        first_col = caret_col
+        last_line = anchor_line
+        last_col = anchor_col
+
     var row = 0
     while row < count:
         var line = grid.top_line + row
         if line >= total:
             break
         var y = region.top + Float32(row) * grid.line_height
+
+        # Selection under the glyphs, so the text stays readable on top of
+        # it rather than being drawn first and then covered.
+        if selected and line >= first_line and line <= last_line:
+            var from_x = caret_x(
+                grid,
+                dwrite,
+                chrome,
+                rope,
+                line,
+                first_col if line == first_line else 0,
+                revision,
+            )
+            var to_x: Float32
+            if line == last_line:
+                to_x = caret_x(
+                    grid, dwrite, chrome, rope, line, last_col, revision
+                )
+            else:
+                # A line entirely inside the selection runs to its own end,
+                # plus a little: the newline is selected too, and showing the
+                # highlight stop at the last glyph makes a multi-line
+                # selection look like it excluded the line breaks.
+                to_x = _line_width(grid, dwrite, chrome, rope, line, revision)
+                to_x += grid.advance
+            if to_x > from_x:
+                _fill_rect(
+                    this,
+                    chrome.target,
+                    region.left + Float32(GUTTER_W) + from_x,
+                    y,
+                    region.left + Float32(GUTTER_W) + to_x,
+                    y + grid.line_height,
+                    SELECT,
+                )
 
         var layout = _layout_for(grid, dwrite, chrome, rope, line, revision)
         if layout != 0:
@@ -553,14 +549,12 @@ def caret_move(hwnd: Int, line: Int, col: Int) raises -> String:
     if bits[0] == 0:
         return String("error: this window has no document")
     var doc = Pointer[Doc, MutAnyOrigin](unsafe_from_address=bits[0])
-    var last = doc[].rope.line_count() - 1
-    var want = line
-    if want > last:
-        want = last
-    if want < 0:
-        want = 0
-    doc[].caret_line = want
-    doc[].caret_col = col if col > 0 else 0
+    # Through move_to, which collapses the selection. Setting the caret
+    # directly and leaving the anchor where it was leaves a selection nobody
+    # asked for -- and since every edit replaces the selection, the next
+    # keystroke then eats the text between here and wherever the anchor had
+    # been. The editing suite found exactly that.
+    move_to(doc[], line, col)
     var InvalidateRect = win32[
         def (Int, Int, c_int) thin abi("C") -> c_int, "InvalidateRect"
     ]()
@@ -605,9 +599,12 @@ def caret_click(hwnd: Int, x: Int, y: Int) raises -> String:
     var into = Float32(x) - editor.left - Float32(GUTTER_W)
     if into < 0:
         into = 0
-    doc[].caret_line = line
-    doc[].caret_col = col_at_x(
-        doc[].grid, dwrite, chrome[], doc[].rope, line, into, doc[].revision
+    move_to(
+        doc[],
+        line,
+        col_at_x(
+            doc[].grid, dwrite, chrome[], doc[].rope, line, into, doc[].revision
+        ),
     )
     var InvalidateRect = win32[
         def (Int, Int, c_int) thin abi("C") -> c_int, "InvalidateRect"
@@ -914,3 +911,272 @@ def draw_caret(
         "FillRectangle",
     ](this)(this, com_addr(r), brush)
     _release(brush)
+
+
+# ===----------------------------------------------------------------------===#
+# Editing, from a window handle
+#
+# The same shape as the caret helpers above: find the document behind the
+# HWND, do the thing, mark the window for repaint. `ide/edit.mojo` holds the
+# operations themselves and knows nothing about windows, so it stays testable
+# without one; this is the layer that turns a message or a verb into a call.
+# ===----------------------------------------------------------------------===#
+
+
+def _touch(hwnd: Int) raises:
+    """Mark the window for repaint after the document changed."""
+    var InvalidateRect = win32[
+        def (Int, Int, c_int) thin abi("C") -> c_int, "InvalidateRect"
+    ]()
+    _ = InvalidateRect(hwnd, 0, c_int(0))
+
+
+def _doc_at(hwnd: Int) raises -> Pointer[Doc, MutAnyOrigin]:
+    """The window's document, or a raise if it has none."""
+    var address = doc_of(hwnd)
+    if address == 0:
+        raise Error("this window has no document")
+    return Pointer[Doc, MutAnyOrigin](unsafe_from_address=address)
+
+
+def follow_caret(hwnd: Int) raises:
+    """Scroll so the caret is on screen, if it is not already.
+
+    Called after anything that moves the caret. A caret that has wandered off
+    the top or bottom is the editor's most common small betrayal: you press a
+    key, something happens, and you cannot see what.
+    """
+    var doc = _doc_at(hwnd)
+    var page = page_lines(hwnd)
+    if doc[].caret_line < doc[].grid.top_line:
+        _ = scroll_to(hwnd, doc[].caret_line)
+    elif doc[].caret_line >= doc[].grid.top_line + page:
+        _ = scroll_to(hwnd, doc[].caret_line - page + 1)
+
+
+def type_text(hwnd: Int, text: String) raises -> String:
+    """Insert text at the caret."""
+    var doc = _doc_at(hwnd)
+    insert(doc[], text)
+    follow_caret(hwnd)
+    _touch(hwnd)
+    return caret_report(hwnd)
+
+
+def edit_key(hwnd: Int, what: StringSlice) raises -> String:
+    """One editing action by name, so a verb and a keystroke share a path."""
+    var doc = _doc_at(hwnd)
+    if what == "backspace":
+        backspace(doc[])
+    elif what == "delete":
+        delete_forward(doc[])
+    elif what == "enter":
+        newline(doc[])
+    elif what == "undo":
+        if not undo(doc[]):
+            return String("nothing to undo")
+    elif what == "redo":
+        if not redo(doc[]):
+            return String("nothing to redo")
+    else:
+        return String("error: unknown edit '") + String(what) + "'"
+    follow_caret(hwnd)
+    _touch(hwnd)
+    return caret_report(hwnd)
+
+
+def move_key(hwnd: Int, what: StringSlice, extend: Bool) raises -> String:
+    """One caret movement by name, shared by the keyboard and the agent."""
+    var doc = _doc_at(hwnd)
+    if what == "left":
+        move_horizontal(doc[], -1, extend)
+    elif what == "right":
+        move_horizontal(doc[], 1, extend)
+    elif what == "up":
+        move_vertical(doc[], -1, extend)
+    elif what == "down":
+        move_vertical(doc[], 1, extend)
+    elif what == "home":
+        move_line_edge(doc[], False, extend)
+    elif what == "end":
+        move_line_edge(doc[], True, extend)
+    elif what == "all":
+        select_all(doc[])
+    else:
+        return String("error: unknown move '") + String(what) + "'"
+    follow_caret(hwnd)
+    _touch(hwnd)
+    return caret_report(hwnd)
+
+
+def goto(hwnd: Int, line: Int, col: Int) raises -> String:
+    """Put the caret on a line, and scroll so it can be seen."""
+    var doc = _doc_at(hwnd)
+    move_to(doc[], line, col)
+    # Centred rather than merely on screen: `goto` is how a person arrives
+    # somewhere new, and arriving at the very bottom row of the window means
+    # immediately scrolling to see any context at all.
+    var page = page_lines(hwnd)
+    var top = doc[].caret_line - page // 2
+    _ = scroll_to(hwnd, top if top > 0 else 0)
+    _touch(hwnd)
+    return caret_report(hwnd)
+
+
+def selection_report(hwnd: Int) raises -> String:
+    """What is selected, and between which two points."""
+    var doc = _doc_at(hwnd)
+    if not doc[].has_selection():
+        return String("no selection")
+    return (
+        String("selection ") + String(doc[].anchor_line) + ":"
+        + String(doc[].anchor_col) + " to " + String(doc[].caret_line) + ":"
+        + String(doc[].caret_col) + "\n" + selected_text(doc[])
+    )
+
+
+def status_line(doc: Doc) raises -> String:
+    """What the status bar says: position, selection, and whether it is saved.
+
+    One-based, because that is what a person counts in and what every compiler
+    diagnostic says. Everything inside is zero-based; this is the one place
+    the two meet.
+    """
+    var out = (
+        String("Ln ") + String(doc.caret_line + 1)
+        + ", Col " + String(doc.caret_col + 1)
+    )
+    if doc.has_selection():
+        # How much is selected, in the same units the caret is in. A person
+        # dragging a selection wants to know how much they have, and lines is
+        # the number that matters once it is more than one.
+        var lines = doc.caret_line - doc.anchor_line
+        if lines < 0:
+            lines = -lines
+        if lines > 0:
+            out += "  (" + String(lines + 1) + " lines selected)"
+        else:
+            var cols = doc.caret_col - doc.anchor_col
+            if cols < 0:
+                cols = -cols
+            out += "  (" + String(cols) + " selected)"
+    out += "    UTF-8"
+    if doc.dirty:
+        out += "    modified"
+    return out
+
+
+def state_report(hwnd: Int) raises -> String:
+    """The document's edit state: dirty, and how far it can be undone."""
+    var doc = _doc_at(hwnd)
+    return (
+        String("dirty=") + String(doc[].dirty)
+        + " undo=" + String(len(doc[].past))
+        + " redo=" + String(len(doc[].future))
+        + " rev=" + String(doc[].revision)
+        + " bytes=" + String(doc[].rope.byte_length())
+        + " lines=" + String(doc[].rope.line_count())
+    )
+
+
+def line_text(hwnd: Int, line: Int) raises -> String:
+    """One line, read back out of the rope."""
+    var doc = _doc_at(hwnd)
+    if line < 0 or line >= doc[].rope.line_count():
+        return String("error: no line ") + String(line)
+    return doc[].rope.line(line)
+
+
+def all_text(hwnd: Int) raises -> String:
+    """The whole document. For checks on small documents, not for humans."""
+    var doc = _doc_at(hwnd)
+    return doc[].rope.to_string()
+
+
+def move_page(hwnd: Int, by: Int, extend: Bool) raises -> String:
+    """Move the caret a page, and the view with it."""
+    var doc = _doc_at(hwnd)
+    move_to(doc[], doc[].caret_line + by, doc[].caret_col, extend)
+    _ = scroll_by(hwnd, by)
+    follow_caret(hwnd)
+    _touch(hwnd)
+    return caret_report(hwnd)
+
+
+def type_unit(hwnd: Int, unit: Int) raises -> String:
+    """Insert one UTF-16 code unit, joining surrogate pairs across messages.
+
+    Windows delivers a character outside the basic plane as two WM_CHARs, a
+    high surrogate and then a low. Inserting each as it arrives would put two
+    lone surrogates in the document, which is not the emoji anyone typed. So
+    the high half waits on the document until its partner turns up.
+
+    A high surrogate that is never followed is dropped rather than kept
+    forever: it is not a character, and leaving it pending would attach it to
+    whatever unrelated thing was typed next.
+
+    Args:
+        hwnd: The window.
+        unit: The UTF-16 code unit from WM_CHAR.
+
+    Returns:
+        Where the caret ended up, or a note that the pair is incomplete.
+
+    Raises:
+        If the edit fails.
+    """
+    var doc = _doc_at(hwnd)
+    if unit >= 0xD800 and unit <= 0xDBFF:
+        doc[].pending = unit
+        return String("awaiting the low half of a surrogate pair")
+
+    var code = unit
+    if unit >= 0xDC00 and unit <= 0xDFFF:
+        if doc[].pending == 0:
+            # A low surrogate with nothing before it is not a character.
+            return String("a stray low surrogate, ignored")
+        code = 0x10000 + ((doc[].pending - 0xD800) << 10) + (unit - 0xDC00)
+    doc[].pending = 0
+    return type_text(hwnd, String(chr(code)))
+
+
+def _fill_rect(
+    this: OpaquePointer[MutUntrackedOrigin],
+    target: Int,
+    left: Float32,
+    top: Float32,
+    right: Float32,
+    bottom: Float32,
+    colour: Int,
+) raises:
+    """One filled rectangle, for the selection band."""
+    var brush = _brush(target, colour)
+    if brush == 0:
+        return
+    var r = D2D_RECT_F(left, top, right, bottom)
+    com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[D2D_RECT_F, MutAnyOrigin],
+            Int,
+        ) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "FillRectangle",
+    ](this)(this, com_addr(r), brush)
+    _release(brush)
+
+
+def _line_width(
+    mut grid: Grid,
+    dwrite: OpaquePointer[MutUntrackedOrigin],
+    chrome: Chrome,
+    rope: Rope,
+    line: Int,
+    revision: Int,
+) raises -> Float32:
+    """How far a line's text reaches, in DIPs from the text's left edge."""
+    var text = rope.line(line)
+    var units = 0
+    for ch in text.codepoints():
+        units += 2 if Int(ch) >= 0x10000 else 1
+    return caret_x(grid, dwrite, chrome, rope, line, units, revision)

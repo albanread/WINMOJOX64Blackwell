@@ -18,8 +18,14 @@ carry anything resolved in advance. The tree's established answer -- an
 
 from std.ffi import c_int
 from std.memory import Pointer
+from std.sys.info import size_of
+from std.sys._com import com_addr
 from std.sys._win32 import Win32Module
-from std.sys._winkb import winkb_constant, winkb_function_dll
+from std.sys._winkb import (
+    winkb_constant,
+    winkb_function_dll,
+    winkb_struct_size,
+)
 
 
 # ===----------------------------------------------------------------------===#
@@ -184,3 +190,71 @@ struct COPYDATASTRUCT(Defaultable, Copyable, Movable):
 # ===----------------------------------------------------------------------===#
 
 comptime WndProcType = def (Int, UInt32, Int, Int) thin abi("C") -> Int
+
+
+@fieldwise_init
+struct PROCESS_MEMORY_COUNTERS(Defaultable, Copyable, Movable):
+    """What a process is holding, as PSAPI reports it."""
+
+    var cb: UInt32
+    var PageFaultCount: UInt32
+    var PeakWorkingSetSize: Int
+    var WorkingSetSize: Int
+    var QuotaPeakPagedPoolUsage: Int
+    var QuotaPagedPoolUsage: Int
+    var QuotaPeakNonPagedPoolUsage: Int
+    var QuotaNonPagedPoolUsage: Int
+    var PagefileUsage: Int
+    var PeakPagefileUsage: Int
+
+    def __init__(out self):
+        """Empty, ready to be filled in."""
+        self.cb = 0
+        self.PageFaultCount = 0
+        self.PeakWorkingSetSize = 0
+        self.WorkingSetSize = 0
+        self.QuotaPeakPagedPoolUsage = 0
+        self.QuotaPagedPoolUsage = 0
+        self.QuotaPeakNonPagedPoolUsage = 0
+        self.QuotaNonPagedPoolUsage = 0
+        self.PagefileUsage = 0
+        self.PeakPagefileUsage = 0
+
+
+def private_bytes() raises -> Int:
+    """How much memory this process has committed, in bytes.
+
+    Private commit rather than working set. The working set is what is
+    resident, which the operating system trims and grows for reasons of its
+    own; a measurement of "how much did keeping a thousand undo states cost"
+    wants what was asked for, not what is currently paged in.
+
+    Returns:
+        The commit charge in bytes, or zero if PSAPI declined.
+
+    Raises:
+        If the entry point cannot be resolved.
+    """
+    comptime assert (
+        size_of[PROCESS_MEMORY_COUNTERS]()
+        == winkb_struct_size["PROCESS_MEMORY_COUNTERS"]()
+    ), "PROCESS_MEMORY_COUNTERS does not match Windows"
+
+    var GetCurrentProcess = win32[
+        def () thin abi("C") -> Int, "GetCurrentProcess"
+    ]()
+    var GetProcessMemoryInfo = win32[
+        def (
+            Int, Pointer[PROCESS_MEMORY_COUNTERS, MutAnyOrigin], UInt32
+        ) thin abi("C") -> c_int,
+        "GetProcessMemoryInfo",
+    ]()
+    var counters = PROCESS_MEMORY_COUNTERS()
+    counters.cb = UInt32(size_of[PROCESS_MEMORY_COUNTERS]())
+    if GetProcessMemoryInfo(
+        GetCurrentProcess(),
+        com_addr(counters),
+        UInt32(size_of[PROCESS_MEMORY_COUNTERS]()),
+    ) == 0:
+        return 0
+    return counters.PagefileUsage
