@@ -131,6 +131,7 @@ def paths_from(data_object: Int) raises -> String:
         "IDataObject",
         "GetData",
     ](this)(this, Int(Pointer(to=fmt)), Int(Pointer(to=medium)))
+    _ = fmt
     if hr != 0 or medium.handle == 0:
         return String("")
 
@@ -171,6 +172,7 @@ def paths_from(data_object: Int) raises -> String:
         def (Int) thin abi("C") -> NoneType, "ReleaseStgMedium"
     ]()
     _ = ReleaseStgMedium(Int(Pointer(to=medium)))
+    _ = medium
     return out
 
 

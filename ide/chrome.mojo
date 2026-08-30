@@ -265,6 +265,11 @@ struct Chrome(ImplicitlyCopyable, Movable):
     # is what the window keeps, and a captureless procedure has exactly one
     # place to look for anything.
     var drop_target: Int
+    # The document being edited, as a `Doc*`. An address rather than the
+    # struct because this module must not know what a rope is -- and because
+    # the window procedure has one pointer to work with and everything it
+    # needs has to be reachable from it.
+    var doc: Int
 
     def __init__(out self):
         """Nothing brought up yet."""
@@ -273,6 +278,7 @@ struct Chrome(ImplicitlyCopyable, Movable):
         self.dwrite = 0
         self.text_format = 0
         self.drop_target = 0
+        self.doc = 0
 
 
 def bring_up(hwnd: Int, width: Int, height: Int) raises -> Chrome:
@@ -342,6 +348,8 @@ def bring_up(hwnd: Int, width: Int, height: Int) raises -> Chrome:
         Int(Pointer(to=hwnd_props)),
         Pointer(to=chrome.target).unsafe_origin_cast[MutAnyOrigin](),
     )
+    _ = rt_props
+    _ = hwnd_props
     if chrome.target == 0:
         raise Error("CreateHwndRenderTarget produced nothing")
 
@@ -379,26 +387,38 @@ def bring_up(hwnd: Int, width: Int, height: Int) raises -> Chrome:
     return chrome
 
 
-def draw(chrome: Chrome, width: Int, height: Int) raises:
-    """Paint every region of the chrome.
+def draw(chrome: Chrome, width: Int, height: Int) raises -> Layout:
+    """Paint every region of the chrome, and leave the batch open.
+
+    Everything Direct2D draws between `BeginDraw` and `EndDraw` is one batch,
+    so the text cannot be a second call that opens its own -- and the chrome
+    cannot draw it either, because the grid knows about the rope and this
+    module deliberately does not. So the batch is left open and the returned
+    layout says where the text goes; `finish` closes it. The window procedure
+    is the one place that knows about both halves, which is where a decision
+    that needs both belongs.
 
     Args:
         chrome: The render target and its friends.
         width: Client width.
         height: Client height.
 
+    Returns:
+        Where every region landed, for whoever draws into them next.
+
     Raises:
         If a Direct2D call fails.
     """
-    if chrome.target == 0:
-        return
-    var rt = Com[StaticString("ID2D1HwndRenderTarget")](borrowed=chrome.target)
     var layout = Layout(width, height)
+    if chrome.target == 0:
+        return layout
+    var rt = Com[StaticString("ID2D1HwndRenderTarget")](borrowed=chrome.target)
 
     # Resize first: a window that grew since the last paint would otherwise
     # present a stretched copy of the old surface.
     var size = D2D_SIZE_U(UInt32(width), UInt32(height))
     _ = rt.Resize(Int(Pointer(to=size)))
+    _ = size
 
     var this = OpaquePointer[MutUntrackedOrigin](
         unsafe_from_address=chrome.target
@@ -417,6 +437,7 @@ def draw(chrome: Chrome, width: Int, height: Int) raises:
         "ID2D1HwndRenderTarget",
         "Clear",
     ](this)(this, Int(Pointer(to=ground)))
+    _ = ground
 
     _fill(chrome.target, layout.editor(), PANEL)
     _fill(chrome.target, layout.rail(), RAIL)
@@ -477,9 +498,46 @@ def draw(chrome: Chrome, width: Int, height: Int) raises:
     _label(chrome, "Ln 1, Col 1    UTF-8", 20, 12,
            Float32(height - STATUS_H + 7), DIM)
 
+    return layout
+
+
+def finish(chrome: Chrome) raises -> Int:
+    """Close the batch `draw` opened and present it.
+
+    Direct2D reports nothing per call: every failure between `BeginDraw` and
+    here is deferred to this one HRESULT. It is returned rather than raised
+    because `D2DERR_RECREATE_TARGET` is not really an error -- it means the
+    device was lost, and the caller's answer is to build a new target, not to
+    unwind. That is also why this goes through the raw layer: a `Com[...]`
+    call raises on any failing HRESULT, which is right nearly everywhere and
+    wrong here, where the interesting answer is a failing one.
+
+    Args:
+        chrome: The render target.
+
+    Returns:
+        The batch's HRESULT, or zero when there was nothing to close.
+
+    Raises:
+        If the call itself cannot be made.
+    """
+    if chrome.target == 0:
+        return 0
+    var this = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.target
+    )
     var tag1 = Int(0)
     var tag2 = Int(0)
-    _ = rt.EndDraw(Int(Pointer(to=tag1)), Int(Pointer(to=tag2)))
+    var hr = com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin], Int, Int
+        ) thin abi("C") -> Int32,
+        "ID2D1HwndRenderTarget",
+        "EndDraw",
+    ](this)(this, Int(Pointer(to=tag1)), Int(Pointer(to=tag2)))
+    _ = tag1
+    _ = tag2
+    return Int(hr)
 
 
 def _fill(target: Int, rect: D2D_RECT_F, colour: Int) raises:
@@ -492,6 +550,7 @@ def _fill(target: Int, rect: D2D_RECT_F, colour: Int) raises:
         0,
         Pointer(to=brush).unsafe_origin_cast[MutAnyOrigin](),
     )
+    _ = c
     if brush == 0:
         return
     var r = rect
@@ -503,6 +562,7 @@ def _fill(target: Int, rect: D2D_RECT_F, colour: Int) raises:
         "ID2D1HwndRenderTarget",
         "FillRectangle",
     ](this)(this, Int(Pointer(to=r)), brush)
+    _ = r
     _release(brush)
 
 
@@ -519,6 +579,7 @@ def _label(chrome: Chrome, text: StaticString, count: Int,
         0,
         Pointer(to=brush).unsafe_origin_cast[MutAnyOrigin](),
     )
+    _ = c
     if brush == 0:
         return
     var wide_text = utf16(text)
@@ -544,6 +605,7 @@ def _label(chrome: Chrome, text: StaticString, count: Int,
         UInt32(0),
     )
     _ = wide_text
+    _ = box
     _release(brush)
 
 

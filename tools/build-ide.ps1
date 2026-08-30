@@ -8,7 +8,15 @@
 [CmdletBinding()]
 param(
     [string]$Out = 'build\griddle.exe',
-    [switch]$Check
+    [switch]$Check,
+    # Debug is the default because that is the build the debugger work in
+    # sprint 0.0 exists to serve, and because -O2 inlines the frames a person
+    # wants to stand in.
+    #
+    # -Optimized currently produces a binary that runs but does not draw: see
+    # docs/optimized-build-miscompile.md. The switch exists because the
+    # investigation needs it, not because the output is usable.
+    [switch]$Optimized
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -26,8 +34,15 @@ $env:PATH = "$linkDir;" + $env:PATH
 $env:MODULAR_MOJO_MAX_WINKB_PATH = (Resolve-Path 'F:\bzs\external\+http_archive+winkb\windows_api.db' -EA SilentlyContinue)
 
 New-Item -ItemType Directory -Force -Path (Split-Path $Out) | Out-Null
-Write-Host "building $Out"
-cmd /c "`"$mojo`" build --no-optimization -I mojo/stdlib -I . -o `"$Out`" ide\griddle.mojo 2>&1"
+$opt = if ($Optimized) { '' } else { '--no-optimization ' }
+Write-Host "building $Out$(if ($Optimized) { ' (optimized)' })"
+if ($Optimized) {
+    Write-Warning ('the optimized build does not draw -- Direct2D calls that ' +
+        'take the address of a local arrive empty. See ' +
+        'docs/optimized-build-miscompile.md. Use this binary to investigate ' +
+        'that, not to run the IDE.')
+}
+cmd /c "`"$mojo`" build $opt-I mojo/stdlib -I . -o `"$Out`" ide\griddle.mojo 2>&1"
 if (-not (Test-Path $Out)) { throw "griddle did not link" }
 
 foreach ($dll in @(

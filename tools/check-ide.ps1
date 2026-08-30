@@ -158,6 +158,93 @@ if ($out -match 'refcount=2' -and $out -match 'DragEnter hr=0' -and $out -match 
     Record 'drop-target' 'FAIL' (($out -split "`n")[-2])
 }
 
+# ---- 10-13. the text grid ---------------------------------------------------
+# All four run against a synthetic quarter-million-line document, because the
+# claims being checked are the ones that only a large document can falsify:
+# a small file draws every line either way.
+function AskBig($command) {
+    return (cmd /c "`"$Exe`" --lines 250000 --cmd `"$command`" 2>&1" | Out-String)
+}
+function Counters($text) {
+    # The last counter line an answer contains, as a hashtable. The @() is
+    # load-bearing: a single match collapses to a string, and [-1] on a string
+    # is its last character, which then matches nothing and looks like an
+    # empty answer rather than a bug in this line.
+    $line = @($text -split "`n" | Where-Object { $_ -match 'layouts: hits=' })[-1]
+    if (-not $line) { return $null }
+    $h = @{}
+    foreach ($m in [regex]::Matches($line, '(\w+)=(\d+)')) {
+        $h[$m.Groups[1].Value] = [int]$m.Groups[2].Value
+    }
+    return $h
+}
+
+# 10. Only the viewport is touched. A 250,001-line document draws a screenful.
+$c = Counters (AskBig 'grid')
+if ($null -eq $c) {
+    Record 'grid-viewport' 'FAIL' 'no counters came back'
+} elseif ($c.lines -lt 250000) {
+    Record 'grid-viewport' 'FAIL' "document is $($c.lines) lines, wanted 250001"
+} elseif ($c.drawn -gt 0 -and $c.drawn -lt 200) {
+    Record 'grid-viewport' 'PASS' `
+        "$($c.lines) lines, $($c.drawn) drawn -- a screenful, not a document"
+} else {
+    Record 'grid-viewport' 'FAIL' "drew $($c.drawn) lines of $($c.lines)"
+}
+
+# 11. Scrolling one line lays out one line. This is the whole cache claim:
+# if it ever stops being true, this number is where it shows.
+$c = Counters (AskBig 'grid reset;;scroll 1;;paint;;grid')
+if ($null -eq $c) {
+    Record 'grid-scroll-reuse' 'FAIL' 'no counters came back'
+} elseif ($c.misses -le 2 -and $c.hits -ge 10) {
+    Record 'grid-scroll-reuse' 'PASS' `
+        "one line scrolled: $($c.hits) reused, $($c.misses) laid out"
+} else {
+    Record 'grid-scroll-reuse' 'FAIL' `
+        "one line scrolled but laid out $($c.misses) (reused $($c.hits))"
+}
+
+# 12. Half a screen exposes half a screen. Guards against the cache
+# accidentally being right for one line and wrong for anything larger.
+$c = Counters (AskBig 'grid reset;;scroll 12;;paint;;grid')
+if ($null -eq $c) {
+    Record 'grid-scroll-partial' 'FAIL' 'no counters came back'
+} elseif ($c.misses -ge 10 -and $c.misses -le 14 -and $c.hits -ge 10) {
+    Record 'grid-scroll-partial' 'PASS' `
+        "twelve lines scrolled: $($c.hits) reused, $($c.misses) laid out"
+} else {
+    Record 'grid-scroll-partial' 'FAIL' `
+        "twelve lines scrolled: $($c.hits) reused, $($c.misses) laid out"
+}
+
+# 13. Neither end can be scrolled past. `1 << 40` is deliberately absurd:
+# the answer should be the last line, not the number asked for.
+$out = AskBig 'scroll to 999999999;;grid;;scroll to -50;;grid'
+$tops = [regex]::Matches($out, 'top=(\d+)') | ForEach-Object { [int]$_.Groups[1].Value }
+if ($tops.Count -ge 2 -and $tops[0] -eq 250000 -and $tops[1] -eq 0) {
+    Record 'grid-clamp' 'PASS' 'clamped to the last line and to the first'
+} else {
+    Record 'grid-clamp' 'FAIL' "tops were $($tops -join ', '), wanted 250000 then 0"
+}
+
+# 14. Scrolling holds the refresh rate. The mean is pinned to the vertical
+# blank and says nothing; the dropped count is the claim -- every frame
+# arrived on the refresh it was due, on a 14 MB document.
+$out = AskBig 'frame 120'
+if ($out -match '(\d+) dropped') {
+    $dropped = [int]$matches[1]
+    $worst = if ($out -match 'worst ([\d.]+) ms') { [double]$matches[1] } else { 0 }
+    if ($dropped -eq 0) {
+        Record 'grid-frame-budget' 'PASS' `
+            "120 scroll frames, none dropped, worst $([math]::Round($worst,1)) ms"
+    } else {
+        Record 'grid-frame-budget' 'FAIL' "$dropped of 120 frames dropped"
+    }
+} else {
+    Record 'grid-frame-budget' 'FAIL' 'no frame report came back'
+}
+
 # ---- summary ---------------------------------------------------------------
 $bad = @($results | Where-Object Verdict -eq 'FAIL').Count
 Write-Host ""

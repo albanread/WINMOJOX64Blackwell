@@ -37,9 +37,18 @@ from std.sys.com import Apartment
 from std.memory import alloc
 
 from ide.agent import agent_command
-from ide.chrome import Chrome, bring_up, draw, release
+from ide.chrome import Chrome, bring_up, draw, finish, release
 from ide.drop import register as register_drop, revoke as revoke_drop
+from ide.gridview import (
+    Doc,
+    draw_text,
+    page_lines,
+    release_cache,
+    scroll_by,
+    scroll_to,
+)
 from ide.menu import build as build_menu
+from ide.rope import Rope
 from ide.win32 import (
     COPYDATASTRUCT,
     MSG,
@@ -49,6 +58,42 @@ from ide.win32 import (
     wide,
     win32,
 )
+
+
+# Direct2D's way of saying the GPU went away underneath us -- a driver
+# update, a remote session, a laptop switching graphics. It arrives from
+# EndDraw rather than from the call that failed, and the answer is to build a
+# new render target, not to give up.
+comptime D2DERR_RECREATE_TARGET = 0x8899000C
+
+
+def recreate(chrome: Pointer[Chrome, MutAnyOrigin], hwnd: Int, width: Int,
+             height: Int) raises:
+    """Build a new render target after the device was lost.
+
+    The window's own state -- the document, the drop target -- survives; only
+    Direct2D's objects are rebuilt. Cached text layouts go too: they were made
+    by the old DirectWrite factory, and outliving it is not a risk worth
+    taking for one frame's worth of work.
+
+    Args:
+        chrome: The window's chrome, replaced in place.
+        hwnd: The window to make a target for.
+        width: Client width.
+        height: Client height.
+
+    Raises:
+        If Direct2D cannot be brought up again.
+    """
+    print("griddle: device lost, rebuilding the render target")
+    var doc = chrome[].doc
+    var drop = chrome[].drop_target
+    if doc != 0:
+        release_cache(Pointer[Doc, MutAnyOrigin](unsafe_from_address=doc)[].grid)
+    release(chrome[])
+    chrome[] = bring_up(hwnd, width, height)
+    chrome[].doc = doc
+    chrome[].drop_target = drop
 
 
 # ===----------------------------------------------------------------------===#
@@ -127,20 +172,68 @@ def griddle_wndproc(
                 # A paint that fails half-way leaves a window that looks
                 # merely unfinished, with nothing said. Report it: a silent
                 # partial paint is the hardest kind of bug to see.
+                var width = Int(rc.right - rc.left)
+                var height = Int(rc.bottom - rc.top)
                 try:
-                    draw(
-                        chrome[],
-                        Int(rc.right - rc.left),
-                        Int(rc.bottom - rc.top),
-                    )
+                    var layout = draw(chrome[], width, height)
+                    # The text goes inside the batch the chrome opened, so
+                    # both halves of the frame are presented at once and the
+                    # editor never shows an empty field for a frame.
+                    if chrome[].doc != 0:
+                        var doc = Pointer[Doc, MutAnyOrigin](
+                            unsafe_from_address=chrome[].doc
+                        )
+                        draw_text(
+                            doc[].grid,
+                            chrome[],
+                            doc[].rope,
+                            layout.editor(),
+                            doc[].revision,
+                        )
                 except err:
                     print("griddle: paint failed:", String(err))
+                # EndDraw runs whatever happened above. BeginDraw opened a
+                # batch, and a batch left open poisons every frame after it,
+                # so a paint that failed half-way must still be closed.
+                try:
+                    if finish(chrome[]) == D2DERR_RECREATE_TARGET:
+                        recreate(chrome, hwnd, width, height)
+                except err:
+                    print("griddle: present failed:", String(err))
             # Validate the whole window: the update region must be cleared or
             # Windows sends WM_PAINT again immediately, forever.
             var ValidateRect = win32[
                 def (Int, Int) thin abi("C") -> c_int, "ValidateRect"
             ]()
             _ = ValidateRect(hwnd, 0)
+            return 0
+
+        # Scrolling. The wheel reports in notches of 120; three lines a notch
+        # is what every other Windows editor does. Nothing is recomputed here
+        # -- the top line moves and the next paint is arithmetic from it.
+        if message == UInt32(winkb_constant["WM_MOUSEWHEEL"]()):
+            # The delta is the signed high word of wParam, and it is signed:
+            # read it unsigned and scrolling only ever goes one way.
+            var delta = Int((wparam >> 16) & 0xFFFF)
+            if delta >= 0x8000:
+                delta -= 0x10000
+            _ = scroll_by(hwnd, -(delta * 3) // 120)
+            return 0
+
+        if message == UInt32(winkb_constant["WM_KEYDOWN"]()):
+            var page = page_lines(hwnd)
+            if wparam == winkb_constant["VK_NEXT"]():
+                _ = scroll_by(hwnd, page)
+            elif wparam == winkb_constant["VK_PRIOR"]():
+                _ = scroll_by(hwnd, -page)
+            elif wparam == winkb_constant["VK_DOWN"]():
+                _ = scroll_by(hwnd, 1)
+            elif wparam == winkb_constant["VK_UP"]():
+                _ = scroll_by(hwnd, -1)
+            elif wparam == winkb_constant["VK_HOME"]():
+                _ = scroll_to(hwnd, 0)
+            elif wparam == winkb_constant["VK_END"]():
+                _ = scroll_to(hwnd, 1 << 40)
             return 0
 
         # A menu item was chosen -- by a person or by the agent, which sends
@@ -223,6 +316,60 @@ def dark_titlebar(hwnd: Int) raises -> Int32:
     )
 
 
+def load_document(path: String, lines: Int) raises -> Rope:
+    """The text to show: a file, a synthetic document, or the welcome note.
+
+    A file that cannot be read is reported in the buffer rather than raised.
+    The window is the thing being started here, and refusing to open at all
+    because one path was wrong helps nobody.
+
+    Args:
+        path: A file to read, or empty.
+        lines: How many lines to generate when there is no file.
+
+    Returns:
+        The document.
+
+    Raises:
+        If the rope cannot be built.
+    """
+    if path.byte_length() > 0:
+        try:
+            with open(path, "r") as f:
+                return Rope(f.read())
+        except err:
+            return Rope(
+                String("Could not open ") + path + "\n\n" + String(err) + "\n"
+            )
+
+    if lines > 0:
+        # Built once as a String and handed to the rope whole: this is the
+        # document, not an edit sequence, and the rope's own builder splits it
+        # far faster than a quarter of a million insertions would.
+        var text = String("")
+        for i in range(lines):
+            text += "line "
+            text += String(i + 1)
+            text += ": the quick brown fox jumps over the lazy dog\n"
+        return Rope(text^)
+
+    return Rope(
+        String(
+            "Griddle\n"
+            "\n"
+            "A text grid on a rope. Nothing here is measured to decide what\n"
+            "to draw: the visible range is a division and each origin is a\n"
+            "multiplication.\n"
+            "\n"
+            "  griddle --open FILE      show a file\n"
+            "  griddle --lines 250000   show a synthetic document\n"
+            "  griddle --cmd grid       print the layout cache counters\n"
+            "\n"
+            "Scroll with the wheel, or with Page Up and Page Down.\n"
+        )
+    )
+
+
 def main() raises:
     # Windows describes its own structures; a disagreement is a build
     # failure here rather than corruption at the first call.
@@ -238,6 +385,11 @@ def main() raises:
     var selftest = False
     var command = String("")
     var trace = False
+    # What to show. `--open` reads a file; `--lines N` builds a synthetic
+    # document of N lines, which is how the "250,000 lines scrolls like an
+    # empty one" claim gets tested without shipping a 12 MB fixture.
+    var open_path = String("")
+    var synth_lines = 0
     var args = argv()
     for i in range(len(args)):
         if args[i] == "--ms" and i + 1 < len(args):
@@ -248,6 +400,10 @@ def main() raises:
             trace = True
         if args[i] == "--cmd" and i + 1 < len(args):
             command = String(args[i + 1])
+        if args[i] == "--open" and i + 1 < len(args):
+            open_path = String(args[i + 1])
+        if args[i] == "--lines" and i + 1 < len(args):
+            synth_lines = Int(args[i + 1])
 
     var GetModuleHandleW = win32[
         def (Int) thin abi("C") -> Int, "GetModuleHandleW"
@@ -347,14 +503,28 @@ def main() raises:
     ]()
     _ = GetClientRect0(hwnd, Pointer(to=rc0).unsafe_origin_cast[MutAnyOrigin]())
     var chrome_store = alloc[Chrome](1, alignment=8)
-    chrome_store[] = bring_up(
+    # Emplaced, not assigned. `store[] = value` destroys what was there
+    # first, and what is there is whatever the allocator last had. Chrome is
+    # all integers so it would survive that; the document below is not, and
+    # the two should not be spelled differently for a reason that subtle.
+    chrome_store.unsafe_write(bring_up(
         hwnd, Int(rc0.right - rc0.left), Int(rc0.bottom - rc0.top)
-    )
+    ))
     var SetWindowLongPtrW = win32[
         def (Int, c_int, Int) thin abi("C") -> Int, "SetWindowLongPtrW"
     ]()
     _ = SetWindowLongPtrW(
         hwnd, c_int(winkb_constant["GWLP_USERDATA"]()), Int(chrome_store)
+    )
+
+    # The document. Heap-allocated for the same reason the chrome is: the
+    # window procedure reaches it through the one pointer Windows keeps.
+    var doc_store = alloc[Doc](1, alignment=8)
+    doc_store.unsafe_write(Doc(load_document(open_path, synth_lines)))
+    chrome_store[].doc = Int(doc_store)
+    print(
+        "griddle: document", doc_store[].rope.line_count(), "lines,",
+        doc_store[].rope.byte_length(), "bytes",
     )
 
     # Drag and drop. OleInitialize (not CoInitializeEx) is what the drag
@@ -367,6 +537,13 @@ def main() raises:
 
     var dark = dark_titlebar(hwnd)
     _ = ShowWindow(hwnd, c_int(winkb_constant["SW_SHOW"]()))
+    # Paint now rather than when the loop first idles: a command that reads
+    # the grid's counters would otherwise be reading a window that has not
+    # drawn a frame, and get zeroes that look like a bug.
+    var UpdateWindow = win32[
+        def (Int) thin abi("C") -> c_int, "UpdateWindow"
+    ]()
+    _ = UpdateWindow(hwnd)
     print(
         "griddle: window", hwnd, "open  dark-titlebar hr =", dark,
         "(0 = accepted)",
@@ -386,23 +563,31 @@ def main() raises:
             "SendMessageW",
         ]()
         var reply_path = String(env_or("TEMP", ".")) + "\\griddle-selfcmd.txt"
-        var payload = reply_path + "\n" + command
-        var bytes = payload.as_bytes()
-        var cds = COPYDATASTRUCT()
-        cds.cbData = UInt32(len(bytes))
-        cds.lpData = Int(bytes.unsafe_ptr())
-        var accepted = SendMessageW(
-            hwnd,
-            UInt32(winkb_constant["WM_COPYDATA"]()),
-            0,
-            Pointer(to=cds).unsafe_origin_cast[MutAnyOrigin](),
-        )
-        _ = payload
-        if accepted != 1:
-            raise Error("the window did not accept the command")
-        with open(reply_path, "r") as f:
-            print(f.read(), end="")
-        print()
+        # `;;` separates several commands. One message each, so the transport
+        # keeps its one-command-one-reply shape and the convenience lives
+        # here, at the command line, where it belongs. A measurement that
+        # needs a before and an after now takes one launch rather than two.
+        for step in command.split(";;"):
+            var one = String(String(step).strip())
+            if one.byte_length() == 0:
+                continue
+            var payload = reply_path + "\n" + one
+            var bytes = payload.as_bytes()
+            var cds = COPYDATASTRUCT()
+            cds.cbData = UInt32(len(bytes))
+            cds.lpData = Int(bytes.unsafe_ptr())
+            var accepted = SendMessageW(
+                hwnd,
+                UInt32(winkb_constant["WM_COPYDATA"]()),
+                0,
+                Pointer(to=cds).unsafe_origin_cast[MutAnyOrigin](),
+            )
+            _ = payload
+            if accepted != 1:
+                raise Error("the window did not accept the command")
+            with open(reply_path, "r") as f:
+                print(f.read(), end="")
+            print()
         return
 
     if selftest:
@@ -501,6 +686,11 @@ def main() raises:
     revoke_drop(hwnd)
     _ = drop
     ole.__exit__()
+    release_cache(doc_store[].grid)
+    # Moved out rather than merely freed: the document owns a rope, and
+    # releasing the storage without running its destructor leaks every node.
+    _ = doc_store.unsafe_take_pointee()
+    doc_store.unsafe_free()
     release(chrome_store[])
     chrome_store.unsafe_free()
     print("griddle: closed cleanly")

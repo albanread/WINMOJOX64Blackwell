@@ -24,12 +24,20 @@ polling, no race, no window required of the caller.
 from ide.chrome import D2D_RECT_F, Layout
 from ide.chrome import Chrome
 from ide.drop import last as last_drop, simulate
+from ide.gridview import (
+    counters,
+    page_lines,
+    reset_counters,
+    scroll_by,
+    scroll_to,
+)
 from ide.menu import invoke as invoke_menu
 from ide.screenshot import capture
 from ide.win32 import RECT, win32
 
 
 from std.ffi import c_int
+from std.time import perf_counter_ns
 from std.memory import Pointer
 
 
@@ -102,7 +110,11 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             "views             where every region of the chrome sits\n"
             "menu T > I        invoke a menu item by its visible name\n"
             "drops             the paths from the most recent drop\n"
-            "drop-test         drive the drop target through its own vtable"
+            "drop-test         drive the drop target through its own vtable\n"
+            "paint             force one frame, synchronously\n"
+            "frame [N]         time N scroll-and-paint frames\n"
+            "grid [reset]      the layout cache counters\n"
+            "scroll N | to N | top | end | page    move the editor"
         )
 
     if verb == "echo":
@@ -131,6 +143,92 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         out += _region("output", l.output())
         out += _region("status", l.status())
         return out
+
+    if verb == "paint":
+        # Synchronous: InvalidateRect only marks the window, and a caller
+        # that then reads a counter would be reading the frame before the
+        # one it asked for. UpdateWindow sends WM_PAINT straight through.
+        var InvalidateRect = win32[
+            def (Int, Int, c_int) thin abi("C") -> c_int, "InvalidateRect"
+        ]()
+        var UpdateWindow = win32[
+            def (Int) thin abi("C") -> c_int, "UpdateWindow"
+        ]()
+        _ = InvalidateRect(hwnd, 0, c_int(0))
+        _ = UpdateWindow(hwnd)
+        return String("painted")
+
+    if verb == "frame":
+        # What a frame actually costs. Every paint scrolls by one line first,
+        # because painting the same view repeatedly measures a warm cache and
+        # nothing else -- the honest number is the one an editor pays while
+        # somebody is holding a scroll key down.
+        var runs = 60
+        if rest.byte_length() > 0:
+            runs = Int(rest)
+        var InvalidateRect = win32[
+            def (Int, Int, c_int) thin abi("C") -> c_int, "InvalidateRect"
+        ]()
+        var UpdateWindow = win32[
+            def (Int) thin abi("C") -> c_int, "UpdateWindow"
+        ]()
+        reset_counters(hwnd)
+        var start = perf_counter_ns()
+        var worst = 0
+        var dropped = 0
+        for _ in range(runs):
+            var t0 = perf_counter_ns()
+            _ = scroll_by(hwnd, 1)
+            _ = InvalidateRect(hwnd, 0, c_int(0))
+            _ = UpdateWindow(hwnd)
+            var took = perf_counter_ns() - t0
+            if took > worst:
+                worst = took
+            # A render target presents on the vertical blank, so a frame that
+            # made its budget takes one refresh and a frame that did not takes
+            # two. Anything past 1.5 refreshes is a frame the display showed
+            # twice -- which is what a person sees as a stutter.
+            if took > 25_000_000:
+                dropped += 1
+        var each = Float64(perf_counter_ns() - start) / Float64(runs)
+        # The mean is pinned to the refresh interval by the present, so it is
+        # not the interesting number: what a scroll actually costs cannot be
+        # read off it. The dropped count can, and that is the claim an editor
+        # has to make -- every frame arrived on the refresh it was due.
+        return (
+            String(runs) + " frames, "
+            + String(each / 1_000_000.0) + " ms mean (vsync-bound), worst "
+            + String(Float64(worst) / 1_000_000.0) + " ms, "
+            + String(dropped) + " dropped\n" + counters(hwnd)
+        )
+
+    if verb == "grid":
+        # The counters, and a way to zero them. Measuring a scroll means
+        # reading them, scrolling, and reading them again -- so the reset has
+        # to be reachable, or the second number is always the sum of both.
+        if rest == "reset":
+            reset_counters(hwnd)
+            return String("counters zeroed;  ") + counters(hwnd)
+        return counters(hwnd)
+
+    if verb == "scroll":
+        # Absolute or relative, and the answer is where it actually landed --
+        # which is how the clamp at either end can be seen rather than
+        # assumed.
+        var landed = 0
+        if rest == "top":
+            landed = scroll_to(hwnd, 0)
+        elif rest == "end":
+            landed = scroll_to(hwnd, 1 << 40)
+        elif rest == "page":
+            landed = scroll_by(hwnd, page_lines(hwnd))
+        elif rest.startswith("to "):
+            landed = scroll_to(hwnd, Int(String(rest[byte=3:]).strip()))
+        elif rest.byte_length() > 0:
+            landed = scroll_by(hwnd, Int(rest))
+        else:
+            return String("usage: scroll N | to N | top | end | page")
+        return String("top line is now ") + String(landed)
 
     if verb == "drops":
         # What was dropped most recently. The callbacks are reached through a
