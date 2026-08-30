@@ -21,10 +21,33 @@ polling, no race, no window required of the caller.
 """
 
 
+from ide.chrome import D2D_RECT_F, Layout
+from ide.menu import invoke as invoke_menu
 from ide.screenshot import capture
+from ide.win32 import RECT, win32
+
+
+from std.ffi import c_int
+from std.memory import Pointer
 
 
 comptime GRIDDLE_VERSION = StaticString("0.1.0")
+
+
+def _region(name: StaticString, r: D2D_RECT_F) -> String:
+    """One region as a line of text, for the `views` reply."""
+    return (
+        String(name)
+        + " "
+        + String(Int(r.left))
+        + ","
+        + String(Int(r.top))
+        + " "
+        + String(Int(r.right - r.left))
+        + "x"
+        + String(Int(r.bottom - r.top))
+        + "\n"
+    )
 
 
 def agent_command(hwnd: Int, text: StringSlice) raises -> String:
@@ -73,11 +96,40 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             "status            what Griddle is and which window it is\n"
             "help              this list\n"
             "echo <text>       answer with <text>, for round-trip checks\n"
-            "screenshot [path] photograph this window to a PNG"
+            "screenshot [path] photograph this window to a PNG\n"
+            "views             where every region of the chrome sits\n"
+            "menu T > I        invoke a menu item by its visible name"
         )
 
     if verb == "echo":
         return rest
+
+    if verb == "views":
+        # Where every region actually is, asked of the running window rather
+        # than recomputed here -- a check that reads this is checking the
+        # layout, not a copy of it.
+        var GetClientRect = win32[
+            def (Int, Pointer[RECT, MutAnyOrigin]) thin abi("C") -> c_int,
+            "GetClientRect",
+        ]()
+        var rc = RECT()
+        _ = GetClientRect(
+            hwnd, Pointer(to=rc).unsafe_origin_cast[MutAnyOrigin]()
+        )
+        var w = Int(rc.right - rc.left)
+        var h = Int(rc.bottom - rc.top)
+        var l = Layout(w, h)
+        var out = String("client ") + String(w) + "x" + String(h) + "\n"
+        out += _region("rail", l.rail())
+        out += _region("sidebar", l.sidebar())
+        out += _region("editor", l.editor())
+        out += _region("issues", l.issues())
+        out += _region("output", l.output())
+        out += _region("status", l.status())
+        return out
+
+    if verb == "menu":
+        return invoke_menu(hwnd, rest)
 
     if verb == "screenshot":
         # The window photographs itself: no screen capture, so nothing to

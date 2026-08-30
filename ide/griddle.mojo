@@ -33,7 +33,11 @@ from std.sys.info import size_of
 from std.sys._win32 import Win32Module
 from std.sys._winkb import winkb_constant, winkb_struct_size
 
+from std.memory import alloc
+
 from ide.agent import agent_command
+from ide.chrome import Chrome, bring_up, draw, release
+from ide.menu import build as build_menu
 from ide.win32 import (
     COPYDATASTRUCT,
     MSG,
@@ -92,6 +96,60 @@ def griddle_wndproc(
             with open(reply_path, "w") as f:
                 f.write(reply)
             return 1
+
+        # Everything visible is drawn here. The chrome's interfaces live in
+        # the window's user data because this procedure is captureless --
+        # Windows calls it, so it can hold nothing and must fetch what it
+        # needs from the one place a window can keep something.
+        if message == UInt32(winkb_constant["WM_PAINT"]()):
+            var GetWindowLongPtrW = win32[
+                def (Int, c_int) thin abi("C") -> Int, "GetWindowLongPtrW"
+            ]()
+            var stored = GetWindowLongPtrW(
+                hwnd, c_int(winkb_constant["GWLP_USERDATA"]())
+            )
+            if stored != 0:
+                var GetClientRect = win32[
+                    def (
+                        Int, Pointer[RECT, MutAnyOrigin]
+                    ) thin abi("C") -> c_int,
+                    "GetClientRect",
+                ]()
+                var rc = RECT()
+                _ = GetClientRect(
+                    hwnd, Pointer(to=rc).unsafe_origin_cast[MutAnyOrigin]()
+                )
+                var chrome = Pointer[Chrome, MutAnyOrigin](
+                    unsafe_from_address=stored
+                )
+                # A paint that fails half-way leaves a window that looks
+                # merely unfinished, with nothing said. Report it: a silent
+                # partial paint is the hardest kind of bug to see.
+                try:
+                    draw(
+                        chrome[],
+                        Int(rc.right - rc.left),
+                        Int(rc.bottom - rc.top),
+                    )
+                except err:
+                    print("griddle: paint failed:", String(err))
+            # Validate the whole window: the update region must be cleared or
+            # Windows sends WM_PAINT again immediately, forever.
+            var ValidateRect = win32[
+                def (Int, Int) thin abi("C") -> c_int, "ValidateRect"
+            ]()
+            _ = ValidateRect(hwnd, 0)
+            return 0
+
+        # A menu item was chosen -- by a person or by the agent, which sends
+        # the same command the menu does.
+        if message == UInt32(winkb_constant["WM_COMMAND"]()):
+            if (wparam & 0xFFFF) == 1001:  # File > Exit
+                var DestroyWindow = win32[
+                    def (Int) thin abi("C") -> c_int, "DestroyWindow"
+                ]()
+                _ = DestroyWindow(hwnd)
+            return 0
 
         # Closing the window ends the program: without this the loop waits
         # forever for messages from a window that no longer exists.
@@ -272,6 +330,31 @@ def main() raises:
     with open(handle_path, "w") as f:
         f.write(String(hwnd))
 
+    # The menu first: it takes height from the client area, and the chrome's
+    # layout is arithmetic on whatever is left.
+    build_menu(hwnd)
+
+    # Direct2D, before the window is shown, so the first paint has something
+    # to draw with. The chrome outlives this scope -- the window procedure
+    # picks it up on every WM_PAINT -- so it is heap-allocated and the window
+    # is told where it lives.
+    var rc0 = RECT()
+    var GetClientRect0 = win32[
+        def (Int, Pointer[RECT, MutAnyOrigin]) thin abi("C") -> c_int,
+        "GetClientRect",
+    ]()
+    _ = GetClientRect0(hwnd, Pointer(to=rc0).unsafe_origin_cast[MutAnyOrigin]())
+    var chrome_store = alloc[Chrome](1, alignment=8)
+    chrome_store[] = bring_up(
+        hwnd, Int(rc0.right - rc0.left), Int(rc0.bottom - rc0.top)
+    )
+    var SetWindowLongPtrW = win32[
+        def (Int, c_int, Int) thin abi("C") -> Int, "SetWindowLongPtrW"
+    ]()
+    _ = SetWindowLongPtrW(
+        hwnd, c_int(winkb_constant["GWLP_USERDATA"]()), Int(chrome_store)
+    )
+
     var dark = dark_titlebar(hwnd)
     _ = ShowWindow(hwnd, c_int(winkb_constant["SW_SHOW"]()))
     print(
@@ -403,4 +486,6 @@ def main() raises:
         _ = TranslateMessage(Pointer(to=msg).unsafe_origin_cast[MutAnyOrigin]())
         _ = DispatchMessageW(Pointer(to=msg).unsafe_origin_cast[MutAnyOrigin]())
 
+    release(chrome_store[])
+    chrome_store.unsafe_free()
     print("griddle: closed cleanly")

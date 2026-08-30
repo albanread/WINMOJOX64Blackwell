@@ -116,6 +116,34 @@ if (-not (Test-Path $shot)) {
     Remove-Item $shot -ErrorAction SilentlyContinue
 }
 
+# ---- 7. every region of the chrome is laid out -----------------------------
+# Asked of the running window rather than recomputed here, so this checks
+# the layout instead of a copy of it.
+$out = Ask 'views'
+$missing = @('rail','sidebar','editor','issues','output','status') |
+    Where-Object { $out -notmatch "(?m)^$_ \d+,\d+ \d+x\d+" }
+if ($missing.Count -eq 0) {
+    Record 'chrome-regions' 'PASS' 'all six regions reported with geometry'
+} else {
+    Record 'chrome-regions' 'FAIL' "missing: $($missing -join ', ')"
+}
+
+# ---- 8. a menu item is invoked by its visible name --------------------------
+# The master key: every feature that ever gets a menu item joins the agent
+# surface without a verb of its own, so this check protects all of them.
+$out = Ask 'menu File > Exit'
+if ($out -match 'invoked File > Exit') {
+    Record 'menu-by-name' 'PASS' 'File > Exit reached through the live menu'
+} else {
+    Record 'menu-by-name' 'FAIL' (($out -split "`n")[-2])
+}
+$out = Ask 'menu Nope > Nothing'
+if ($out -match "no menu 'Nope'") {
+    Record 'menu-unknown' 'PASS' 'refused, as designed'
+} else {
+    Record 'menu-unknown' 'FAIL' 'a missing menu was not refused'
+}
+
 # ---- summary ---------------------------------------------------------------
 $bad = @($results | Where-Object Verdict -eq 'FAIL').Count
 Write-Host ""

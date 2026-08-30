@@ -260,8 +260,50 @@ bring-up; draw the rail, sidebar strip, pane splits and status bar as
 rects and text; real Win32 menu bar. Agent verbs: `views`,
 `menu <Title> > <Item>` by visible name — the master key that puts every
 future menued feature on the surface at a stroke.
-*Acceptance: the screenshot shows all regions; `menu File > Exit` invoked by
-name exits 0.*
+*Acceptance MET (2026-08-30): `check-ide.ps1` is at **9 checks: 9 passed**.
+The screenshot decodes at 1200x800 and every region samples to its own
+palette entry -- rail `#181b20`, sidebar `#1a1d23`, editor `#1d2026`, status
+`#191c21`, the accent `#ff8c37`, separators `#31353f`. `views` reports all
+six regions with real geometry, asked of the running window rather than
+recomputed. `menu File > Exit` answers `invoked File > Exit (id 1001)` and
+exits 0; `menu Nope > Nothing` is refused with words.*
+
+*What this sprint discovered, each of which cost a wrong screenshot first:*
+
+*The COM **calling** surface stopped at four arguments. Direct2D's
+`DrawText` takes seven and DirectWrite's `CreateTextFormat` eight, so the
+first real client walked straight into the ceiling the design doc predicted
+TSF would find. `_ComBound.__call__` now runs to eleven.*
+
+*The typed surface **refuses** Direct2D's drawing calls, correctly: they
+return void, because D2D defers every error to `EndDraw` rather than
+answering one per call. `BeginDraw`, `Clear`, `FillRectangle` and `DrawText`
+go through `com_method_of` on the raw layer -- still at metadata slots, just
+without an HRESULT to check. The documented escape hatch, used the first
+time something needed it.*
+
+*`Com` gained a **borrowing** view (`borrowed=`). The chrome's interfaces
+live in the window's user data across message dispatches, and an owning
+wrapper would have released them at the end of every handler.*
+
+*Direct2D works in DIPs; this layout is arithmetic in **pixels**. Leaving
+the render target on the display's DPI silently multiplied every rectangle
+and put the status bar off the bottom of the window. The target is pinned to
+96 DPI so one DIP is one pixel, which is what the editor grid will want for
+glyph positions too.*
+
+*And `PrintWindow` renders the **whole window** -- caption, border and client
+together -- so a bitmap sized to the client clipped the image and shifted
+everything down by the height of the title bar. The capture is sized to the
+window rect now, which is also what we want: the dark caption is part of
+what the screenshot exists to prove.*
+
+*Scope, stated plainly: this is `ID2D1HwndRenderTarget`, not
+DirectComposition. It is real Direct2D and GPU-accelerated, and the render
+target owns its own presentation. DComp is what milestone 1 wants in order
+to scroll a 250k-line document without redrawing it, and it slots in
+underneath without changing the layout above -- there is no reason to pay
+for it before a grid exists to scroll.*
 
 **0.5 — drop-to-open, the dogfood moment (S).** The IDE registers its own
 `class DropTarget(IDropTarget)` — the C3 milestone was named for this

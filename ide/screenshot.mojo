@@ -123,8 +123,18 @@ def capture(hwnd: Int, path: String) raises -> Int:
         def (Int, Int, UInt32) thin abi("C") -> c_int, "PrintWindow"
     ]()
 
+    # The WINDOW rect, not the client rect: PrintWindow renders the whole
+    # window -- caption, border and client together -- and a bitmap sized to
+    # the client would take that image and clip it, which silently shifts
+    # everything down by the height of the title bar. Photographing the
+    # frame is also what we want: the dark caption is part of what the
+    # screenshot exists to prove.
+    var GetWindowRect = win32[
+        def (Int, Pointer[RECT, MutAnyOrigin]) thin abi("C") -> c_int,
+        "GetWindowRect",
+    ]()
     var rc = RECT()
-    _ = GetClientRect(hwnd, Pointer(to=rc).unsafe_origin_cast[MutAnyOrigin]())
+    _ = GetWindowRect(hwnd, Pointer(to=rc).unsafe_origin_cast[MutAnyOrigin]())
     var width = Int(rc.right - rc.left)
     var height = Int(rc.bottom - rc.top)
     if width <= 0 or height <= 0:

@@ -527,6 +527,418 @@ struct _ComBound[interface_name: StaticString, method: StaticString](
         hr.raise_for[Self.method]()
         return hr
 
+    def __call__[
+        A0: TrivialRegisterPassable,
+        A1: TrivialRegisterPassable,
+        A2: TrivialRegisterPassable,
+        A3: TrivialRegisterPassable,
+        A4: TrivialRegisterPassable,
+    ](self, a0: A0, a1: A1, a2: A2, a3: A3, a4: A4) raises -> HResult:
+        """Calls a five-argument COM method.
+
+        Parameters:
+            A0: The first argument's Mojo type; width-checked.
+            A1: The second argument's Mojo type; width-checked.
+            A2: The third argument's Mojo type; width-checked.
+            A3: The fourth argument's Mojo type; width-checked.
+            A4: The fifth argument's Mojo type; width-checked.
+
+        Args:
+            a0: The first argument.
+            a1: The second argument.
+            a2: The third argument.
+            a3: The fourth argument.
+            a4: The fifth argument.
+
+        Returns:
+            The successful HResult.
+
+        Raises:
+            If the method reports failure.
+        """
+        _check_hresult_method[Self.interface_name, Self.method, 5]()
+        _check_arg[Self.interface_name, Self.method, "0", A0]()
+        _check_arg[Self.interface_name, Self.method, "1", A1]()
+        _check_arg[Self.interface_name, Self.method, "2", A2]()
+        _check_arg[Self.interface_name, Self.method, "3", A3]()
+        _check_arg[Self.interface_name, Self.method, "4", A4]()
+        var hr = HResult(
+            com_method[
+                def (
+                    OpaquePointer[MutUntrackedOrigin], A0, A1, A2, A3, A4
+                ) thin abi("C") -> Int32,
+                winkb_vtable_index[Self.interface_name, Self.method](),
+            ](self._this)(self._this, a0, a1, a2, a3, a4)
+        )
+        hr.raise_for[Self.method]()
+        return hr
+
+
+    def __call__[
+        A0: TrivialRegisterPassable,
+        A1: TrivialRegisterPassable,
+        A2: TrivialRegisterPassable,
+        A3: TrivialRegisterPassable,
+        A4: TrivialRegisterPassable,
+        A5: TrivialRegisterPassable,
+    ](self, a0: A0, a1: A1, a2: A2, a3: A3, a4: A4, a5: A5) raises -> HResult:
+        """Calls a six-argument COM method.
+
+        Parameters:
+            A0: The first argument's Mojo type; width-checked.
+            A1: The second argument's Mojo type; width-checked.
+            A2: The third argument's Mojo type; width-checked.
+            A3: The fourth argument's Mojo type; width-checked.
+            A4: The fifth argument's Mojo type; width-checked.
+            A5: The sixth argument's Mojo type; width-checked.
+
+        Args:
+            a0: The first argument.
+            a1: The second argument.
+            a2: The third argument.
+            a3: The fourth argument.
+            a4: The fifth argument.
+            a5: The sixth argument.
+
+        Returns:
+            The successful HResult.
+
+        Raises:
+            If the method reports failure.
+        """
+        _check_hresult_method[Self.interface_name, Self.method, 6]()
+        _check_arg[Self.interface_name, Self.method, "0", A0]()
+        _check_arg[Self.interface_name, Self.method, "1", A1]()
+        _check_arg[Self.interface_name, Self.method, "2", A2]()
+        _check_arg[Self.interface_name, Self.method, "3", A3]()
+        _check_arg[Self.interface_name, Self.method, "4", A4]()
+        _check_arg[Self.interface_name, Self.method, "5", A5]()
+        var hr = HResult(
+            com_method[
+                def (
+                    OpaquePointer[MutUntrackedOrigin], A0, A1, A2, A3, A4, A5
+                ) thin abi("C") -> Int32,
+                winkb_vtable_index[Self.interface_name, Self.method](),
+            ](self._this)(self._this, a0, a1, a2, a3, a4, a5)
+        )
+        hr.raise_for[Self.method]()
+        return hr
+
+
+    def __call__[
+        A0: TrivialRegisterPassable,
+        A1: TrivialRegisterPassable,
+        A2: TrivialRegisterPassable,
+        A3: TrivialRegisterPassable,
+        A4: TrivialRegisterPassable,
+        A5: TrivialRegisterPassable,
+        A6: TrivialRegisterPassable,
+    ](self, a0: A0, a1: A1, a2: A2, a3: A3, a4: A4, a5: A5, a6: A6) raises -> HResult:
+        """Calls a seven-argument COM method.
+
+        Parameters:
+            A0: The first argument's Mojo type; width-checked.
+            A1: The second argument's Mojo type; width-checked.
+            A2: The third argument's Mojo type; width-checked.
+            A3: The fourth argument's Mojo type; width-checked.
+            A4: The fifth argument's Mojo type; width-checked.
+            A5: The sixth argument's Mojo type; width-checked.
+            A6: The seventh argument's Mojo type; width-checked.
+
+        Args:
+            a0: The first argument.
+            a1: The second argument.
+            a2: The third argument.
+            a3: The fourth argument.
+            a4: The fifth argument.
+            a5: The sixth argument.
+            a6: The seventh argument.
+
+        Returns:
+            The successful HResult.
+
+        Raises:
+            If the method reports failure.
+        """
+        _check_hresult_method[Self.interface_name, Self.method, 7]()
+        _check_arg[Self.interface_name, Self.method, "0", A0]()
+        _check_arg[Self.interface_name, Self.method, "1", A1]()
+        _check_arg[Self.interface_name, Self.method, "2", A2]()
+        _check_arg[Self.interface_name, Self.method, "3", A3]()
+        _check_arg[Self.interface_name, Self.method, "4", A4]()
+        _check_arg[Self.interface_name, Self.method, "5", A5]()
+        _check_arg[Self.interface_name, Self.method, "6", A6]()
+        var hr = HResult(
+            com_method[
+                def (
+                    OpaquePointer[MutUntrackedOrigin], A0, A1, A2, A3, A4, A5, A6
+                ) thin abi("C") -> Int32,
+                winkb_vtable_index[Self.interface_name, Self.method](),
+            ](self._this)(self._this, a0, a1, a2, a3, a4, a5, a6)
+        )
+        hr.raise_for[Self.method]()
+        return hr
+
+
+    def __call__[
+        A0: TrivialRegisterPassable,
+        A1: TrivialRegisterPassable,
+        A2: TrivialRegisterPassable,
+        A3: TrivialRegisterPassable,
+        A4: TrivialRegisterPassable,
+        A5: TrivialRegisterPassable,
+        A6: TrivialRegisterPassable,
+        A7: TrivialRegisterPassable,
+    ](self, a0: A0, a1: A1, a2: A2, a3: A3, a4: A4, a5: A5, a6: A6, a7: A7) raises -> HResult:
+        """Calls an eight-argument COM method.
+
+        Parameters:
+            A0: The first argument's Mojo type; width-checked.
+            A1: The second argument's Mojo type; width-checked.
+            A2: The third argument's Mojo type; width-checked.
+            A3: The fourth argument's Mojo type; width-checked.
+            A4: The fifth argument's Mojo type; width-checked.
+            A5: The sixth argument's Mojo type; width-checked.
+            A6: The seventh argument's Mojo type; width-checked.
+            A7: The eighth argument's Mojo type; width-checked.
+
+        Args:
+            a0: The first argument.
+            a1: The second argument.
+            a2: The third argument.
+            a3: The fourth argument.
+            a4: The fifth argument.
+            a5: The sixth argument.
+            a6: The seventh argument.
+            a7: The eighth argument.
+
+        Returns:
+            The successful HResult.
+
+        Raises:
+            If the method reports failure.
+        """
+        _check_hresult_method[Self.interface_name, Self.method, 8]()
+        _check_arg[Self.interface_name, Self.method, "0", A0]()
+        _check_arg[Self.interface_name, Self.method, "1", A1]()
+        _check_arg[Self.interface_name, Self.method, "2", A2]()
+        _check_arg[Self.interface_name, Self.method, "3", A3]()
+        _check_arg[Self.interface_name, Self.method, "4", A4]()
+        _check_arg[Self.interface_name, Self.method, "5", A5]()
+        _check_arg[Self.interface_name, Self.method, "6", A6]()
+        _check_arg[Self.interface_name, Self.method, "7", A7]()
+        var hr = HResult(
+            com_method[
+                def (
+                    OpaquePointer[MutUntrackedOrigin], A0, A1, A2, A3, A4, A5, A6, A7
+                ) thin abi("C") -> Int32,
+                winkb_vtable_index[Self.interface_name, Self.method](),
+            ](self._this)(self._this, a0, a1, a2, a3, a4, a5, a6, a7)
+        )
+        hr.raise_for[Self.method]()
+        return hr
+
+
+    def __call__[
+        A0: TrivialRegisterPassable,
+        A1: TrivialRegisterPassable,
+        A2: TrivialRegisterPassable,
+        A3: TrivialRegisterPassable,
+        A4: TrivialRegisterPassable,
+        A5: TrivialRegisterPassable,
+        A6: TrivialRegisterPassable,
+        A7: TrivialRegisterPassable,
+        A8: TrivialRegisterPassable,
+    ](self, a0: A0, a1: A1, a2: A2, a3: A3, a4: A4, a5: A5, a6: A6, a7: A7, a8: A8) raises -> HResult:
+        """Calls a nine-argument COM method.
+
+        Parameters:
+            A0: The first argument's Mojo type; width-checked.
+            A1: The second argument's Mojo type; width-checked.
+            A2: The third argument's Mojo type; width-checked.
+            A3: The fourth argument's Mojo type; width-checked.
+            A4: The fifth argument's Mojo type; width-checked.
+            A5: The sixth argument's Mojo type; width-checked.
+            A6: The seventh argument's Mojo type; width-checked.
+            A7: The eighth argument's Mojo type; width-checked.
+            A8: The ninth argument's Mojo type; width-checked.
+
+        Args:
+            a0: The first argument.
+            a1: The second argument.
+            a2: The third argument.
+            a3: The fourth argument.
+            a4: The fifth argument.
+            a5: The sixth argument.
+            a6: The seventh argument.
+            a7: The eighth argument.
+            a8: The ninth argument.
+
+        Returns:
+            The successful HResult.
+
+        Raises:
+            If the method reports failure.
+        """
+        _check_hresult_method[Self.interface_name, Self.method, 9]()
+        _check_arg[Self.interface_name, Self.method, "0", A0]()
+        _check_arg[Self.interface_name, Self.method, "1", A1]()
+        _check_arg[Self.interface_name, Self.method, "2", A2]()
+        _check_arg[Self.interface_name, Self.method, "3", A3]()
+        _check_arg[Self.interface_name, Self.method, "4", A4]()
+        _check_arg[Self.interface_name, Self.method, "5", A5]()
+        _check_arg[Self.interface_name, Self.method, "6", A6]()
+        _check_arg[Self.interface_name, Self.method, "7", A7]()
+        _check_arg[Self.interface_name, Self.method, "8", A8]()
+        var hr = HResult(
+            com_method[
+                def (
+                    OpaquePointer[MutUntrackedOrigin], A0, A1, A2, A3, A4, A5, A6, A7, A8
+                ) thin abi("C") -> Int32,
+                winkb_vtable_index[Self.interface_name, Self.method](),
+            ](self._this)(self._this, a0, a1, a2, a3, a4, a5, a6, a7, a8)
+        )
+        hr.raise_for[Self.method]()
+        return hr
+
+
+    def __call__[
+        A0: TrivialRegisterPassable,
+        A1: TrivialRegisterPassable,
+        A2: TrivialRegisterPassable,
+        A3: TrivialRegisterPassable,
+        A4: TrivialRegisterPassable,
+        A5: TrivialRegisterPassable,
+        A6: TrivialRegisterPassable,
+        A7: TrivialRegisterPassable,
+        A8: TrivialRegisterPassable,
+        A9: TrivialRegisterPassable,
+    ](self, a0: A0, a1: A1, a2: A2, a3: A3, a4: A4, a5: A5, a6: A6, a7: A7, a8: A8, a9: A9) raises -> HResult:
+        """Calls a ten-argument COM method.
+
+        Parameters:
+            A0: The first argument's Mojo type; width-checked.
+            A1: The second argument's Mojo type; width-checked.
+            A2: The third argument's Mojo type; width-checked.
+            A3: The fourth argument's Mojo type; width-checked.
+            A4: The fifth argument's Mojo type; width-checked.
+            A5: The sixth argument's Mojo type; width-checked.
+            A6: The seventh argument's Mojo type; width-checked.
+            A7: The eighth argument's Mojo type; width-checked.
+            A8: The ninth argument's Mojo type; width-checked.
+            A9: The tenth argument's Mojo type; width-checked.
+
+        Args:
+            a0: The first argument.
+            a1: The second argument.
+            a2: The third argument.
+            a3: The fourth argument.
+            a4: The fifth argument.
+            a5: The sixth argument.
+            a6: The seventh argument.
+            a7: The eighth argument.
+            a8: The ninth argument.
+            a9: The tenth argument.
+
+        Returns:
+            The successful HResult.
+
+        Raises:
+            If the method reports failure.
+        """
+        _check_hresult_method[Self.interface_name, Self.method, 10]()
+        _check_arg[Self.interface_name, Self.method, "0", A0]()
+        _check_arg[Self.interface_name, Self.method, "1", A1]()
+        _check_arg[Self.interface_name, Self.method, "2", A2]()
+        _check_arg[Self.interface_name, Self.method, "3", A3]()
+        _check_arg[Self.interface_name, Self.method, "4", A4]()
+        _check_arg[Self.interface_name, Self.method, "5", A5]()
+        _check_arg[Self.interface_name, Self.method, "6", A6]()
+        _check_arg[Self.interface_name, Self.method, "7", A7]()
+        _check_arg[Self.interface_name, Self.method, "8", A8]()
+        _check_arg[Self.interface_name, Self.method, "9", A9]()
+        var hr = HResult(
+            com_method[
+                def (
+                    OpaquePointer[MutUntrackedOrigin], A0, A1, A2, A3, A4, A5, A6, A7, A8, A9
+                ) thin abi("C") -> Int32,
+                winkb_vtable_index[Self.interface_name, Self.method](),
+            ](self._this)(self._this, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9)
+        )
+        hr.raise_for[Self.method]()
+        return hr
+
+
+    def __call__[
+        A0: TrivialRegisterPassable,
+        A1: TrivialRegisterPassable,
+        A2: TrivialRegisterPassable,
+        A3: TrivialRegisterPassable,
+        A4: TrivialRegisterPassable,
+        A5: TrivialRegisterPassable,
+        A6: TrivialRegisterPassable,
+        A7: TrivialRegisterPassable,
+        A8: TrivialRegisterPassable,
+        A9: TrivialRegisterPassable,
+        A10: TrivialRegisterPassable,
+    ](self, a0: A0, a1: A1, a2: A2, a3: A3, a4: A4, a5: A5, a6: A6, a7: A7, a8: A8, a9: A9, a10: A10) raises -> HResult:
+        """Calls an eleven-argument COM method.
+
+        Parameters:
+            A0: The first argument's Mojo type; width-checked.
+            A1: The second argument's Mojo type; width-checked.
+            A2: The third argument's Mojo type; width-checked.
+            A3: The fourth argument's Mojo type; width-checked.
+            A4: The fifth argument's Mojo type; width-checked.
+            A5: The sixth argument's Mojo type; width-checked.
+            A6: The seventh argument's Mojo type; width-checked.
+            A7: The eighth argument's Mojo type; width-checked.
+            A8: The ninth argument's Mojo type; width-checked.
+            A9: The tenth argument's Mojo type; width-checked.
+            A10: The eleventh argument's Mojo type; width-checked.
+
+        Args:
+            a0: The first argument.
+            a1: The second argument.
+            a2: The third argument.
+            a3: The fourth argument.
+            a4: The fifth argument.
+            a5: The sixth argument.
+            a6: The seventh argument.
+            a7: The eighth argument.
+            a8: The ninth argument.
+            a9: The tenth argument.
+            a10: The eleventh argument.
+
+        Returns:
+            The successful HResult.
+
+        Raises:
+            If the method reports failure.
+        """
+        _check_hresult_method[Self.interface_name, Self.method, 11]()
+        _check_arg[Self.interface_name, Self.method, "0", A0]()
+        _check_arg[Self.interface_name, Self.method, "1", A1]()
+        _check_arg[Self.interface_name, Self.method, "2", A2]()
+        _check_arg[Self.interface_name, Self.method, "3", A3]()
+        _check_arg[Self.interface_name, Self.method, "4", A4]()
+        _check_arg[Self.interface_name, Self.method, "5", A5]()
+        _check_arg[Self.interface_name, Self.method, "6", A6]()
+        _check_arg[Self.interface_name, Self.method, "7", A7]()
+        _check_arg[Self.interface_name, Self.method, "8", A8]()
+        _check_arg[Self.interface_name, Self.method, "9", A9]()
+        _check_arg[Self.interface_name, Self.method, "10", A10]()
+        var hr = HResult(
+            com_method[
+                def (
+                    OpaquePointer[MutUntrackedOrigin], A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10
+                ) thin abi("C") -> Int32,
+                winkb_vtable_index[Self.interface_name, Self.method](),
+            ](self._this)(self._this, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10)
+        )
+        hr.raise_for[Self.method]()
+        return hr
+
 
 struct Com[interface_name: StaticString](TrivialRegisterPassable):
     """A typed, non-owning view of a COM interface for making calls.
@@ -554,6 +966,21 @@ struct Com[interface_name: StaticString](TrivialRegisterPassable):
             of: The owning pointer to call through.
         """
         self._this = of.interface()
+
+    def __init__(out self, *, borrowed: Int):
+        """Views a raw interface pointer someone else owns.
+
+        For calling through a pointer whose lifetime is managed elsewhere --
+        one kept in a window's user data across message dispatches, say,
+        where an owning wrapper would release it at the end of every
+        handler. Nothing here AddRefs or Releases; the owner does both.
+
+        Args:
+            borrowed: The interface pointer, still owned by the caller.
+        """
+        self._this = OpaquePointer[MutUntrackedOrigin](
+            unsafe_from_address=borrowed
+        )
 
     def __getattr_param__[
         name: StringLiteral
