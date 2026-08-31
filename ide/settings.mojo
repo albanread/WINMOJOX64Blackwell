@@ -53,7 +53,7 @@ from std.ffi import c_int
 from std.memory import Pointer
 from std.sys._winkb import winkb_constant
 
-from ide.json import BOOL, JSON, NUMBER, OBJECT, STRING, parse
+from ide.json import parsed_whole_document, BOOL, JSON, NUMBER, OBJECT, STRING, parse
 from ide.win32 import absolute, env_or, win32
 
 
@@ -304,11 +304,16 @@ def _load() raises -> JSON:
     # possibly, one key whose value is the first few letters of the value.
     # That is worse than reading nothing: a font of "Casca" looks like a
     # setting somebody chose, and it would be written back as one by the next
-    # save. A complete JSON object always ends in `}`, so this rejects exactly
-    # the truncated case and accepts every whole file.
+    # save.
+    #
+    # This used to test that the text ended in `}`, on the reasoning that a
+    # complete object always does. So does an incomplete one that happens to
+    # be cut after a nested brace, and an adversarial read found two such cuts
+    # in a plausible settings file -- one of which presented a truncated build
+    # command as a real setting. The parser now says whether it reached the
+    # end without failing, which is the actual question, so this asks it
+    # instead of guessing from the last character.
     if trimmed.byte_length() < 2:
-        return JSON.object()
-    if not trimmed.startswith("{") or not trimmed.endswith("}"):
         return JSON.object()
 
     # `parse` answers null for anything else it could not read, so a file full
@@ -316,6 +321,8 @@ def _load() raises -> JSON:
     # we wanted is the rest of the error handling: a top-level array, string or
     # number is not a settings file either, and this rejects those too.
     var root = parse(trimmed^)
+    if not parsed_whole_document():
+        return JSON.object()
     if root.kind != OBJECT:
         return JSON.object()
     return root^

@@ -9,6 +9,7 @@
 # cannot contain a List of itself, since the type is not complete while it is
 # being defined, and a pointer is a fixed size.
 from std.memory import ArcPointer
+from std.sys._globals import named_global
 
 comptime NULL = 0
 comptime BOOL = 1
@@ -190,11 +191,27 @@ def _write(v: JSON, mut out: String):
     elif v.kind == NUMBER:
         # Whole numbers lose the decimal point: LSP counts lines and characters,
         # and 3.0 where 3 is meant reads as a mistake.
-        let i = Int(v.num)
-        if Float64(i) == v.num:
-            out += String(i)
+        # A number read from a file and written back does not always come
+        # out as it went in: parsing accumulates digit by digit into a
+        # Float64 and this prints that double, so a hand-written 0.3 becomes
+        # 0.30000000000000004 and drifts again on the next save. Left alone
+        # deliberately -- the fix is to keep the original token, which is a
+        # change to what a JSON value IS, and nothing here writes numbers a
+        # person typed: settings hold strings, and the protocol numbers are
+        # line and column counts that survive the trip exactly.
+        #
+        # JSON has no infinity and no NaN, and `String(inf)` writes the bare
+        # token `inf`, which the parser then stops at -- taking every later
+        # member of the object with it. `null` is what the format offers for
+        # a value it cannot represent, and it reads back.
+        if not (v.num == v.num) or v.num > 1.0e308 or v.num < -1.0e308:
+            out += "null"
         else:
-            out += String(v.num)
+            let i = Int(v.num)
+            if Float64(i) == v.num:
+                out += String(i)
+            else:
+                out += String(v.num)
     elif v.kind == STRING:
         _write_string(v.text, out)
     elif v.kind == ARRAY:
@@ -256,7 +273,27 @@ def parse(var text: String) -> JSON:
     should not take the editor down with it."""
     var p = _Parser(text^)
     var v = _parse_value(p)
+    g_whole()[] = 0 if p.failed else 1
     return v^
+
+
+# Whether the last `parse` understood the whole document. A separate answer
+# because the value cannot carry it: a half-read object is a perfectly good
+# object with some of its members missing, and it is indistinguishable from a
+# small one. Callers that are reading a file they will later write back need
+# the difference -- accepting a truncated file and then saving it makes the
+# truncation permanent -- while callers reading a message off a socket do not
+# care, which is why this is beside `parse` rather than inside its return.
+comptime g_whole = named_global["json.parse.whole", Int]
+
+
+def parsed_whole_document() -> Bool:
+    """Whether the last parse reached the end without failing.
+
+    Returns:
+        True when the document was understood completely.
+    """
+    return g_whole()[] != 0
 
 
 def _parse_value(mut p: _Parser) -> JSON:
@@ -359,13 +396,38 @@ def _parse_string(mut p: _Parser) -> String:
                     p.at += 1
                 # A surrogate pair is two escapes and one character. Servers
                 # send them for anything outside the BMP, emoji included.
-                if code >= 0xD800 and code <= 0xDBFF and p.peek() == 0x5C:
+                #
+                # Everything below the combining line is about the halves
+                # that do not pair up. A surrogate is not a character: it is
+                # half of one, and there is no such thing as a String
+                # containing half a character. Handing one to
+                # `unsafe_unchecked_codepoint` built exactly that -- a String
+                # whose bytes are not UTF-8, which then could not be read back
+                # from the file it had just been written to. U+FFFD is what
+                # every other decoder substitutes and what a person expects to
+                # see: a replacement character where something was lost.
+                if (
+                    code >= 0xD800
+                    and code <= 0xDBFF
+                    and p.peek() == 0x5C
+                    and p.at + 1 < p.src.byte_length()
+                    and Int(p.src.as_bytes()[p.at + 1]) == 0x75
+                ):
                     p.at += 2
                     var lo = 0
                     for _ in range(4):
                         lo = lo * 16 + _hex(p.peek())
                         p.at += 1
-                    code = 0x10000 + ((code - 0xD800) << 10) + (lo - 0xDC00)
+                    if lo >= 0xDC00 and lo <= 0xDFFF:
+                        code = 0x10000 + ((code - 0xD800) << 10) + (lo - 0xDC00)
+                    else:
+                        # A high surrogate followed by an escape that is not
+                        # its other half. The first is lost; the second is a
+                        # character in its own right and is kept.
+                        out += _ch(0xFFFD)
+                        code = lo
+                if code >= 0xD800 and code <= 0xDFFF:
+                    code = 0xFFFD
                 out += _ch(code)
             else:
                 # Any other escape stands for itself, "/" among them.
