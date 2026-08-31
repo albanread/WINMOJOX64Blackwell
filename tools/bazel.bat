@@ -57,8 +57,35 @@ if "%BAZEL_SH%"=="" (
 
 if not exist "%BAZELRC_ROOT%\logs" mkdir "%BAZELRC_ROOT%\logs"
 
+REM Populate local-resources.bazelrc the way the POSIX wrapper does by running
+REM bazel/internal/detect_local_resources.sh. This file previously wrote an
+REM EMPTY file here, and the consequence was invisible until the first GPU
+REM census: every GPU test declares exec_properties
+REM "test.resources:gpu-memory" (89 targets under max/kernels/test/gpu), a
+REM resource bazel's local manager does not track unless told, so it refused
+REM to schedule them and reported each one as FAILED TO BUILD -- 218 of 251
+REM census targets mislabelled as build failures on binaries that built fine.
+REM The lines emitted match detect_local_resources.sh's output exactly.
+REM Like the POSIX side, the result is cached: delete the file to re-detect.
 if not exist "%BAZELRC_ROOT%\local-resources.bazelrc" (
   type nul > "%BAZELRC_ROOT%\local-resources.bazelrc"
+  where nvidia-smi >nul 2>nul
+  if not errorlevel 1 (
+    set "GPU_COUNT=0"
+    set "GPU_MEM_MIB="
+    for /f "usebackq delims=" %%m in (`nvidia-smi --query-gpu=memory.total --format=csv^,noheader^,nounits 2^>nul`) do (
+      set /a GPU_COUNT+=1
+      if "!GPU_MEM_MIB!"=="" set "GPU_MEM_MIB=%%m"
+    )
+    if not "!GPU_MEM_MIB!"=="" if not "!GPU_COUNT!"=="0" (
+      set /a GPU_MEM_GIB=!GPU_MEM_MIB!/1024
+      >>"%BAZELRC_ROOT%\local-resources.bazelrc" echo build --local_resources=gpu-memory=!GPU_MEM_GIB!
+      >>"%BAZELRC_ROOT%\local-resources.bazelrc" echo build --local_resources=gpu-1=1
+      if !GPU_COUNT! geq 2 >>"%BAZELRC_ROOT%\local-resources.bazelrc" echo build --local_resources=gpu-2=1
+      if !GPU_COUNT! geq 4 >>"%BAZELRC_ROOT%\local-resources.bazelrc" echo build --local_resources=gpu-4=1
+      if !GPU_COUNT! geq 8 >>"%BAZELRC_ROOT%\local-resources.bazelrc" echo build --local_resources=gpu-8=1
+    )
+  )
 )
 
 set "WHO=%USERNAME%"

@@ -1,0 +1,273 @@
+# MAX GPU kernel census -- WINMOJOX64Blackwell
+#
+# platform : //:windows_x86_64_nvidia_t1000  (NVIDIA T1000 8GB, Turing sm_75, driver 582.08)
+# revision : 397bdbe
+# date     : 2026-08-23
+# runtime  : nvptxrt.dll (source-built; no CUDA runtime linked)
+#
+# Set: 792 test targets declared under //max/kernels/test/gpu/..., of which 279
+# are platform-compatible per `bazel cquery` + IncompatiblePlatformProvider,
+# minus 11 manual-tagged and the manual fuzz package = 251.
+#
+# Run with:
+#   bazelw.cmd test --target_pattern_file=<set> --keep_going --local_test_jobs=1 \
+#     --local_resources=gpu-memory=8 --local_resources=gpu-count=1 --local_resources=gpu-1=1
+#
+# The --local_resources flags are NOT optional. GPU targets declare
+# exec_properties test.resources:gpu-memory, which Bazel's local resource
+# manager does not know; without them every GPU test is refused with
+# "Resource gpu-memory is not being tracked" and REPORTED AS A BUILD FAILURE.
+# That mislabel is why 218 of 251 targets looked broken before this flag.
+#
+# verdicts: see docs/TEST-SUITE-DESIGN.md 5.3
+//max/kernels/test/gpu/basics:test_wmma.mojo.test	FAIL_ARCH_DIRTY	LLVM ERROR	build
+//max/kernels/test/gpu/layout:test_layout_mma.mojo.test	FAIL_ARCH_DIRTY	LLVM ERROR	build
+//max/kernels/test/gpu/layout:test_ldmatrix.mojo.test	FAIL_ARCH_DIRTY	LLVM ERROR	build
+//max/kernels/test/gpu/device_context:test_device_external_function.mojo.test	FAIL_COMPILE	compile/deps	ran
+//max/kernels/test/gpu/basics:test_accelerator_arch_cli.mojo.test	FAIL_HARNESS	path is on mount '[A-Za-z]:', start on mount '[A-Za-z]:'	ran
+//max/kernels/test/gpu/basics:test_accelerator_arch_cli_kernels.mojo.test	FAIL_HARNESS	path is on mount '[A-Za-z]:', start on mount '[A-Za-z]:'	ran
+//max/kernels/test/gpu/basics:test_debug_assert_gpu_error.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/basics:test_has_sm100_or_newer.mojo.test	FAIL_HARNESS	path is on mount '[A-Za-z]:', start on mount '[A-Za-z]:'	ran
+//max/kernels/test/gpu/basics:test_kernel_with_list.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/basics:test_print.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/basics:test_printf.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/basics:test_sync.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/compile:test_amd_asan_oob.mojo.test	FAIL_HARNESS	path is on mount '[A-Za-z]:', start on mount '[A-Za-z]:'	ran
+//max/kernels/test/gpu/compile:test_amd_block_sync_lds.mojo.test	FAIL_HARNESS	path is on mount '[A-Za-z]:', start on mount '[A-Za-z]:'	ran
+//max/kernels/test/gpu/compile:test_compile_nvptx.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/compile:test_compile_nvptx_debuginfo.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/compile:test_compile_via_param.mojo.test	FAIL_HARNESS	path is on mount '[A-Za-z]:', start on mount '[A-Za-z]:'	ran
+//max/kernels/test/gpu/compile:test_elementwise_trace_description.mojo.test	FAIL_HARNESS	path is on mount '[A-Za-z]:', start on mount '[A-Za-z]:'	ran
+//max/kernels/test/gpu/device_context:test_function_error.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/device_context:test_function_error_sync_mode.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/examples:test_stencil1d.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/examples:test_stencil2d.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/layout:test_codegen_to_llvm.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/layout:test_tiled_matmul_gpu.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/linalg:test_block_swizzle.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/linalg:test_grouped_matmul_tile_scheduler.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/linalg:test_matmul_tile_scheduler.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/memory:test_memory.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/memory:test_shared_mem_barrier.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/memory:test_tma_ops.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/nn:test_gather.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/nn:test_gather_nd_oob.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/nn:test_mha_tile_scheduler.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/nn:test_padding_gpu.mojo.test	FAIL_HARNESS	(FileCheck|not|count)(\.exe)?: No such file or directory	ran
+//max/kernels/test/gpu/device_context:test_device_context_cpu.mojo.test	FAIL_PROVIDER	missing AsyncRT_DeviceContext_enqueueHostFunctionRange	build
+//max/kernels/test/gpu/examples:test_stencil_gpu.mojo.test	FAIL_PROVIDER	missing AsyncRT_DeviceContext_enqueueHostFunctionRange	build
+//max/kernels/test/gpu/kv_cache:test_kv_cache_2m_iadd.mojo.test	FAIL_PROVIDER	missing AsyncRT_DeviceContext_enqueueHostFunctionRange	build
+//max/kernels/test/gpu/layout:test_managed_layout_tensor.mojo.test	FAIL_PROVIDER	does not implement device API	ran
+//max/kernels/test/gpu/nn:test_argmaxmin_gpu.mojo.test	FAIL_PROVIDER	missing AsyncRT_DeviceContext_enqueueHostFunctionRange	build
+//max/kernels/test/gpu/nn:test_argsort.mojo.test	FAIL_PROVIDER	missing AsyncRT_DeviceContext_enqueueHostFunctionRange	build
+//max/kernels/test/gpu/nn:test_layer_norm.mojo.test	FAIL_PROVIDER	missing AsyncRT_DeviceContext_enqueueHostFunctionRange	build
+//max/kernels/test/gpu/nn:test_pool_gpu.mojo.test	FAIL_PROVIDER	missing AsyncRT_DeviceContext_enqueueHostFunctionRange	build
+//max/kernels/test/gpu/nn:test_softmax.mojo.test	FAIL_PROVIDER	missing AsyncRT_DeviceContext_enqueueHostFunctionRange	build
+//max/kernels/test/gpu/nn:test_topk_gpu.mojo.test	FAIL_PROVIDER	missing AsyncRT_DeviceContext_enqueueHostFunctionRange	build
+//max/kernels/test/gpu/nn:test_topk_gpu_fi.mojo.test	FAIL_PROVIDER	missing AsyncRT_DeviceContext_enqueueHostFunctionRange	build
+//max/kernels/test/gpu/nn:test_toppminp_gpu.mojo.test	FAIL_PROVIDER	missing AsyncRT_DeviceContext_enqueueHostFunctionRange	build
+//max/kernels/test/gpu/state_space:test_causal_conv1d.mojo.test	FAIL_PROVIDER	missing AsyncRT_DeviceContext_enqueueHostFunctionRange	build
+//max/kernels/test/gpu/state_space:test_mamba2_ssd_scan.mojo.test	FAIL_PROVIDER	missing AsyncRT_DeviceContext_enqueueHostFunctionRange	build
+//max/kernels/test/gpu/state_space:test_mamba_split_conv1d_scan_combined.mojo.test	FAIL_PROVIDER	missing AsyncRT_DeviceContext_enqueueHostFunctionRange	build
+//max/kernels/test/gpu/state_space:test_selective_scan.mojo.test	FAIL_PROVIDER	missing AsyncRT_DeviceContext_enqueueHostFunctionRange	build
+//max/kernels/test/gpu/state_space:test_ssd_combined.mojo.test	FAIL_PROVIDER	missing AsyncRT_DeviceContext_enqueueHostFunctionRange	build
+//max/kernels/test/gpu/state_space:test_varlen_selective_scan.mojo.test	FAIL_PROVIDER	missing AsyncRT_DeviceContext_enqueueHostFunctionRange	build
+//max/kernels/test/gpu/basics:test_accelerator_arch.mojo.test	FAIL_RUNTIME	assertion	ran
+//max/kernels/test/gpu/basics:test_fast_div.mojo.test	FAIL_RUNTIME	assertion	ran
+//max/kernels/test/gpu/compile:test_simd.mojo.test	FAIL_RUNTIME	assertion	ran
+//max/kernels/test/gpu/compile:test_compile_gcn.mojo.test	NO_RESULT	build failed, stderr not captured	build
+//max/kernels/test/gpu/compile:test_compile_to_llvm_codegen.mojo.test	NO_RESULT	build failed, stderr not captured	build
+//max/kernels/test/gpu/layout:test_layout_tensor_copy.mojo.test	NO_RESULT	build failed, stderr not captured	build
+//max/kernels/test/gpu/layout:test_layout_tensor_copy_nvidia.mojo.test	NO_RESULT	build failed, stderr not captured	build
+//max/kernels/test/gpu/layout:test_tensor_core_nvidia.mojo.test	NO_RESULT	build failed, stderr not captured	build
+//max/kernels/test/gpu/basics:lit.validate_lit_features	PASS	-	ran
+//max/kernels/test/gpu/basics:test_add_constant.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_barrier.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_capture_trait_type.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_cast_roundtrip.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_constant_memory.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_dim.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_function_mts.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_grid_dim.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_has_nvidia_gpu.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_id.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_info.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_init_vector_gpu.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_invariant_load.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_is_sm90.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_laneid.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_launch_binary.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_load_width_codegen.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_prefix_sum.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_print_elementwise.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_random.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_semaphore.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_shuffle.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_simd_reduction.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_sleep.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_static_layout_capture_argcount.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_strided_load.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_sum.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_targetinfo.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/basics:test_verify_buffers_gpu.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/compile:lit.validate_lit_features	PASS	-	ran
+//max/kernels/test/gpu/compile:test_cuda_target.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/compile:test_multimem.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/compile:test_register_intrinsics.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/device_context:test_device_context.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/device_context:test_device_context_sub_buffer.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/device_context:test_device_event.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/device_context:test_device_graph_builder.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/device_context:test_device_stream.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/device_context:test_dump_sass.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/device_context:test_enqueue_fill.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/device_context:test_external_shared_mem.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/device_context:test_external_stream.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/device_context:test_function_attributes.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/device_context:test_occupancy_max_active_blocks.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/examples:test_mandelbrot.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/examples:test_matmul_1_sram.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/examples:test_matmul_int.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/examples:test_matmul_kernel_10.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/kv_cache:test_batch_kv_cache_flash_attention_causal_mask_ragged_paged_ps256_hs64.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/kv_cache:test_kv_cache_radd.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/kv_cache:test_kv_cache_ragged_matmul_scale.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/kv_cache:test_kv_cache_store_ragged.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/kv_cache:test_mha_rel_logits_ragged_paged.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/kv_cache:test_paged_sparse_kv_index_remap.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/kv_cache:test_sliced_add.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/layout:issue_32811.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/layout:test_device_pointer_tile_storage_kernel.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/layout:test_index_tensor.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/layout:test_layout_tensor.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/layout:test_layout_tensor_indexlist_codegen.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/layout:test_vectorize.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/linalg:test_apple_fa_frag_reduce.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/linalg:test_gemv_bf16.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/linalg:test_gemv_multirow.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/linalg:test_grouped_matmul_rowwise_scaled_fp8.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/linalg:test_grouped_tile_scheduler.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/linalg:test_lora_shrink_qkv_permute_3mn_sm100.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/linalg:test_matmul_dispatch_tables.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/linalg:test_mxfp6_dequant_smoke.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/linalg:test_pipeline_framework.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/linalg:test_pipeline_ldg.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/linalg:test_split_k_reduce.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/linalg:test_stream_k.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/memory:test_external_and_static_shared_mem.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/memory:test_external_memory_callee_patterns.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/memory:test_ldg_intrinsics.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/memory:test_load_cache.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/memory:test_prefetch.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/memory:test_semaphore_reduction.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_apply_packed_bitmask.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_apply_qk_rms_norm.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_argmax_streaming_gpu.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_bicubic.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_causal_padding_mask.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_concat.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_concat_coverage.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_conv_grouped.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_fp8_quantize_saturating.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_fused_qk_rms_norm_rope.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_fused_qk_rope.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_gather_nd.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_group_norm.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_gumbel_argmax_from_probs.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_index_tensor.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_layer_norm_rope_ragged.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_learnable_2d_interp_pos_emb.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_mha_causal_mask_depth_64.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_mha_chunked_mask.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_mha_mask.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_mha_sink_weights.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_mla_decode_kv_fp8.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_moe_indices.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_rms_norm.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_rms_norm_fused_fp8.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_rms_norm_fused_residual_add.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_rms_norm_rope.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_rope_ragged.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_rope_ragged_position_ids.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_rope_split_store.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_row_mean_of_squares.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_row_mean_of_squares_qk.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_scatter_nd.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_scatter_set_constant.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_sparse_indexer_common.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_spatial_merge.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_topk_nan_contract.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_topk_topp_degenerate_row.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_topk_topp_masked_probs.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_topk_topp_sampling_with_dist.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_tpool_patch_merger.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_warp_bitonic_sort.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_winograd_conv.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/quantization:test_int4tobf16.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/quantization:test_scaled_fp8_quantization.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/shmem:test.validate_lit_features	PASS	-	ran
+//max/kernels/test/gpu/state_space:test_causal_conv1d_update.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/state_space:test_gated_delta.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/state_space:test_gated_delta_conv1d.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/state_space:test_gated_group_rmsnorm.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/state_space:test_rms_norm_fused_residual.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/state_space:test_varlen_causal_conv1d.mojo.test	PASS	-	ran
+//max/kernels/test/gpu/nn:test_mla_layout_g_mma_smoke.mojo.test	PASS_VACUOUS	skipping	ran
+//max/kernels/test/gpu/basics:test_convert.mojo.test	SKIP_ARCH_CLEAN	target not supported by this build	build
+//max/kernels/test/gpu/compile:test_readfirstlane.mojo.test	SKIP_ARCH_CLEAN	target not supported by this build	build
+//max/kernels/test/gpu/compile:test_sleep_intrinsics.mojo.test	SKIP_ARCH_CLEAN	target not supported by this build	build
+//max/kernels/test/gpu/compile:test_time.mojo.test	SKIP_ARCH_CLEAN	target not supported by this build	build
+//max/kernels/test/gpu/examples:test_double_buffer_gemm.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/examples:test_tiled_matmul_backtoback.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/kv_cache:test_batch_kv_cache_flash_attention.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/kv_cache:test_batch_kv_cache_flash_attention_causal_mask.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/kv_cache:test_batch_kv_cache_flash_attention_causal_mask_ragged.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/kv_cache:test_batch_kv_cache_flash_attention_causal_mask_ragged_paged_ps256_hs128.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/kv_cache:test_fused_qkv_index_matmul.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/kv_cache:test_kv_cache_matmul.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/kv_cache:test_kv_cache_ragged_matmul_bf16_fused_cont.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/kv_cache:test_kv_cache_ragged_matmul_bf16_fused_paged.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/kv_cache:test_kv_cache_ragged_matmul_bf16_k_paged.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/kv_cache:test_kv_cache_ragged_matmul_bf16_kv_cont.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/kv_cache:test_kv_cache_ragged_matmul_fp32_fused_cont.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/kv_cache:test_kv_cache_ragged_matmul_fp32_fused_paged.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/kv_cache:test_kv_cache_ragged_matmul_fp32_k_paged.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/kv_cache:test_kv_cache_ragged_matmul_fp32_kv_cont.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/kv_cache:test_mha_decoding_vs_naive.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/kv_cache:test_mha_mixed_ce_tg.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/layout:test_coord_codegen.mojo.test	SKIP_ARCH_CLEAN	target not supported by this build	build
+//max/kernels/test/gpu/layout:test_grouped_tensormap_update.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/layout:test_matmul.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/layout:test_new_layout_codegen.mojo.test	SKIP_ARCH_CLEAN	target not supported by this build	build
+//max/kernels/test/gpu/layout:test_tensor_gpu.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/layout:test_tile_io.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/layout:test_tile_io_copy.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/linalg:test_block_scaled_mma_amd_asm.mojo.test	SKIP_ARCH_CLEAN	target not supported by this build	build
+//max/kernels/test/gpu/linalg:test_gemm_kernel.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/linalg:test_gemm_kernel_new.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/linalg:test_gemv2.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/linalg:test_linalg_matmul_gpu.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/linalg:test_matmul.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/linalg:test_matmul_custom.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/linalg:test_matmul_pdl_race.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/linalg:test_multistage_gemm_kernel.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/memory:test_async_cpy_wait_group.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/memory:test_copy_async.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/nn:scout_tt_bounded_copy.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/nn:test_flash_attention.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/nn:test_mha_causal_mask_depth_128.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/nn:test_mha_chunked_causal_mask.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/nn:test_mla.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/quantization:test_multistage_gemm_q.mojo.test	SKIP_ARCH_CLEAN	GPU too old (comptime gate)	build
+//max/kernels/test/gpu/basics:test_fast_div_ptx.mojo.test	UNCLASSIFIED	-	ran
+//max/kernels/test/gpu/compile:test_fp8_cast_nvptx.mojo.test	UNCLASSIFIED	-	build
+//max/kernels/test/gpu/linalg:test_batched_matmul.mojo.test	UNCLASSIFIED	-	ran
+//max/kernels/test/gpu/linalg:test_gemv.mojo.test	UNCLASSIFIED	-	ran
+//max/kernels/test/gpu/linalg:test_grouped_matmul_vendor.mojo.test	UNCLASSIFIED	-	ran
+//max/kernels/test/gpu/nn:test_conv_gpu.mojo.test	UNCLASSIFIED	-	ran
+//max/kernels/test/gpu/nn:test_conv_transposed_cudnn.mojo.test	UNCLASSIFIED	-	ran
+//max/kernels/test/gpu/nn:test_cudnn_conv.mojo.test	UNCLASSIFIED	-	ran
+//max/kernels/test/gpu/nn:test_fused_qk_rope_ragged.mojo.test	UNCLASSIFIED	-	ran
+//max/kernels/test/gpu/nn:test_gemv_partial_norm.mojo.test	UNCLASSIFIED	-	ran
+//max/kernels/test/gpu/nn:test_irfft.mojo.test	UNCLASSIFIED	-	ran
+//max/kernels/test/gpu/nn:test_topk_bitonic.mojo.test	UNCLASSIFIED	-	ran
