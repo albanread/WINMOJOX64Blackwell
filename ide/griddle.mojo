@@ -45,6 +45,7 @@ from ide.gridview import (
     draw_issues,
     draw_output,
     draw_tabs,
+    draw_tree,
     set_tab_labels,
     draw_popup,
     draw_references,
@@ -54,6 +55,7 @@ from ide.gridview import (
 )
 from ide.window import (
     adopt_tab,
+    set_root,
     build_file,
     close_tab,
     confirm_close,
@@ -364,6 +366,7 @@ def griddle_wndproc(
                         draw_tabs(
                             chrome[], layout.tabs(), tab_count(), current_tab()
                         )
+                        draw_tree(chrome[], layout.sidebar())
                         # Last, and over everything: a popup that the text
                         # can draw on top of is not a popup. The hover box
                         # is the same box and obeys the same rule, and the
@@ -1077,6 +1080,15 @@ def main() raises:
         doc_store[].uri = file_uri(absolute(open_path))
     chrome_store[].doc = Int(doc_store)
     _ = adopt_tab(hwnd, Int(doc_store))
+    # The project is the open file's directory. No configuration, no guessing
+    # at a repository root: the folder the file is in is where a person is
+    # working, and the tree can be pointed elsewhere at any time.
+    try:
+        var here = absolute(open_path) if open_path.byte_length() > 0 else absolute(".")
+        var cut = here.rfind(chr(0x5C))
+        print("griddle:", set_root(String(here[byte=0:cut]) if cut > 0 else here))
+    except err:
+        print("griddle: no project tree (", String(err), ")")
     # One row, at this display's density. The grid holds it because scrolling
     # and hit testing divide by it; the chrome holds the scale because the
     # font was made at it. They have to agree, so it is set from the chrome.

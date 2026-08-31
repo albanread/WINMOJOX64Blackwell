@@ -88,6 +88,7 @@ from ide.gridview import (
     GUTTER_W,
     output_row_at,
     tab_at,
+    tree_row_at,
     release_cache,
     issue_row_at,
     advance_of,
@@ -108,6 +109,14 @@ from ide.build import (
     what_ran,
 )
 from ide.rope import Rope
+from ide.tree import (
+    entry_at,
+    entry_count,
+    scroll_tree,
+    set_root,
+    toggle,
+    tree_report,
+)
 from ide.win32 import (
     RECT,
     absolute,
@@ -308,6 +317,21 @@ def caret_click(hwnd: Int, x: Int, y: Int) raises -> String:
     var full = Layout(
         Int(rc.right - rc.left), Int(rc.bottom - rc.top), scale
     )
+    # The sidebar: a file opens, a directory expands. Checked before the
+    # editor because the sidebar is to the left of it and a click there is
+    # never about the text.
+    var side = full.sidebar()
+    if Float32(x) >= side.left and Float32(x) < side.right:
+        var row = tree_row_at(side, Float32(y), scale)
+        if row < 0:
+            return String("the sidebar")
+        var e = entry_at(row)
+        if e.is_dir:
+            var said = toggle(row)
+            _touch(hwnd)
+            return said
+        return open_path(hwnd, e.path)
+
     # A click on a tab switches to it. Checked before the editor because the
     # strip sits inside the editor field's column and above its text.
     var strip = full.tabs()

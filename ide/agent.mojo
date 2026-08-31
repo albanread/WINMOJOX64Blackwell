@@ -63,6 +63,9 @@ from ide.window import (
     build_wait,
     close_tab,
     next_tab,
+    set_root,
+    toggle,
+    tree_report,
     switch_tab,
     tabs_report,
     is_dirty,
@@ -566,6 +569,18 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         if rest.byte_length() > 0:
             return goto_reference(hwnd, Int(rest))
         return references_at_caret(hwnd)
+
+    if verb == "tree":
+        # `tree` lists it, `tree N` expands or collapses row N, `tree root
+        # <path>` points it somewhere else.
+        if rest.startswith("root"):
+            var sp = rest.find(" ")
+            if sp < 0:
+                return String("usage: tree root <path>")
+            return set_root(String(String(rest[byte=sp + 1 :]).strip()))
+        if rest.byte_length() > 0:
+            return toggle(Int(rest) - 1)
+        return tree_report()
 
     if verb == "tabs":
         # `tabs` lists them, `tabs N` switches, `tabs close` closes the one

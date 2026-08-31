@@ -75,6 +75,7 @@ from ide.lsp import (
 from ide.build import is_building, output_count, output_line
 from std.sys._globals import named_global
 from ide.rope import Rope
+from ide.tree import entry_at, entry_count, top_row
 from ide.win32 import scaled
 from ide.syntax import (
     KIND_COMMENT,
@@ -1807,3 +1808,107 @@ def set_tab_labels(var labels: List[String]):
         labels: One per tab, in order.
     """
     _g_tab_labels()[] = labels^
+
+
+comptime TREE_ROW_H = 18
+comptime TREE_TOP_PAD = 30
+comptime TREE_INDENT = 12
+
+
+def tree_row_at(region: D2D_RECT_F, y: Float32, scale: Float32) -> Int:
+    """Which tree row a click at `y` is on, or -1.
+
+    Args:
+        region: The sidebar.
+        y: A client y coordinate.
+        scale: Device pixels per design pixel.
+
+    Returns:
+        The row index, or -1 above the first row or past the last.
+    """
+    var into = y - region.top - scaled(TREE_TOP_PAD, scale)
+    if into < 0:
+        return -1
+    var row = top_row() + Int(into / scaled(TREE_ROW_H, scale))
+    return -1 if row >= entry_count() else row
+
+
+def draw_tree(chrome: Chrome, region: D2D_RECT_F) raises:
+    """The project, down the sidebar.
+
+    Directories carry a marker and files do not, which is the whole of the
+    iconography: a tree that needs a legend is not saving anybody a thought.
+
+    Args:
+        chrome: The render target and text format.
+        region: The sidebar.
+
+    Raises:
+        If DirectWrite refuses.
+    """
+    if chrome.target == 0 or chrome.text_format == 0:
+        return
+    var total = entry_count()
+    if total == 0:
+        return
+
+    var this = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.target
+    )
+    var dwrite = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.dwrite
+    )
+    var ink = _brush(chrome.target, INK)
+    var dim = _brush(chrome.target, DIM)
+    if ink == 0:
+        return
+
+    var clip = region
+    com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[D2D_RECT_F, MutAnyOrigin],
+            UInt32,
+        ) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PushAxisAlignedClip",
+    ](this)(this, com_addr(clip), UInt32(0))
+    _ = clip
+
+    var rows = Int(
+        (region.bottom - region.top - scaled(TREE_TOP_PAD, chrome.scale))
+        / scaled(TREE_ROW_H, chrome.scale)
+    )
+    var n = 0
+    while n < rows and top_row() + n < total:
+        var e = entry_at(top_row() + n)
+        var y = (
+            region.top
+            + scaled(TREE_TOP_PAD, chrome.scale)
+            + Float32(n) * scaled(TREE_ROW_H, chrome.scale)
+        )
+        var text = e.name
+        if e.is_dir:
+            text = ("- " if e.expanded else "+ ") + text
+        var layout = _make_layout(
+            dwrite, chrome, text,
+            region.right - region.left - scaled(16, chrome.scale),
+        )
+        if layout != 0:
+            _draw_layout(
+                this, layout, dim if e.is_dir else ink,
+                region.left
+                + scaled(12 + e.depth * TREE_INDENT, chrome.scale),
+                y,
+            )
+            _release(layout)
+        n += 1
+    _release(ink)
+    if dim != 0:
+        _release(dim)
+
+    com_method_of[
+        def (OpaquePointer[MutUntrackedOrigin]) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PopAxisAlignedClip",
+    ](this)(this)
