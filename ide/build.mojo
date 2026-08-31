@@ -149,7 +149,9 @@ def start(command: String, working_dir: String = String("")) raises -> String:
     clear_output()
     g_what()[] = command
     _append(String("> ") + command + "\n")
-    var child = spawn(command, working_dir)
+    # Both streams: a compiler's diagnostics are on stderr and they are
+    # the reason anybody is watching this pane.
+    var child = spawn(command, working_dir, merge_stderr=True)
     if child.process == 0:
         _append(String("could not start it\n"))
         return String("could not start: ") + command
@@ -242,3 +244,52 @@ def stop() raises -> String:
     _append(String("\n[stopped]\n"))
     return String("stopped")
 
+
+
+def locate(text: String) -> Tuple[String, Int, Int]:
+    """The file, line and column a tool's diagnostic names, if it names one.
+
+    Compilers say `path:line:col: error: ...` and have for forty years. The
+    parse is from the left but skips the first two characters, because on
+    Windows the path starts `E:` and a naive search for a colon finds the
+    drive letter and reports a file called `E`.
+
+    Args:
+        text: One line of output.
+
+    Returns:
+        The path, the zero-based line and the zero-based column. The path is
+        empty when the line does not name a place.
+    """
+    var bytes = text.as_bytes()
+    var n = len(bytes)
+    var i = 2
+    while i < n:
+        if Int(bytes[i]) != 0x3A:  # ':'
+            i += 1
+            continue
+        # A colon, then digits, a colon, digits, and a colon. Anything else
+        # is a colon in a message and not a location.
+        var j = i + 1
+        var line_start = j
+        while j < n and Int(bytes[j]) >= 0x30 and Int(bytes[j]) <= 0x39:
+            j += 1
+        if j == line_start or j >= n or Int(bytes[j]) != 0x3A:
+            i += 1
+            continue
+        var line_text = String(text[byte=line_start:j])
+        var k = j + 1
+        var col_start = k
+        while k < n and Int(bytes[k]) >= 0x30 and Int(bytes[k]) <= 0x39:
+            k += 1
+        if k == col_start:
+            i += 1
+            continue
+        var col_text = String(text[byte=col_start:k])
+        try:
+            # One-based on the wire, zero-based everywhere inside the editor.
+            return (String(text[byte=0:i]), Int(line_text) - 1, Int(col_text) - 1)
+        except:
+            i += 1
+            continue
+    return (String(""), -1, -1)

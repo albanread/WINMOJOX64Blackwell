@@ -85,6 +85,7 @@ from ide.lsp import (
 )
 from ide.gridview import (
     GUTTER_W,
+    output_row_at,
     release_cache,
     issue_row_at,
     advance_of,
@@ -95,6 +96,7 @@ from ide.gridview import (
 )
 from ide.build import (
     is_building,
+    locate,
     output_count,
     output_line,
     output_serial,
@@ -304,6 +306,23 @@ def caret_click(hwnd: Int, x: Int, y: Int) raises -> String:
     var full = Layout(
         Int(rc.right - rc.left), Int(rc.bottom - rc.top), scale
     )
+    # A diagnostic in the output pane is a place, and clicking a place
+    # should go there. This is the edit-build-fix loop closing: the compiler
+    # says where, and the editor takes you.
+    var out_pane = full.output()
+    if (
+        Float32(x) >= out_pane.left
+        and Float32(y) >= out_pane.top
+        and Float32(y) <= out_pane.bottom
+    ):
+        var row = output_row_at(out_pane, Float32(y), scale)
+        if row < 0 or row >= output_count():
+            return String("the output pane")
+        var found = locate(output_line(row))
+        if found[0].byte_length() == 0:
+            return String("that line names no place")
+        return jump_to(hwnd, file_uri(found[0]), found[1], found[2])
+
     var pane = full.issues()
     # The issues pane is below the editor field and to the left. A click there
     # is a person asking to go somewhere, not to put the caret in a list.

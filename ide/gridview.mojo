@@ -1531,6 +1531,62 @@ def draw_references(
     ](this)(this)
 
 
+def output_first_row(region: D2D_RECT_F, scale: Float32) -> Int:
+    """Which output line is drawn at the top of the pane.
+
+    The pane shows the tail, so this is not zero, and a click handler that
+    assumed it was would jump to the wrong diagnostic. Shared with the drawing
+    so the two cannot disagree.
+
+    Args:
+        region: The output pane.
+        scale: Device pixels per design pixel.
+
+    Returns:
+        The index of the first visible line.
+    """
+    var rows = output_rows(region, scale)
+    var first = output_count() - rows
+    return 0 if first < 0 else first
+
+
+def output_rows(region: D2D_RECT_F, scale: Float32) -> Int:
+    """How many output lines the pane has room for.
+
+    Args:
+        region: The output pane.
+        scale: Device pixels per design pixel.
+
+    Returns:
+        The row count, at least one.
+    """
+    var rows = Int(
+        (region.bottom - region.top - scaled(ISSUE_TOP_PAD, scale))
+        / scaled(ISSUE_ROW_H, scale)
+    )
+    return 1 if rows < 1 else rows
+
+
+def output_row_at(region: D2D_RECT_F, y: Float32, scale: Float32) -> Int:
+    """Which output line a click at `y` is on, or -1.
+
+    Args:
+        region: The output pane.
+        y: A client y coordinate.
+        scale: Device pixels per design pixel.
+
+    Returns:
+        The line index, or -1 above the first row.
+    """
+    var into = y - region.top - scaled(ISSUE_TOP_PAD, scale)
+    if into < 0:
+        return -1
+    var row = Int(into / scaled(ISSUE_ROW_H, scale))
+    if row >= output_rows(region, scale):
+        return -1
+    return output_first_row(region, scale) + row
+
+
 def draw_output(
     mut grid: Grid, chrome: Chrome, region: D2D_RECT_F
 ) raises:
@@ -1589,15 +1645,8 @@ def draw_output(
         )
         _release(head_layout)
 
-    var rows = Int(
-        (region.bottom - region.top - scaled(ISSUE_TOP_PAD, chrome.scale))
-        / scaled(ISSUE_ROW_H, chrome.scale)
-    )
-    if rows < 1:
-        rows = 1
-    var first = total - rows
-    if first < 0:
-        first = 0
+    var rows = output_rows(region, chrome.scale)
+    var first = output_first_row(region, chrome.scale)
     var n = 0
     while first + n < total and n < rows:
         var y = (

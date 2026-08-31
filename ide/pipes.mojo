@@ -182,7 +182,11 @@ def set_env(name: String, value: String) raises:
     _ = v
 
 
-def spawn(command: String, working_dir: String = String("")) raises -> Child:
+def spawn(
+    command: String,
+    working_dir: String = String(""),
+    merge_stderr: Bool = False,
+) raises -> Child:
     """Start a process with its stdin and stdout on pipes.
 
     Args:
@@ -268,10 +272,20 @@ def spawn(command: String, working_dir: String = String("")) raises -> Child:
     si.dwFlags = UInt32(winkb_constant["STARTF_USESTDHANDLES"]())
     si.hStdInput = child_stdin_read
     si.hStdOutput = child_stdout_write
-    # The child's stderr goes to ours, so its log lands in the console a person
-    # is already watching rather than into a third pipe nobody drains.
-    var GetStdHandle = win32[def (UInt32) thin abi("C") -> Int, "GetStdHandle"]()
-    si.hStdError = GetStdHandle(UInt32(0xFFFFFFF4))  # STD_ERROR_HANDLE
+    if merge_stderr:
+        # Both streams down the one pipe, interleaved the way the child wrote
+        # them. A compiler puts its diagnostics on stderr and its progress on
+        # stdout, and an editor that captures only stdout captures the half
+        # nobody needs.
+        si.hStdError = child_stdout_write
+    else:
+        # Otherwise the child's stderr goes to ours, so a server's log lands
+        # in the console a person is already watching rather than into a
+        # third pipe nobody drains.
+        var GetStdHandle = win32[
+            def (UInt32) thin abi("C") -> Int, "GetStdHandle"
+        ]()
+        si.hStdError = GetStdHandle(UInt32(0xFFFFFFF4))  # STD_ERROR_HANDLE
 
     var info = PROCESS_INFORMATION()
     # CreateProcessW may modify the command line in place, which is why it
