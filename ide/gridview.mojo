@@ -282,12 +282,31 @@ def draw_text(
         # The line number, laid out fresh each time: the gutter is narrow,
         # the strings are short, and caching them would double the cache to
         # save almost nothing.
+        # A breakpoint, as a disc in the gutter. Drawn before the number
+        # and to the left of it, where every editor puts it, so the number
+        # stays readable and the eye finds the marks by scanning one column.
+        if has_breakpoint(line):
+            var radius = scaled(4, chrome.scale)
+            var centre_y = y + grid.line_height / 2
+            _fill_rect(
+                this,
+                chrome.target,
+                region.left + scaled(6, chrome.scale),
+                centre_y - radius,
+                region.left + scaled(6, chrome.scale) + radius * 2,
+                centre_y + radius,
+                ERROR,
+            )
+
         var number = String(line + 1)
         var num_layout = _make_layout(
             dwrite, chrome, number, scaled(GUTTER_W - TEXT_PAD, chrome.scale)
         )
         if num_layout != 0:
-            _draw_layout(this, num_layout, gutter_brush, region.left + 6, y)
+            _draw_layout(
+                this, num_layout, gutter_brush,
+                region.left + scaled(18, chrome.scale), y,
+            )
             _release(num_layout)
 
         # What the language server objected to, underlined. Drawn after
@@ -1912,3 +1931,38 @@ def draw_tree(chrome: Chrome, region: D2D_RECT_F) raises:
         "ID2D1RenderTarget",
         "PopAxisAlignedClip",
     ](this)(this)
+
+
+comptime _g_breakpoints = named_global["gridview.breakpoints", List[Int]]
+
+
+def set_breakpoint_lines(var lines: List[Int]):
+    """Hand the grid the lines that have a breakpoint on them.
+
+    Passed in before each frame rather than read from the document, for the
+    same reason the tab labels are: this module draws, and teaching it what a
+    Doc is would tie the drawing to the thing being drawn.
+
+    Args:
+        lines: Zero-based line numbers.
+    """
+    _g_breakpoints()[] = lines^
+
+
+def has_breakpoint(line: Int) -> Bool:
+    """Whether a line carries a breakpoint.
+
+    A linear scan, deliberately. A file has a handful of breakpoints in it and
+    a set would cost a hash per drawn line to beat a walk of three.
+
+    Args:
+        line: Zero-based.
+
+    Returns:
+        True if there is one.
+    """
+    for at in _g_breakpoints()[]:
+        if at == line:
+            return True
+    return False
+

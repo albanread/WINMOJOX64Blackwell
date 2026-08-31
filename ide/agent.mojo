@@ -65,8 +65,11 @@ from ide.window import (
     next_tab,
     set_root,
     toggle,
+    breakpoints_report,
+    clear_breakpoints,
     poll_disk,
     stamp_report,
+    toggle_breakpoint,
     reload_document,
     search_in_project,
     tree_report,
@@ -576,6 +579,17 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         if rest.byte_length() > 0:
             return goto_reference(hwnd, Int(rest))
         return references_at_caret(hwnd)
+
+    if verb == "break":
+        # `break` toggles at the caret, `break N` at a line, `break list` and
+        # `break clear` do what they say.
+        if rest == "list":
+            return breakpoints_report(hwnd)
+        if rest == "clear":
+            return clear_breakpoints(hwnd)
+        if rest.byte_length() > 0:
+            return toggle_breakpoint(hwnd, Int(rest) - 1)
+        return toggle_breakpoint(hwnd, -1)
 
     if verb == "search":
         # Results land in the output pane, written the way a compiler writes a

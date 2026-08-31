@@ -42,6 +42,7 @@ from ide.drop import register as register_drop, revoke as revoke_drop
 from ide.doc import Doc, LINE_H
 from ide.gridview import (
     draw_hover,
+    set_breakpoint_lines,
     draw_issues,
     draw_output,
     draw_tabs,
@@ -55,7 +56,9 @@ from ide.gridview import (
 )
 from ide.window import (
     adopt_tab,
+    breakpoint_lines,
     find_needle,
+    toggle_breakpoint,
     poll_disk,
     recreate,
     search_in_project,
@@ -309,6 +312,8 @@ def griddle_wndproc(
                     for t in range(tab_count()):
                         labels.append(tab_name(t))
                     set_tab_labels(labels^)
+                    if chrome[].doc != 0:
+                        set_breakpoint_lines(breakpoint_lines(hwnd))
                     var layout = draw(chrome[], width, height, status)
                     # The text goes inside the batch the chrome opened, so
                     # both halves of the frame are presented at once and the
@@ -570,6 +575,13 @@ def griddle_wndproc(
             # F5 runs what is open, Shift+F5 stops it. The document is
             # saved first; running the version on disk while the window shows
             # another one is a way to lose an afternoon.
+            if wparam == winkb_constant["VK_F9"]():
+                # The caret's line. A breakpoint is about a line, and asking
+                # which one by pointing the caret at it is what F9 has meant
+                # for thirty years.
+                print("griddle:", toggle_breakpoint(hwnd, -1))
+                return 0
+
             if wparam == winkb_constant["VK_F5"]():
                 if shift:
                     print("griddle:", stop_build())

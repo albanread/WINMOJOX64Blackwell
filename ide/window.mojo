@@ -406,6 +406,13 @@ def caret_click(hwnd: Int, x: Int, y: Int) raises -> String:
         line = last
     if line < 0:
         line = 0
+    # The gutter is where breakpoints are set, so a click in it is not a
+    # click in the text. Everything left of the text origin belongs to the
+    # gutter, which is exactly the region the markers are drawn in.
+    var gutter_right = editor.left + scaled(GUTTER_W, scale)
+    if Float32(x) < gutter_right:
+        return toggle_breakpoint(hwnd, line)
+
     var into = Float32(x) - editor.left - scaled(GUTTER_W, dpi_scale(hwnd))
     if into < 0:
         into = 0
@@ -3056,4 +3063,104 @@ def reload_document(hwnd: Int) raises -> String:
     release_cache(doc[].grid)
     _touch(hwnd)
     return String("reloaded ") + path
+
+
+# ===----------------------------------------------------------------------===#
+# Breakpoints
+#
+# Kept on the document, sorted, zero-based. On the document because a
+# breakpoint outlives a debug session: you set one, run, fix something, run
+# again, and it is still where you put it.
+# ===----------------------------------------------------------------------===#
+
+
+def toggle_breakpoint(hwnd: Int, line: Int) raises -> String:
+    """Put a breakpoint on a line, or take it off.
+
+    Args:
+        hwnd: The window.
+        line: Zero-based. A negative line means the caret's own.
+
+    Returns:
+        What happened.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    var at = doc[].caret_line if line < 0 else line
+    if at < 0 or at >= doc[].rope.line_count():
+        return String("no such line")
+    for i in range(len(doc[].breakpoints)):
+        if doc[].breakpoints[i] == at:
+            _ = doc[].breakpoints.pop(i)
+            _touch(hwnd)
+            return String("breakpoint cleared at ") + String(at + 1)
+    # Kept in order so the gutter and any list read the same way round, and so
+    # the debugger receives them in the order a person would write them.
+    var where = len(doc[].breakpoints)
+    for i in range(len(doc[].breakpoints)):
+        if doc[].breakpoints[i] > at:
+            where = i
+            break
+    doc[].breakpoints.insert(where, at)
+    _touch(hwnd)
+    return String("breakpoint set at ") + String(at + 1)
+
+
+def breakpoint_lines(hwnd: Int) raises -> List[Int]:
+    """Every line in this document with a breakpoint, in order.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        Zero-based line numbers.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    var out = List[Int]()
+    for at in doc[].breakpoints:
+        out.append(at)
+    return out^
+
+
+def breakpoints_report(hwnd: Int) raises -> String:
+    """The breakpoints, one per line, as a person would read them.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        A count and a line each.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    var out = String("breakpoints ") + String(len(doc[].breakpoints)) + "\n"
+    for at in doc[].breakpoints:
+        out += String(at + 1) + ": " + doc[].rope.line(at).strip() + "\n"
+    return out^
+
+
+def clear_breakpoints(hwnd: Int) raises -> String:
+    """Take every breakpoint off this document.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        How many went.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    var had = len(doc[].breakpoints)
+    doc[].breakpoints = List[Int]()
+    _touch(hwnd)
+    return String("cleared ") + String(had) + " breakpoints"
 

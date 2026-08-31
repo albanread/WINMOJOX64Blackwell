@@ -131,6 +131,11 @@ struct Doc(Movable):
     # Compared against the file's current stamp to notice that something
     # else rewrote it; zero means we have never looked.
     var disk_stamp: Int
+    # Lines with a breakpoint on them, zero-based and kept sorted. On the
+    # document rather than in the debugger because a breakpoint outlives any
+    # particular session: you set them, you run, you fix something, you run
+    # again, and they are still where you put them.
+    var breakpoints: List[Int]
     # Where the document has been, and where it was going before someone
     # changed their mind. A new edit clears the redo stack, because a history
     # that forks is a history nobody can reason about.
@@ -204,6 +209,7 @@ struct Doc(Movable):
         self.dirty = False
         self.saved_depth = 0
         self.disk_stamp = 0
+        self.breakpoints = List[Int]()
         self.past = List[Snapshot]()
         self.future = List[Snapshot]()
         self.pending = 0
