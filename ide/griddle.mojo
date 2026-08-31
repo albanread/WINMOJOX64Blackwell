@@ -52,6 +52,8 @@ from ide.gridview import (
 )
 from ide.window import (
     build_file,
+    confirm_close,
+    set_unattended,
     build_poll,
     caret_click,
     complete_at_caret,
@@ -621,10 +623,34 @@ def griddle_wndproc(
                 print("griddle:", open_dialog(hwnd))
                 return 0
             if (wparam & 0xFFFF) == 1001:  # File > Exit
-                var DestroyWindow = win32[
-                    def (Int) thin abi("C") -> c_int, "DestroyWindow"
+                # Through WM_CLOSE, so Exit asks about unsaved work the same
+                # way the X button does. Two ways out of a program is two
+                # places to forget the question.
+                var SendMessageW2 = win32[
+                    def (Int, UInt32, Int, Int) thin abi("C") -> Int,
+                    "SendMessageW",
                 ]()
-                _ = DestroyWindow(hwnd)
+                _ = SendMessageW2(
+                    hwnd, UInt32(winkb_constant["WM_CLOSE"]()), 0, 0
+                )
+            return 0
+
+        # The X button, Alt+F4 and File > Exit all arrive here first. This is
+        # the last moment at which unsaved work can still be saved, so it is
+        # the only place the question can be asked -- WM_DESTROY is too late,
+        # the window is already going.
+        if message == UInt32(winkb_constant["WM_CLOSE"]()):
+            try:
+                if not confirm_close(hwnd):
+                    return 0
+            except:
+                # A window with no document has nothing to lose; a raise here
+                # must not be able to trap someone in the editor.
+                pass
+            var DestroyWindow2 = win32[
+                def (Int) thin abi("C") -> c_int, "DestroyWindow"
+            ]()
+            _ = DestroyWindow2(hwnd)
             return 0
 
         # Closing the window ends the program: without this the loop waits
@@ -1101,6 +1127,8 @@ def main() raises:
         _ = SetTimer(hwnd, LSP_TIMER_ID, UInt32(LSP_POLL_MS), 0)
 
     if command.byte_length() > 0:
+        # Nobody is watching this run, so nothing in it may stop to ask.
+        set_unattended(True)
         # Ask ourselves, through the real message path. SendMessage to our
         # own window dispatches inline -- Windows calls the procedure
         # directly rather than queueing -- so this exercises the transport,

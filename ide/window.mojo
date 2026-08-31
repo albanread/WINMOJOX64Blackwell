@@ -22,6 +22,7 @@ from std.ffi import c_int
 from std.memory import OpaquePointer, Pointer
 from std.sys._com import com_addr, com_method_of
 from std.sys.com import co_create
+from std.sys._globals import named_global
 from std.sys._winkb import winkb_constant
 from std.time import perf_counter_ns
 
@@ -2255,3 +2256,109 @@ def output_report(hwnd: Int) raises -> String:
     for i in range(total):
         out += output_line(i) + "\n"
     return out^
+
+
+# ===----------------------------------------------------------------------===#
+# Closing
+# ===----------------------------------------------------------------------===#
+
+# MessageBox's flags and answers are #defines in winuser.h rather than an
+# enumeration, so the metadata has no rows for them and they are named here.
+comptime MB_YESNOCANCEL = 0x00000003
+comptime MB_ICONWARNING = 0x00000030
+comptime IDCANCEL = 2
+comptime IDYES = 6
+comptime IDNO = 7
+
+
+comptime g_unattended = named_global["ide.unattended", Int]
+
+
+def set_unattended(on: Bool):
+    """Say that nobody is watching, so nothing may wait for an answer.
+
+    A modal dialog in an unattended run is a hang with a friendly face: the
+    check suite would sit on "Save before closing?" until it was killed. The
+    `--cmd` path sets this, and every question in the editor has to honour it
+    or it is not honoured at all.
+
+    Args:
+        on: Whether this is an unattended run.
+    """
+    g_unattended()[] = 1 if on else 0
+
+
+def is_unattended() -> Bool:
+    """Whether this run has nobody to ask.
+
+    Returns:
+        True when `--cmd` drove the process.
+    """
+    return g_unattended()[] != 0
+
+
+def confirm_close(hwnd: Int) raises -> Bool:
+    """Whether it is all right to close, asking if there is unsaved work.
+
+    Three answers and not two, because "do you want to lose this" with only
+    yes and no forces a person who misclicked to lose it. Yes saves, No
+    discards deliberately, Cancel goes back to the editor.
+
+    A document with nowhere to save to sends Yes through the Save As dialog,
+    and a person who cancels *that* has not agreed to lose anything either --
+    so the close is called off rather than quietly completed.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        True to go ahead and close.
+
+    Raises:
+        If the window has no document.
+    """
+    if not is_dirty(hwnd):
+        return True
+    if is_unattended():
+        # Nobody to ask. Closing wins over prompting, because the alternative
+        # is a check suite stopped on a dialog nobody will ever click.
+        return True
+
+    var path = document_path(hwnd)
+    var name = String("This document")
+    if path.byte_length() > 0:
+        var cut = path.rfind(chr(0x5C))
+        name = String(path[byte=cut + 1 :]) if cut >= 0 else path
+    var text = _utf16z(
+        name + " has unsaved changes.\n\nSave before closing?"
+    )
+    var caption = _utf16z(String("Griddle"))
+
+    var MessageBoxW = win32[
+        def (
+            Int,
+            Pointer[UInt16, MutAnyOrigin],
+            Pointer[UInt16, MutAnyOrigin],
+            UInt32,
+        ) thin abi("C") -> c_int,
+        "MessageBoxW",
+    ]()
+    var answer = Int(
+        MessageBoxW(
+            hwnd,
+            text.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+            caption.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+            UInt32(MB_YESNOCANCEL | MB_ICONWARNING),
+        )
+    )
+    _ = text
+    _ = caption
+
+    if answer == IDNO:
+        return True
+    if answer == IDCANCEL:
+        return False
+    # IDYES, and anything else: the safe reading of an answer we did not
+    # expect is that the work should be kept.
+    var wrote = save_dialog(hwnd) if path.byte_length() == 0 else save(hwnd)
+    return wrote.startswith("saved")
