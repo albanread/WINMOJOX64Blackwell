@@ -58,6 +58,12 @@ from ide.gridview import (
 from ide.window import (
     adopt_tab,
     breakpoint_lines,
+    debug_after_build,
+    debug_file,
+    debug_poll,
+    debug_step,
+    debug_stop,
+    debugging,
     find_needle,
     toggle_breakpoint,
     poll_disk,
@@ -120,6 +126,7 @@ from ide.menu import build as build_menu
 from ide.lsp import is_running as lsp_running
 from ide.rope import Rope
 from ide.tsf import Tsf, activate, deactivate
+from ide.build import ensure_linker
 from ide.watch import file_stamp
 from ide.win32 import (
     COPYDATASTRUCT,
@@ -587,9 +594,22 @@ def griddle_wndproc(
 
             if wparam == winkb_constant["VK_F5"]():
                 if shift:
-                    print("griddle:", stop_build())
-                else:
+                    # Shift+F5 stops whichever is going.
+                    if debugging():
+                        print("griddle:", debug_stop(hwnd))
+                    else:
+                        print("griddle:", stop_build())
+                elif ctrl:
                     print("griddle:", run_file(hwnd))
+                else:
+                    print("griddle:", debug_file(hwnd))
+                return 0
+
+            if wparam == winkb_constant["VK_F10"]():
+                print("griddle:", debug_step(hwnd, "over"))
+                return 0
+            if wparam == winkb_constant["VK_F11"]():
+                print("griddle:", debug_step(hwnd, "out" if shift else "in"))
                 return 0
 
             # F3 repeats the search; shift reverses it. The needle lives on
@@ -640,6 +660,11 @@ def griddle_wndproc(
                 _ = poll_disk(hwnd)
             except:
                 pass
+            try:
+                _ = debug_poll(hwnd)
+                _ = debug_after_build(hwnd)
+            except:
+                pass
             if wparam == LSP_TIMER_ID:
                 try:
                     _ = lsp_pump(hwnd)
@@ -659,6 +684,18 @@ def griddle_wndproc(
                 return 0
             if which == 1022:  # View > Reset Zoom
                 print("griddle:", zoom_reset(hwnd))
+                return 0
+            if which == 1013:  # Build > Debug
+                print("griddle:", debug_file(hwnd))
+                return 0
+            if which == 1014:  # Build > Step Over
+                print("griddle:", debug_step(hwnd, "over"))
+                return 0
+            if which == 1015:  # Build > Step Into
+                print("griddle:", debug_step(hwnd, "in"))
+                return 0
+            if which == 1016:  # Build > Toggle Breakpoint
+                print("griddle:", toggle_breakpoint(hwnd, -1))
                 return 0
             if which == 1010:  # Build > Run
                 print("griddle:", run_file(hwnd))
@@ -1132,6 +1169,13 @@ def main() raises:
         print("griddle:", watch_project(hwnd))
     except err:
         print("griddle: no project tree (", String(err), ")")
+
+    # Once, at startup: the compiler and the debugger are both children of
+    # this process and both need the toolchain's own DLLs findable.
+    try:
+        print("griddle:", ensure_linker())
+    except err:
+        print("griddle: toolchain not staged (", String(err), ")")
 
     # The editor's heartbeat, and it is not the language server's. It used to
     # be: the timer was created only when a server started, so a text file

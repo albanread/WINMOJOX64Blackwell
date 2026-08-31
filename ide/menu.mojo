@@ -28,6 +28,10 @@ comptime ID_VIEW_ZOOM_RESET = 1022
 comptime ID_BUILD_RUN = 1010
 comptime ID_BUILD_BUILD = 1011
 comptime ID_BUILD_STOP = 1012
+comptime ID_BUILD_DEBUG = 1013
+comptime ID_BUILD_STEP_OVER = 1014
+comptime ID_BUILD_STEP_INTO = 1015
+comptime ID_BUILD_BREAKPOINT = 1016
 comptime ID_FILE_OPEN = 1003
 comptime ID_FILE_SAVE = 1004
 comptime ID_FILE_SAVE_AS = 1005
@@ -85,9 +89,18 @@ def build(hwnd: Int) raises:
 
     var build = CreatePopupMenu()
     _append(AppendMenuW, build, winkb_constant["MF_STRING"](), ID_BUILD_RUN,
-            "Run\tF5")
+            "Run Without Debugging\tCtrl+F5")
     _append(AppendMenuW, build, winkb_constant["MF_STRING"](), ID_BUILD_BUILD,
             "Build\tCtrl+B")
+    _append(AppendMenuW, build, winkb_constant["MF_SEPARATOR"](), 0, "")
+    _append(AppendMenuW, build, winkb_constant["MF_STRING"](), ID_BUILD_DEBUG,
+            "Debug\tF5")
+    _append(AppendMenuW, build, winkb_constant["MF_STRING"](),
+            ID_BUILD_STEP_OVER, "Step Over\tF10")
+    _append(AppendMenuW, build, winkb_constant["MF_STRING"](),
+            ID_BUILD_STEP_INTO, "Step Into\tF11")
+    _append(AppendMenuW, build, winkb_constant["MF_STRING"](),
+            ID_BUILD_BREAKPOINT, "Toggle Breakpoint\tF9")
     _append(AppendMenuW, build, winkb_constant["MF_SEPARATOR"](), 0, "")
     _append(AppendMenuW, build, winkb_constant["MF_STRING"](), ID_BUILD_STOP,
             "Stop\tShift+F5")

@@ -636,15 +636,13 @@ def draw(
     # SIDEBAR_W + 12`, `height - STATUS_H - PANE_H + 8` -- which was the same
     # arithmetic the layout does and stopped being so the moment the layout
     # started scaling: the panes moved and their headings stayed at 96 DPI.
-    var issues = layout.issues()
+    # The bottom-left pane has no fixed heading: it shows problems,
+    # references or variables, and each of those draws its own name. A label
+    # here would sit under all three of them.
     var output = layout.output()
     _label(
         chrome, "GRIDDLE", layout.rail_w() + scaled(14, chrome.scale),
         scaled(10, chrome.scale), DIM,
-    )
-    _label(
-        chrome, "ISSUES", issues.left + scaled(12, chrome.scale),
-        issues.top + scaled(8, chrome.scale), DIM,
     )
     _label(
         chrome, "OUTPUT", output.left + scaled(12, chrome.scale),

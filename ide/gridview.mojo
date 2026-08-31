@@ -999,6 +999,7 @@ def draw_issues(
         unsafe_from_address=chrome.dwrite
     )
     var ink = _brush(chrome.target, INK)
+    var dim = _brush(chrome.target, DIM)
     if ink == 0:
         return
 
@@ -1013,6 +1014,19 @@ def draw_issues(
         "PushAxisAlignedClip",
     ](this)(this, com_addr(clip), UInt32(0))
     _ = clip
+
+    # The pane says what it is showing, because it shows three different
+    # things and a person arriving at it should not have to work out which.
+    var head_layout = _make_layout(
+        dwrite, chrome, String("ISSUES  ") + String(total), 100000.0
+    )
+    if head_layout != 0:
+        _draw_layout(
+            this, head_layout, dim if dim != 0 else ink,
+            region.left + scaled(12, chrome.scale),
+            region.top + scaled(6, chrome.scale),
+        )
+        _release(head_layout)
 
     var rows = Int(
         (region.bottom - region.top - scaled(ISSUE_TOP_PAD, chrome.scale))

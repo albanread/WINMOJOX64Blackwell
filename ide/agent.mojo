@@ -67,6 +67,15 @@ from ide.window import (
     toggle,
     breakpoints_report,
     clear_breakpoints,
+    debug_file,
+    debug_launch,
+    debug_report,
+    debug_step,
+    debug_stop,
+    debug_wait,
+    replace_every,
+    replace_here,
+    replace_preview,
     poll_disk,
     stamp_report,
     toggle_breakpoint,
@@ -103,6 +112,7 @@ from ide.window import (
 from ide.menu import invoke as invoke_menu
 from ide.tsf import self_check as tsf_self_check
 from ide.screenshot import capture
+from ide.dap import debug_log, debugging, resume
 from ide.watch import stop_watching
 from ide.win32 import (
     RECT,
@@ -579,6 +589,59 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         if rest.byte_length() > 0:
             return goto_reference(hwnd, Int(rest))
         return references_at_caret(hwnd)
+
+    if verb == "debug":
+        # `debug` starts, `debug wait N` pumps until it stops, `debug step`
+        # and its friends move, `debug stop` ends it. One verb, the same shape
+        # as the others, so a check drives the debugger the way a person does.
+        if rest.startswith("wait"):
+            var sp = rest.find(" ")
+            var ms = 60000
+            if sp > 0:
+                ms = Int(String(rest[byte=sp + 1 :]).strip())
+            return debug_wait(hwnd, ms)
+        if rest == "log":
+            # What the adapter itself said. A debugger that comes up with no
+            # variables has almost always failed to load something, and it
+            # says so here and nowhere else.
+            return debug_log()
+        if rest == "launch":
+            return debug_launch(hwnd)
+        if rest == "stop":
+            return debug_stop(hwnd)
+        if rest == "over" or rest == "in" or rest == "out":
+            return debug_step(hwnd, rest)
+        if rest == "continue":
+            if not debugging():
+                return String("nothing is being debugged")
+            resume()
+            return String("continuing")
+        if rest.byte_length() > 0:
+            return String("usage: debug [launch|wait N|over|in|out|continue|stop]")
+        return debug_file(hwnd)
+
+    if verb == "replace":
+        # `replace <old> -> <new>` for one, `replace all <old> -> <new>` for
+        # the lot, `replace preview <old> -> <new>` to look first.
+        var body = rest
+        var every = False
+        var preview = False
+        if body.startswith("all "):
+            every = True
+            body = String(String(body[byte=4:]).strip())
+        elif body.startswith("preview "):
+            preview = True
+            body = String(String(body[byte=8:]).strip())
+        var arrow = body.find(" -> ")
+        if arrow < 0:
+            return String("usage: replace [all|preview] <old> -> <new>")
+        var old_text = String(String(body[byte=0:arrow]).strip())
+        var new_text = String(String(body[byte=arrow + 4 :]).strip())
+        if preview:
+            return replace_preview(hwnd, old_text, new_text)
+        if every:
+            return replace_every(hwnd, old_text, new_text)
+        return replace_here(hwnd, old_text, new_text)
 
     if verb == "break":
         # `break` toggles at the caret, `break N` at a line, `break list` and

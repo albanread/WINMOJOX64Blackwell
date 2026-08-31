@@ -21,8 +21,8 @@ from std.memory import Pointer, alloc
 from std.sys._globals import named_global
 from std.time import perf_counter_ns
 
-from ide.pipes import Child, kill, read_some, spawn, waiting
-from ide.win32 import win32
+from ide.pipes import Child, kill, read_some, set_env, spawn, utf16z, waiting
+from ide.win32 import absolute, env_or, win32
 
 # The child, its output, and what it was asked to do. Globals for the same
 # reason the language server's state is global: the window procedure is
@@ -146,6 +146,97 @@ def _append(var text: String):
     g_serial()[] += 1
 
 
+def ensure_linker() raises -> String:
+    """Put the toolchain Griddle trusts at the front of the child's PATH.
+
+    The compiler shells out to a program called `link`, and on a machine with
+    MSYS or Git for Windows installed that name resolves to coreutils' own
+    /usr/bin/link -- which is a hard-link utility and answers "unknown option
+    -- X". Every build started from inside the editor then fails with a
+    message about a flag, which is a long way from the truth.
+
+    IDE-DESIGN.md called this out before the editor could build anything: the
+    toolchain lookup must pin the real linker rather than trust PATH. So lld
+    is staged under the name the compiler will ask for, in a directory of our
+    own, and that directory goes first. tools/build-ide.ps1 does exactly this
+    for the builds a person runs by hand; this is the same trick for the
+    builds Griddle runs itself.
+
+    Returns:
+        What happened, for the output pane.
+
+    Raises:
+        Never in practice; failures are reported rather than raised.
+    """
+    var staged = String(env_or("TEMP", ".")) + "\\griddle-linkbin"
+    var CreateDirectoryW = win32[
+        def (Pointer[UInt16, MutAnyOrigin], Int) thin abi("C") -> c_int,
+        "CreateDirectoryW",
+    ]()
+    var CopyFileW = win32[
+        def (
+            Pointer[UInt16, MutAnyOrigin],
+            Pointer[UInt16, MutAnyOrigin],
+            c_int,
+        ) thin abi("C") -> c_int,
+        "CopyFileW",
+    ]()
+    var folder = utf16z(staged)
+    _ = CreateDirectoryW(
+        folder.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](), 0
+    )
+    _ = folder
+
+    var lld = absolute(
+        "bazel-bin/external/+llvm_configure+llvm-project/lld/lld.exe"
+    )
+    var target = staged + "\\link.exe"
+    var from_path = utf16z(lld)
+    var to_path = utf16z(target)
+    # bFailIfExists false: a copy already there is the same binary, and
+    # refusing to overwrite it would make this fail on the second run.
+    _ = CopyFileW(
+        from_path.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+        to_path.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+        c_int(0),
+    )
+    _ = from_path
+    _ = to_path
+
+    # And the runtime the toolchain's own DLLs need. MojoLLDB.dll is a
+    # hundred megabytes that imports KGENCompilerRTShared, AsyncRTRuntimeGlobals
+    # and MSupportGlobals; if Windows cannot find those, LoadLibrary fails and
+    # lldb-dap reports "this file does not represent a loadable dylib" -- which
+    # names the plugin and says nothing about the dependency that was actually
+    # missing. The debugger then runs without the Mojo language plugin and
+    # every frame has no variables in it, which looks like a broken debugger.
+    # tools/check-debugger.ps1 has staged these since sprint 0.0; this is the
+    # same list, for the children Griddle spawns itself.
+    var runtime = List[String]()
+    runtime.append(absolute("bazel-bin/KGEN"))
+    runtime.append(absolute("bazel-bin/AsyncRT"))
+    runtime.append(absolute("bazel-bin/Support"))
+    runtime.append(
+        absolute("bazel-bin/external/+llvm_configure+llvm-project/lldb")
+    )
+
+    # Each directory is checked for on its own. Using the linker's directory
+    # as a sentinel for "already staged" was wrong in the one case that
+    # mattered: a shell that had staged the linker by hand -- which every
+    # build script here does -- looked already-done, so the runtime
+    # directories were never added and the debugger came up with no plugin.
+    var path = String(env_or("PATH", ""))
+    var prefix = String("")
+    if path.find(staged) < 0:
+        prefix = staged
+    for folder in runtime:
+        if path.find(folder) < 0:
+            prefix += (";" if prefix.byte_length() > 0 else "") + folder
+    if prefix.byte_length() > 0:
+        set_env(String("PATH"), prefix + ";" + path)
+    return String("toolchain staged: ") + target
+
+
 def start(command: String, working_dir: String = String("")) raises -> String:
     """Run a command, collecting its output into the pane.
 
@@ -161,6 +252,12 @@ def start(command: String, working_dir: String = String("")) raises -> String:
     """
     if is_building():
         return String("something is already running; stop it first")
+    # Before anything is spawned, because the child inherits our PATH and the
+    # compiler it runs will ask for `link`.
+    try:
+        _ = ensure_linker()
+    except:
+        pass
     clear_output()
     g_what()[] = command
     _append(String("> ") + command + "\n")

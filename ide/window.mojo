@@ -38,6 +38,8 @@ from ide.doc import (
     Snapshot,
 )
 from ide.edit import (
+    caret_of_byte,
+    remember,
     restate_dirty,
     apply,
     backspace,
@@ -95,6 +97,8 @@ from ide.lsp import (
 )
 from ide.gridview import (
     GUTTER_W,
+    set_stop_line,
+    set_variable_rows,
     output_row_at,
     tab_at,
     tree_row_at,
@@ -118,6 +122,38 @@ from ide.build import (
     start as start_build,
     stop as stop_build,
     what_ran,
+)
+from ide.dap import (
+    configuration_done,
+    debug_serial,
+    debugging,
+    frame_count,
+    frame_line,
+    frame_name,
+    frame_source,
+    poll_debug,
+    resume,
+    select_frame,
+    set_breakpoints,
+    start_debug,
+    step_in,
+    step_out,
+    step_over,
+    stop_debug,
+    stop_line,
+    stop_reason,
+    stop_source,
+    stopped,
+    variable_count,
+    variable_name,
+    variable_type,
+    variable_value,
+)
+from ide.replace import (
+    count_matches,
+    preview_replacements,
+    replace_all,
+    replace_next,
 )
 from ide.rope import Rope
 from ide.search import (
@@ -3172,3 +3208,443 @@ def clear_breakpoints(hwnd: Int) raises -> String:
     _touch(hwnd)
     return String("cleared ") + String(had) + " breakpoints"
 
+
+
+# ===----------------------------------------------------------------------===#
+# Debugging
+#
+# The editor half. ide/dap.mojo speaks the protocol and holds the session;
+# this decides what a person's keys mean, hands the debugger the breakpoints
+# the document is carrying, and moves the caret to wherever execution stopped.
+# ===----------------------------------------------------------------------===#
+
+
+def _debug_tools() raises -> Tuple[String, String]:
+    """Where lldb-dap and the Mojo LLDB plugin live.
+
+    Overridable by environment for the same reason the compiler and the
+    language server are: a release, a check and a working tree disagree about
+    the layout, and none of them should have to patch a source file.
+
+    Returns:
+        The adapter and the plugin, both absolute.
+
+    Raises:
+        Never in practice.
+    """
+    var adapter = String(env_or("WINMOJO_DAP", ""))
+    if adapter.byte_length() == 0:
+        adapter = String(
+            "bazel-bin/external/+llvm_configure+llvm-project/lldb/lldb-dap.exe"
+        )
+    var plugin = String(env_or("WINMOJO_LLDB_PLUGIN", ""))
+    if plugin.byte_length() == 0:
+        plugin = String("bazel-bin/KGEN/MojoLLDB.dll")
+    return (absolute(adapter), absolute(plugin))
+
+
+def debug_file(hwnd: Int) raises -> String:
+    """Build the open document with symbols and start debugging it.
+
+    A debug build is a different artifact from the one Run produces, and
+    deliberately so: an optimized build deletes the locals a debugger exists to
+    show, and the Mac team paid for that lesson twice. It goes to a separate
+    path so switching between Run and Debug never silently rebuilds the other
+    one's output.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What happened.
+
+    Raises:
+        If the compiler cannot be started.
+    """
+    var path = document_path(hwnd)
+    if path.byte_length() == 0:
+        return String("save the file first; there is nothing to debug")
+    if is_dirty(hwnd):
+        var wrote = save(hwnd)
+        if not wrote.startswith("saved"):
+            return wrote
+    if debugging():
+        # Already stopped somewhere: F5 means carry on, which is what it means
+        # in every debugger and what a person pressing it again expects.
+        resume()
+        return String("continuing")
+
+    var stem = path
+    if stem.endswith(".mojo"):
+        var cut = String(stem[byte=0 : stem.byte_length() - 5])
+        stem = cut^
+    var out = stem + ".debug.exe"
+    var tools = _toolchain()
+    # Symbols, always. Debug means --debug-level full and never anything else;
+    # handing a debugger an optimized binary is how an afternoon disappears
+    # into locals that are simply absent.
+    g_debug_pending()[] = 1
+    return start_build(
+        '"' + tools[0] + '" build --no-optimization --debug-level full -I "'
+        + tools[1] + '" -I . -o "' + out + '" "' + path + '"'
+    ) + " (debug build; the debugger starts when it finishes)"
+
+
+comptime g_debug_pending = named_global["ide.debugpending", Int]
+
+
+def debug_after_build(hwnd: Int) raises -> Bool:
+    """Start the adapter once the debug build has finished.
+
+    F5 cannot launch a debugger directly because there is nothing to launch
+    until the compiler has produced a binary, and waiting for it would freeze
+    the editor for the length of a build. So F5 starts a build and sets this
+    flag, and the timer notices the build ending and takes it from there.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        True if a session was started on this tick.
+
+    Raises:
+        Never in practice; failures are reported into the output pane.
+    """
+    if g_debug_pending()[] == 0 or is_building():
+        return False
+    g_debug_pending()[] = 0
+    try:
+        append_output(String("\n[") + debug_launch(hwnd) + "]\n")
+    except err:
+        append_output(String("\n[debugger failed: ") + String(err) + "]\n")
+    _touch(hwnd)
+    return True
+
+
+def debug_launch(hwnd: Int) raises -> String:
+    """Start the adapter on the debug build and send the breakpoints.
+
+    Called once the debug build has finished, because there is nothing to
+    debug until there is a binary.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What happened.
+
+    Raises:
+        If the adapter cannot be started.
+    """
+    var path = document_path(hwnd)
+    if path.byte_length() == 0:
+        return String("no file")
+    var stem = path
+    if stem.endswith(".mojo"):
+        var cut = String(stem[byte=0 : stem.byte_length() - 5])
+        stem = cut^
+    var program = stem + ".debug.exe"
+
+    var tools = _debug_tools()
+    var said = start_debug(tools[0], tools[1], program)
+    var verified = set_breakpoints(path, breakpoint_lines(hwnd))
+    configuration_done()
+    _doc_at(hwnd)[].pane_mode = PANE_VARIABLES
+    _touch(hwnd)
+    return (
+        said + "; " + String(verified) + " of "
+        + String(len(breakpoint_lines(hwnd))) + " breakpoints verified"
+    )
+
+
+def debug_stop(hwnd: Int) raises -> String:
+    """End the session and put the pane back.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What happened.
+
+    Raises:
+        If the adapter cannot be shut down.
+    """
+    var said = stop_debug()
+    _doc_at(hwnd)[].pane_mode = PANE_ISSUES
+    _touch(hwnd)
+    return said
+
+
+def debug_step(hwnd: Int, which: String) raises -> String:
+    """Step, in whichever of the three senses.
+
+    Args:
+        hwnd: The window.
+        which: "over", "in" or "out".
+
+    Returns:
+        What happened.
+
+    Raises:
+        If the adapter refuses.
+    """
+    if not debugging():
+        return String("nothing is being debugged")
+    if which == "in":
+        step_in()
+    elif which == "out":
+        step_out()
+    else:
+        step_over()
+    return String("stepping ") + which
+
+
+def debug_poll(hwnd: Int) raises -> Bool:
+    """Drain the adapter and follow the debuggee.
+
+    Called from the window's timer. When execution stops this opens the file
+    it stopped in, puts the caret on the line and fills the variables pane --
+    all of it, because a debugger that halts and leaves you to go and look is
+    one you end up driving with two hands.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        True if anything changed.
+
+    Raises:
+        Never in practice; failures are reported rather than raised.
+    """
+    var was = debug_serial()
+    if not poll_debug():
+        return False
+    if debug_serial() == was:
+        return False
+
+    # A stop arrives as an event; the frames and locals arrive as answers to
+    # the three requests the client fires on receiving it. Acting on the event
+    # alone moves the caret to line zero of nowhere, because the stack has not
+    # come back yet. Waiting for one frame is waiting for all of it: the
+    # client chains stackTrace, scopes and variables in that order.
+    if stopped() and frame_count() > 0:
+        var source = stop_source()
+        if source.byte_length() > 0:
+            var here = document_path(hwnd)
+            # Only move if it stopped somewhere else. Reopening the file that
+            # is already showing would throw away the undo history for no
+            # reason.
+            if source != here:
+                _ = open_path(hwnd, source)
+            _ = caret_move(hwnd, stop_line(), 0)
+            follow_caret(hwnd)
+        var rows = List[String]()
+        for i in range(variable_count()):
+            rows.append(
+                variable_name(i) + " = " + variable_value(i)
+                + "   (" + variable_type(i) + ")"
+            )
+        set_variable_rows(rows^)
+        set_stop_line(stop_line(), True)
+        _doc_at(hwnd)[].pane_mode = PANE_VARIABLES
+    else:
+        set_stop_line(-1, debugging())
+        if not debugging():
+            set_variable_rows(List[String]())
+    _touch(hwnd)
+    return True
+
+
+def debug_report(hwnd: Int) raises -> String:
+    """Where the debugger is, as text.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        The session state, the stop and the variables.
+
+    Raises:
+        Never in practice.
+    """
+    _ = hwnd
+    if not debugging():
+        return String("debug: not running")
+    if not stopped():
+        return String("debug: running")
+    var out = (
+        String("debug: stopped (") + stop_reason() + ") at "
+        + stop_source() + ":" + String(stop_line() + 1)
+        + "  frames=" + String(frame_count())
+        + " variables=" + String(variable_count()) + "\n"
+    )
+    for i in range(frame_count()):
+        out += (
+            "  #" + String(i) + " " + frame_name(i) + " ("
+            + frame_source(i) + ":" + String(frame_line(i) + 1) + ")\n"
+        )
+    for i in range(variable_count()):
+        out += (
+            "  " + variable_name(i) + " = " + variable_value(i)
+            + "  (" + variable_type(i) + ")\n"
+        )
+    return out^
+
+
+def debug_wait(hwnd: Int, milliseconds: Int) raises -> String:
+    """Pump until the debuggee stops, or the time runs out.
+
+    Args:
+        hwnd: The window.
+        milliseconds: How long to wait.
+
+    Returns:
+        Where it stopped, or that it did not.
+
+    Raises:
+        Never in practice.
+    """
+    var deadline = perf_counter_ns() + milliseconds * 1_000_000
+    # "No session" means two different things and they must not share an
+    # answer. Before the debug build finishes there is nothing to attach to
+    # yet; after it has run there is nothing left. Telling them apart is
+    # remembering whether one was ever seen -- reporting "the debuggee ended"
+    # to somebody whose debugger had not started is a lie that sends them
+    # looking in the wrong place.
+    var ever_started = debugging()
+    while perf_counter_ns() < deadline:
+        # The launch is normally the timer's job, but a check driving this
+        # through the agent surface may arrive between the build finishing and
+        # the next tick. Doing it here too costs nothing when it is already
+        # done and removes a race that only ever shows up under a check.
+        try:
+            _ = debug_after_build(hwnd)
+        except:
+            pass
+        _ = debug_poll(hwnd)
+        if debugging():
+            ever_started = True
+        if stopped() and frame_count() > 0:
+            # The stack answers before the scopes and the scopes before the
+            # variables, so a stop with frames may still have no locals for
+            # another round trip. Give the rest of the chain a moment rather
+            # than reporting a stop with an empty variables pane, which reads
+            # as a debugger that cannot see locals.
+            # Ask for the top frame's locals explicitly. The client chains
+            # scopes and variables off a stop, but a stop that arrives while
+            # an earlier one's requests are still in flight has those answers
+            # discarded -- correctly, they describe a stack that has moved --
+            # and nothing re-asks. Asking here costs one round trip and means
+            # a stop always has its locals.
+            if variable_count() == 0:
+                try:
+                    select_frame(0)
+                except:
+                    pass
+            var settle_by = perf_counter_ns() + 1_500_000_000
+            while perf_counter_ns() < settle_by and variable_count() == 0:
+                _ = debug_poll(hwnd)
+                _ = settle(hwnd, 10)
+            return debug_report(hwnd)
+        if ever_started and not debugging():
+            return String("debug: the debuggee ran to the end")
+        _ = settle(hwnd, 10)
+    if not ever_started:
+        return String("debug: no session started in ") + String(
+            milliseconds
+        ) + " ms"
+    return String("debug: nothing stopped in ") + String(milliseconds) + " ms"
+
+
+# ===----------------------------------------------------------------------===#
+# Replace
+# ===----------------------------------------------------------------------===#
+
+
+def replace_here(hwnd: Int, needle: String, replacement: String) raises -> String:
+    """Replace the next match after the caret.
+
+    Args:
+        hwnd: The window.
+        needle: What to look for.
+        replacement: What to put there.
+
+    Returns:
+        What happened.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    if needle.byte_length() == 0:
+        return String("nothing to replace")
+    remember(doc[])
+    var from_byte = byte_at(doc[].rope, doc[].caret_line, doc[].caret_col)
+    var landed = replace_next(doc[].rope, needle, replacement, from_byte)
+    if landed < 0:
+        # Nothing changed, so the history entry would be an undo that does
+        # nothing -- which is worse than no entry at all.
+        _ = doc[].past.pop()
+        return String("no match after the caret")
+    doc[].revision += 1
+    restate_dirty(doc[])
+    release_cache(doc[].grid)
+    var where = caret_of_byte(doc[].rope, landed)
+    _ = caret_move(hwnd, where[0], where[1])
+    _touch(hwnd)
+    return String("replaced one")
+
+
+def replace_every(hwnd: Int, needle: String, replacement: String) raises -> String:
+    """Replace every match in the document, as one undoable edit.
+
+    One history entry for the lot, because a person who replaces thirty-seven
+    things and changes their mind meant all thirty-seven, and thirty-seven
+    undos to get back is not an undo.
+
+    Args:
+        hwnd: The window.
+        needle: What to look for.
+        replacement: What to put there.
+
+    Returns:
+        How many.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    if needle.byte_length() == 0:
+        return String("nothing to replace")
+    remember(doc[])
+    var count = replace_all(doc[].rope, needle, replacement)
+    if count == 0:
+        _ = doc[].past.pop()
+        return String("no matches")
+    doc[].revision += 1
+    restate_dirty(doc[])
+    release_cache(doc[].grid)
+    _touch(hwnd)
+    return String("replaced ") + String(count)
+
+
+def replace_preview(hwnd: Int, needle: String, replacement: String) raises -> String:
+    """What replacing everything would do, without doing it.
+
+    Args:
+        hwnd: The window.
+        needle: What to look for.
+        replacement: What to put there.
+
+    Returns:
+        A count and a line each.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    var total = count_matches(doc[].rope, needle)
+    var out = String("replace ") + String(total) + " matches\n"
+    for line in preview_replacements(doc[].rope, needle, replacement):
+        out += line + "\n"
+    return out^
