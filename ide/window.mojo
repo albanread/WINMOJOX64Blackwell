@@ -28,7 +28,15 @@ from std.time import perf_counter_ns
 
 from ide.caret import is_simple
 from ide.chrome import Chrome, Layout, bring_up, release
-from ide.doc import Doc, Grid, LINE_H, Snapshot
+from ide.doc import (
+    Doc,
+    Grid,
+    LINE_H,
+    PANE_ISSUES,
+    PANE_REFERENCES,
+    PANE_VARIABLES,
+    Snapshot,
+)
 from ide.edit import (
     restate_dirty,
     apply,
@@ -1708,7 +1716,7 @@ def references_at_caret(hwnd: Int) raises -> String:
         return String("no language server for this document")
     sync(hwnd)
     clear_references()
-    doc[].pane_refs = True
+    doc[].pane_mode = PANE_REFERENCES
     _ = request_references(doc[].uri, doc[].caret_line, doc[].caret_col)
     _touch(hwnd)
     return (
@@ -1759,7 +1767,7 @@ def references_report(hwnd: Int) raises -> String:
     var doc = _doc_at(hwnd)
     var total = reference_count()
     var out = String("references ") + String(total) + "\n"
-    if not doc[].pane_refs:
+    if doc[].pane_mode != PANE_REFERENCES:
         out = (
             String("references (pane not showing them) ") + String(total)
             + "\n"
@@ -1816,7 +1824,7 @@ def pane_problems(hwnd: Int) raises -> String:
         If the window has no document.
     """
     var doc = _doc_at(hwnd)
-    doc[].pane_refs = False
+    doc[].pane_mode = PANE_ISSUES
     _touch(hwnd)
     return String("pane showing problems")
 

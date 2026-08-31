@@ -22,6 +22,18 @@ throughout is worth more than having a tidy one.
 from ide.rope import Rope
 
 
+comptime PANE_ISSUES = 0
+comptime PANE_REFERENCES = 1
+comptime PANE_VARIABLES = 2
+"""What the bottom-left pane is showing.
+
+One pane and three lists rather than three panes: the bottom of the window is
+the scarcest space in an editor, and problems, places and variables are all
+read the same way -- a column of short lines you scan and click. It was a Bool
+until the debugger wanted a third, which is the point at which a Bool becomes
+a lie about how many states there are.
+"""
+
 comptime LINE_H = 16
 """One text row, in design pixels at 96 DPI.
 
@@ -189,7 +201,7 @@ struct Doc(Movable):
     # Whether the issues pane is showing references instead of problems.
     # One pane, two lists -- a second pane costs vertical space that a file
     # wants more than a list does.
-    var pane_refs: Bool
+    var pane_mode: Int
     # The application half on its own: the keystroke to the last drawing
     # command, with the wait for the vertical blank left out. That wait is
     # real and a person experiences it, but it is the display's and not
@@ -229,7 +241,7 @@ struct Doc(Movable):
         self.jump_line = List[Int]()
         self.jump_col = List[Int]()
         self.hover = False
-        self.pane_refs = False
+        self.pane_mode = PANE_ISSUES
         self.work_total = 0
         self.work_worst = 0
 

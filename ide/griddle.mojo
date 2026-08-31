@@ -39,7 +39,7 @@ from std.memory import alloc
 from ide.agent import agent_command
 from ide.chrome import Chrome, bring_up, draw, finish, release
 from ide.drop import register as register_drop, revoke as revoke_drop
-from ide.doc import Doc, LINE_H
+from ide.doc import Doc, LINE_H, PANE_REFERENCES, PANE_VARIABLES
 from ide.gridview import (
     draw_hover,
     set_breakpoint_lines,
@@ -338,7 +338,7 @@ def griddle_wndproc(
                         # One pane, two lists. References take it while
                         # they are up because a person who just asked who
                         # calls this is not reading the problem list.
-                        if doc[].pane_refs:
+                        if doc[].pane_mode == PANE_REFERENCES:
                             draw_references(
                                 doc[].grid, chrome[], layout.issues()
                             )
@@ -1114,9 +1114,18 @@ def main() raises:
     # at a repository root: the folder the file is in is where a person is
     # working, and the tree can be pointed elsewhere at any time.
     try:
-        var here = absolute(open_path) if open_path.byte_length() > 0 else absolute(".")
-        var cut = here.rfind(chr(0x5C))
-        print("griddle:", set_root(String(here[byte=0:cut]) if cut > 0 else here))
+        # With a file open the project is its directory; with no file it is
+        # the working directory itself. Taking the dirname in both cases made
+        # a Griddle started with no file show its own parent, which is a
+        # folder nobody was working in.
+        var root = absolute(".")
+        if open_path.byte_length() > 0:
+            var here = absolute(open_path)
+            var cut = here.rfind(chr(0x5C))
+            if cut > 0:
+                var folder = String(here[byte=0:cut])
+                root = folder^
+        print("griddle:", set_root(root))
         print("griddle:", watch_project(hwnd))
     except err:
         print("griddle: no project tree (", String(err), ")")
