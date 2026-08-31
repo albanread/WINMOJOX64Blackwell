@@ -25,7 +25,7 @@ from std.sys._winkb import winkb_constant
 from std.sys._com import ComPtr, _guid_bytes
 from std.sys.com import Com, co_create
 
-from ide.win32 import RECT, wide, win32
+from ide.win32 import RECT, drain, wide, win32
 
 
 # The class and format identities WIC is asked for. Written here because the
@@ -168,6 +168,35 @@ def capture(hwnd: Int, path: String) raises -> Int:
         raise Error("CreateDIBSection failed")
 
     var old = SelectObject(memdc, hbmp)
+
+    # Before the copy: answer everything the window manager has queued, then
+    # wait for the compositor to catch up.
+    #
+    # PW_RENDERFULLCONTENT copies the window's redirection surface, which DWM
+    # owns and fills on its own schedule. Direct2D having presented a frame
+    # does not mean DWM has composed it yet, and photographing in that gap
+    # gives a surface that is partly the new frame and partly whatever was
+    # there before -- which, for a region never yet drawn, is white. DwmFlush
+    # blocks until DWM has finished the composition pass in progress, which
+    # is exactly the wait this needs and the only API that offers it.
+    #
+    # The drain is first because a window that has not answered its messages
+    # is one DWM composes from a ghost, and no amount of flushing fixes that.
+    # See docs/event-loop.md.
+    _ = drain(hwnd)
+    # Anything the dispatch above invalidated has to be painted before it is
+    # photographed. This is the one that mattered: a WM_SIZE arriving while
+    # the window settles marks a strip along the bottom invalid, and a
+    # capture taken before that strip is repainted contains a band of the
+    # surface nothing has drawn to -- white, of a height that varies with how
+    # late the message was. UpdateWindow paints the invalid region and
+    # returns; on a clean window it does nothing and costs nothing.
+    var UpdateWindow = win32[
+        def (Int) thin abi("C") -> c_int, "UpdateWindow"
+    ]()
+    _ = UpdateWindow(hwnd)
+    var DwmFlush = win32[def () thin abi("C") -> Int32, "DwmFlush"]()
+    _ = DwmFlush()
 
     # PW_RENDERFULLCONTENT is what makes this work for a window that is
     # covered or off-screen: it asks the window to draw itself rather than

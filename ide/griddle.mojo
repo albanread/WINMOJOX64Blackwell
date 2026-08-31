@@ -41,8 +41,10 @@ from ide.chrome import Chrome, bring_up, draw, finish, release
 from ide.drop import register as register_drop, revoke as revoke_drop
 from ide.doc import Doc, LINE_H
 from ide.gridview import (
+    draw_hover,
     draw_issues,
     draw_popup,
+    draw_references,
     draw_text,
     release_cache,
     status_line,
@@ -50,6 +52,12 @@ from ide.gridview import (
 from ide.window import (
     caret_click,
     complete_at_caret,
+    definition_at_caret,
+    hover_at_caret,
+    hover_close,
+    hover_is_open,
+    jump_back,
+    references_at_caret,
     file_uri,
     popup_accept,
     popup_close,
@@ -77,6 +85,8 @@ from ide.rope import Rope
 from ide.tsf import Tsf, activate, deactivate
 from ide.win32 import (
     COPYDATASTRUCT,
+    absolute,
+    drain,
     MSG,
     RECT,
     WNDCLASSEXW,
@@ -308,12 +318,22 @@ def griddle_wndproc(
                             doc[].needle,
                             lsp_running(),
                         )
-                        if lsp_running():
+                        # One pane, two lists. References take it while
+                        # they are up because a person who just asked who
+                        # calls this is not reading the problem list.
+                        if doc[].pane_refs:
+                            draw_references(
+                                doc[].grid, chrome[], layout.issues()
+                            )
+                        elif lsp_running():
                             draw_issues(
                                 doc[].grid, chrome[], layout.issues()
                             )
                         # Last, and over everything: a popup that the text
-                        # can draw on top of is not a popup.
+                        # can draw on top of is not a popup. The hover box
+                        # is the same box and obeys the same rule, and the
+                        # completion list wins when somehow both are up --
+                        # it is the one being typed into.
                         if doc[].popup:
                             draw_popup(
                                 doc[].grid,
@@ -323,6 +343,16 @@ def griddle_wndproc(
                                 doc[].caret_line,
                                 doc[].caret_col,
                                 doc[].popup_row,
+                                doc[].revision,
+                            )
+                        elif doc[].hover:
+                            draw_hover(
+                                doc[].grid,
+                                chrome[],
+                                doc[].rope,
+                                layout.editor(),
+                                doc[].caret_line,
+                                doc[].caret_col,
                                 doc[].revision,
                             )
                 except err:
@@ -439,10 +469,40 @@ def griddle_wndproc(
                     _ = popup_accept(hwnd)
                     return 0
 
+            # Escape closes the hover box the way it closes the popup. It
+            # is checked before the ctrl block so a box can be dismissed
+            # without knowing which one is up.
+            if wparam == winkb_constant["VK_ESCAPE"]() and hover_is_open(hwnd):
+                _ = hover_close(hwnd)
+                return 0
+
+            # F12 asks where this is defined, Shift+F12 asks who uses it.
+            # The answers arrive on a later pump and the window redraws then;
+            # nothing here waits, because a slow server must not be able to
+            # hold a keystroke.
+            if wparam == winkb_constant["VK_F12"]():
+                if shift:
+                    _ = references_at_caret(hwnd)
+                else:
+                    _ = definition_at_caret(hwnd)
+                return 0
+
+            # Alt+Left, the way every browser and most editors spell "back".
+            var alt_held = GetKeyState(c_int(winkb_constant["VK_MENU"]()))
+            if (Int(alt_held) & 0x8000) != 0:
+                if wparam == winkb_constant["VK_LEFT"]():
+                    _ = jump_back(hwnd)
+                    return 0
+
             if ctrl:
                 # Ctrl+Space: the universal "what can go here".
                 if wparam == winkb_constant["VK_SPACE"]():
                     _ = complete_at_caret(hwnd)
+                    return 0
+                # Ctrl+I: what is this. VS Code spells it Ctrl+K Ctrl+I; a
+                # chord is a lot of machinery for one box, and Ctrl+I is free.
+                if wparam == ord("I"):
+                    _ = hover_at_caret(hwnd)
                     return 0
                 # Z, Y and A are virtual key codes, which are the ASCII
                 # capitals for letters -- one of Win32's few kindnesses.
@@ -795,22 +855,75 @@ def main() raises:
     # than in CreateWindowExW because the window has to exist before Windows
     # will say which display it landed on.
     var window_scale = dpi_scale(hwnd)
-    if window_scale != 1.0:
-        var SetWindowPos = win32[
-            def (
-                Int, Int, c_int, c_int, c_int, c_int, UInt32
-            ) thin abi("C") -> c_int,
-            "SetWindowPos",
-        ]()
-        # SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE. Not in the metadata --
-        # these are #defines rather than an enumeration -- so they are named
-        # here rather than looked up.
-        _ = SetWindowPos(
-            hwnd, 0, 0, 0,
-            c_int(Int(1200.0 * window_scale)),
-            c_int(Int(800.0 * window_scale)),
-            UInt32(0x0002 | 0x0004 | 0x0010),
-        )
+    var SetWindowPos = win32[
+        def (
+            Int, Int, c_int, c_int, c_int, c_int, UInt32
+        ) thin abi("C") -> c_int,
+        "SetWindowPos",
+    ]()
+    var want_w = Int(1200.0 * window_scale)
+    var want_h = Int(800.0 * window_scale)
+
+    # Fit the window to the monitor's work area, and it is not a nicety.
+    #
+    # CW_USEDEFAULT cascades: each launch places the window a little further
+    # down and to the right than the last. On a 1440-tall screen a window
+    # 1200 tall runs off the bottom after a few launches, and the part that is
+    # off-screen is a part DWM never composes -- so `PrintWindow` photographs
+    # it as white. That is the band along the bottom of unattended
+    # screenshots, of a height that varies with how far the cascade had got:
+    # 12, 52 and 88 pixels against 26, 64 and 102 pixels of overhang. It read
+    # as a rendering fault for a day and was a window placement fault.
+    #
+    # The work area rather than the screen, because the taskbar is not
+    # somewhere a window should open under either.
+    var SystemParametersInfoW = win32[
+        def (
+            UInt32, UInt32, Pointer[RECT, MutAnyOrigin], UInt32
+        ) thin abi("C") -> c_int,
+        "SystemParametersInfoW",
+    ]()
+    var work = RECT()
+    # SPI_GETWORKAREA is 0x0030. A #define rather than an enumeration, so
+    # there is no metadata row for it.
+    var have_work = SystemParametersInfoW(
+        UInt32(0x0030),
+        UInt32(0),
+        Pointer(to=work).unsafe_origin_cast[MutAnyOrigin](),
+        UInt32(0),
+    )
+    var GetWindowRect0 = win32[
+        def (Int, Pointer[RECT, MutAnyOrigin]) thin abi("C") -> c_int,
+        "GetWindowRect",
+    ]()
+    var placed = RECT()
+    _ = GetWindowRect0(
+        hwnd, Pointer(to=placed).unsafe_origin_cast[MutAnyOrigin]()
+    )
+    var x = Int(placed.left)
+    var y = Int(placed.top)
+    if have_work != 0:
+        var work_w = Int(work.right - work.left)
+        var work_h = Int(work.bottom - work.top)
+        # Shrink before moving: a window taller than the work area cannot be
+        # moved into it, and one that is merely too low can.
+        if want_w > work_w:
+            want_w = work_w
+        if want_h > work_h:
+            want_h = work_h
+        if x + want_w > Int(work.right):
+            x = Int(work.right) - want_w
+        if y + want_h > Int(work.bottom):
+            y = Int(work.bottom) - want_h
+        if x < Int(work.left):
+            x = Int(work.left)
+        if y < Int(work.top):
+            y = Int(work.top)
+    # SWP_NOZORDER | SWP_NOACTIVATE. Also #defines, also named here.
+    _ = SetWindowPos(
+        hwnd, 0, c_int(x), c_int(y), c_int(want_w), c_int(want_h),
+        UInt32(0x0004 | 0x0010),
+    )
 
     # Shown BEFORE Direct2D is brought up, and the order is load-bearing.
     # An ID2D1HwndRenderTarget makes a DXGI swap chain for the window it is
@@ -970,13 +1083,27 @@ def main() raises:
             _ = payload
             if accepted != 1:
                 raise Error("the window did not accept the command")
+            # Between commands, answer everything the window manager has
+            # asked in the meantime. A run of twenty commands with a wait in
+            # each is a minute of wall clock, and a window that says nothing
+            # for a minute is a window Windows has already given up on.
             with open(reply_path, "r") as f:
                 print(f.read(), end="")
             print()
+            _ = drain(hwnd)
         try:
             stop_server()
         except:
             pass
+        # Out through the same door a person leaves by. Returning from here
+        # skipped WM_DESTROY, the drop target's revoke, the text store's
+        # deactivate and the D2D release -- which is why an unattended run
+        # left a process behind often enough to lock the build's own DLLs.
+        var DestroyWindow = win32[
+            def (Int) thin abi("C") -> c_int, "DestroyWindow"
+        ]()
+        _ = DestroyWindow(hwnd)
+        _ = drain(hwnd)
         return
 
     if selftest:
@@ -1110,39 +1237,3 @@ def frame_budget_ns(hwnd: Int) raises -> Int:
     return 1_000_000_000 // refresh_hz(hwnd)
 
 
-def absolute(path: String) raises -> String:
-    """A relative path made absolute, because a URI cannot be relative.
-
-    The server resolves nothing: a `file://` URI with a relative path in it is
-    a URI pointing at the root of the drive, and every diagnostic comes back
-    for a file that does not exist.
-    """
-    var GetFullPathNameW = win32[
-        def (
-            Pointer[UInt16, MutAnyOrigin],
-            UInt32,
-            Pointer[UInt16, MutAnyOrigin],
-            Int,
-        ) thin abi("C") -> UInt32,
-        "GetFullPathNameW",
-    ]()
-    var wide_path = List[UInt16]()
-    for byte in path.as_bytes():
-        wide_path.append(UInt16(Int(byte)))
-    wide_path.append(0)
-    var buffer = List[UInt16]()
-    for _ in range(1024):
-        buffer.append(0)
-    var n = GetFullPathNameW(
-        wide_path.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
-        UInt32(1024),
-        buffer.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
-        0,
-    )
-    _ = wide_path
-    if n == 0 or n >= UInt32(1024):
-        return path
-    var out = String("")
-    for k in range(Int(n)):
-        out += chr(Int(buffer[k]))
-    return out^

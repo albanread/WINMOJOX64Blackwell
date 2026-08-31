@@ -25,7 +25,7 @@ from std.time import perf_counter_ns
 
 from ide.caret import is_simple
 from ide.chrome import Chrome, Layout
-from ide.doc import Doc, Grid
+from ide.doc import Doc, Grid, Snapshot
 from ide.edit import (
     apply,
     backspace,
@@ -62,9 +62,28 @@ from ide.lsp import (
     set_shown_uri,
     start,
     stop,
+    # Sprint 2.5. All of this came with the Mac port's client already
+    # written -- the requests, the response handlers and the ContentModified
+    # retry. The editor side is what this sprint adds.
+    clear_references,
+    definition_character,
+    definition_line,
+    definition_serial,
+    definition_uri,
+    hover_serial,
+    hover_text,
+    reference_character,
+    reference_count,
+    reference_line,
+    reference_uri,
+    references_serial,
+    request_definition,
+    request_hover,
+    request_references,
 )
 from ide.gridview import (
     GUTTER_W,
+    release_cache,
     issue_row_at,
     advance_of,
     caret_x,
@@ -73,7 +92,15 @@ from ide.gridview import (
     status_line,
 )
 from ide.rope import Rope
-from ide.win32 import RECT, dpi_scale, scaled, win32
+from ide.win32 import (
+    RECT,
+    absolute,
+    dpi_scale,
+    drain,
+    scaled,
+    settle,
+    win32,
+)
 
 def doc_of(hwnd: Int) raises -> Int:
     """The address of a window's document, or zero if it has none."""
@@ -996,7 +1023,6 @@ def lsp_wait(hwnd: Int, milliseconds: Int) raises -> String:
     Raises:
         If the window has no document.
     """
-    var Sleep = win32[def (UInt32) thin abi("C") -> NoneType, "Sleep"]()
     var deadline = perf_counter_ns() + milliseconds * 1_000_000
     var saw_ready = False
     while perf_counter_ns() < deadline:
@@ -1008,7 +1034,10 @@ def lsp_wait(hwnd: Int, milliseconds: Int) raises -> String:
             # stopped at "ready" would read an empty list every time.
             if summary() != "no issues":
                 return String("ready, ") + String(count_for_shown()) + " issue(s)"
-        Sleep(UInt32(10))
+        # Ten milliseconds of being idle, not ten of being hung: `settle`
+        # dispatches whatever the window manager has queued and comes back
+        # early if something arrived.
+        _ = settle(hwnd, 10)
     if not is_running():
         return String("the server is not running")
     if not saw_ready:
@@ -1171,11 +1200,508 @@ def popup_wait(hwnd: Int, milliseconds: Int) raises -> String:
     type. A check has no timer, so it says when to wait -- the same shape as
     `lsp_wait`, and for the same reason.
     """
-    var Sleep = win32[def (UInt32) thin abi("C") -> NoneType, "Sleep"]()
     var deadline = perf_counter_ns() + milliseconds * 1_000_000
     while perf_counter_ns() < deadline:
         _ = pump(hwnd)
         if completion_count() > 0:
             return popup_report(hwnd)
-        Sleep(UInt32(10))
+        # Ten milliseconds of being idle, not ten of being hung: `settle`
+        # dispatches whatever the window manager has queued and comes back
+        # early if something arrived.
+        _ = settle(hwnd, 10)
     return String("no completions arrived")
+
+
+# ===----------------------------------------------------------------------===#
+# Navigation
+#
+# Sprint 2.5. Definition, references and hover are three questions with one
+# shape: ask the server about the position the caret is on, and do something
+# with where it points. The client half was already written -- the Mac port's
+# `ide/lsp.mojo` has `request_definition`, `request_hover` and
+# `request_references`, their response handlers, and the `-32801` retry a
+# request sent mid-reparse needs. This is the editor half.
+#
+# Every one of these returns as soon as the request is sent. A server that
+# takes a second to answer must not be able to freeze a keystroke, so the
+# answer lands on a later pump and the `_wait` functions are what a check uses
+# in place of the window's timer.
+# ===----------------------------------------------------------------------===#
+
+
+def _hex_digit(c: Int) -> Int:
+    """One hex digit's value, or -1 if it is not one.
+
+    Args:
+        c: A byte.
+
+    Returns:
+        0-15, or -1.
+    """
+    if c >= 0x30 and c <= 0x39:
+        return c - 0x30
+    if c >= 0x61 and c <= 0x66:
+        return c - 0x61 + 10
+    if c >= 0x41 and c <= 0x46:
+        return c - 0x41 + 10
+    return -1
+
+
+def path_of_uri(uri: String) raises -> String:
+    """The Windows path a `file:///` URI names.
+
+    The inverse of `file_uri`, and it has to be: a definition reply names a
+    file the way the server spells it, and the editor opens files the way
+    Windows spells them. Percent-escapes are decoded because a server is
+    entitled to send them and a path with a space in it is not unusual.
+
+    Args:
+        uri: A file URI.
+
+    Returns:
+        The path, with backslashes, or an empty string for anything that is
+        not a file URI.
+
+    Raises:
+        Never in practice.
+    """
+    if not uri.startswith("file:///"):
+        return String("")
+    var rest = String(uri[byte=8:])
+    var out = String("")
+    var bytes = rest.as_bytes()
+    var i = 0
+    while i < len(bytes):
+        var c = Int(bytes[i])
+        if c == 0x25 and i + 2 < len(bytes):  # '%'
+            var hi = _hex_digit(Int(bytes[i + 1]))
+            var lo = _hex_digit(Int(bytes[i + 2]))
+            if hi >= 0 and lo >= 0:
+                out += chr(hi * 16 + lo)
+                i += 3
+                continue
+        out += chr(0x5C) if c == 0x2F else chr(c)  # '/' becomes a backslash
+        i += 1
+    return out^
+
+
+def open_path(hwnd: Int, path: String) raises -> String:
+    """Replace the window's document with the file at `path`.
+
+    Milestone 3 gives this tabs. Until then a jump into another file is that
+    file taking the window, which is what a single-document editor can honestly
+    do -- and the jump stack is what makes it survivable, because the way back
+    is one keystroke rather than a re-open.
+
+    The undo history goes with the old document. It has to: a history whose
+    snapshots are roots of a rope the window no longer holds would restore the
+    previous file's text into this one.
+
+    Args:
+        hwnd: The window.
+        path: The file to open.
+
+    Returns:
+        What happened, for the agent surface.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    var text = String("")
+    try:
+        with open(path, "r") as f:
+            text = f.read()
+    except err:
+        return String("cannot open ") + path + ": " + String(err)
+
+    doc[].rope = Rope(text^)
+    doc[].revision += 1
+    doc[].caret_line = 0
+    doc[].caret_col = 0
+    doc[].anchor_line = -1
+    doc[].anchor_col = 0
+    doc[].dirty = False
+    doc[].past = List[Snapshot]()
+    doc[].future = List[Snapshot]()
+    doc[].grid.top_line = 0
+    release_cache(doc[].grid)
+    doc[].uri = file_uri(absolute(path))
+    # Zero means "the server has not been told about this document", which is
+    # what `announce` waits for.
+    doc[].sent_version = 0
+    try:
+        announce(hwnd)
+    except:
+        pass
+    _touch(hwnd)
+    return (
+        String("opened ") + path + " (" + String(doc[].rope.line_count())
+        + " lines)"
+    )
+
+
+def jump_to(hwnd: Int, uri: String, line: Int, character: Int) raises -> String:
+    """Put the caret at a place the server named, opening its file if needed.
+
+    Where the caret was goes on the jump stack first, so the way back exists
+    before the way forward is taken.
+
+    Args:
+        hwnd: The window.
+        uri: The file the location is in.
+        line: Zero-based line.
+        character: Zero-based UTF-16 offset.
+
+    Returns:
+        What happened.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    doc[].jump_uri.append(doc[].uri)
+    doc[].jump_line.append(doc[].caret_line)
+    doc[].jump_col.append(doc[].caret_col)
+
+    var out = String("")
+    if uri != doc[].uri and uri.byte_length() > 0:
+        var path = path_of_uri(uri)
+        if path.byte_length() == 0:
+            return String("cannot follow ") + uri
+        out = open_path(hwnd, path) + "; "
+    _ = caret_move(hwnd, line, character)
+    follow_caret(hwnd)
+    _touch(hwnd)
+    return out + "at " + String(line + 1) + ":" + String(character + 1)
+
+
+def jump_back(hwnd: Int) raises -> String:
+    """Undo the last jump, opening the file it came from if it was elsewhere.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What happened, or that there was nowhere to go.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    var n = len(doc[].jump_uri)
+    if n == 0:
+        return String("nowhere to go back to")
+    var uri = doc[].jump_uri[n - 1]
+    var line = doc[].jump_line[n - 1]
+    var col = doc[].jump_col[n - 1]
+    _ = doc[].jump_uri.pop()
+    _ = doc[].jump_line.pop()
+    _ = doc[].jump_col.pop()
+
+    var out = String("")
+    if uri != doc[].uri and uri.byte_length() > 0:
+        var path = path_of_uri(uri)
+        if path.byte_length() > 0:
+            out = open_path(hwnd, path) + "; "
+    _ = caret_move(hwnd, line, col)
+    follow_caret(hwnd)
+    _touch(hwnd)
+    return (
+        out + "back to " + String(line + 1) + ":" + String(col + 1)
+        + " (" + String(n - 1) + " left)"
+    )
+
+
+def definition_at_caret(hwnd: Int) raises -> String:
+    """Ask where the thing under the caret is defined.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What was asked, or why it was not.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    if doc[].uri.byte_length() == 0 or not is_ready():
+        return String("no language server for this document")
+    sync(hwnd)
+    _ = request_definition(doc[].uri, doc[].caret_line, doc[].caret_col)
+    return (
+        String("asked where ") + String(doc[].caret_line + 1) + ":"
+        + String(doc[].caret_col + 1) + " is defined"
+    )
+
+
+def definition_wait(hwnd: Int, milliseconds: Int) raises -> String:
+    """Pump until the definition answer arrives, then go there.
+
+    Args:
+        hwnd: The window.
+        milliseconds: How long to wait.
+
+    Returns:
+        Where it went, or that nothing came.
+
+    Raises:
+        If the window has no document.
+    """
+    var before = definition_serial()
+    var deadline = perf_counter_ns() + milliseconds * 1_000_000
+    while perf_counter_ns() < deadline:
+        _ = pump(hwnd)
+        if definition_serial() != before:
+            var uri = definition_uri()
+            if uri.byte_length() == 0:
+                return String("no definition for that")
+            return jump_to(
+                hwnd, uri, definition_line(), definition_character()
+            )
+        # Ten milliseconds of being idle, not ten of being hung: `settle`
+        # dispatches whatever the window manager has queued and comes back
+        # early if something arrived.
+        _ = settle(hwnd, 10)
+    return String("no definition arrived")
+
+
+def hover_at_caret(hwnd: Int) raises -> String:
+    """Ask what the thing under the caret is.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What was asked, or why it was not.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    if doc[].uri.byte_length() == 0 or not is_ready():
+        return String("no language server for this document")
+    sync(hwnd)
+    doc[].hover = True
+    _ = request_hover(doc[].uri, doc[].caret_line, doc[].caret_col)
+    _touch(hwnd)
+    return (
+        String("asked what is at ") + String(doc[].caret_line + 1) + ":"
+        + String(doc[].caret_col + 1)
+    )
+
+
+def hover_wait(hwnd: Int, milliseconds: Int) raises -> String:
+    """Pump until the hover answer arrives.
+
+    Args:
+        hwnd: The window.
+        milliseconds: How long to wait.
+
+    Returns:
+        The hover text, flattened to one line, or that nothing came.
+
+    Raises:
+        If the window has no document.
+    """
+    var before = hover_serial()
+    var deadline = perf_counter_ns() + milliseconds * 1_000_000
+    while perf_counter_ns() < deadline:
+        _ = pump(hwnd)
+        if hover_serial() != before:
+            _touch(hwnd)
+            return hover_report(hwnd)
+        # Ten milliseconds of being idle, not ten of being hung: `settle`
+        # dispatches whatever the window manager has queued and comes back
+        # early if something arrived.
+        _ = settle(hwnd, 10)
+    return String("no hover arrived")
+
+
+def hover_report(hwnd: Int) raises -> String:
+    """What the hover box is showing, as one line.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        The text with newlines turned into spaces, or that there is none.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    if not doc[].hover:
+        return String("no hover")
+    var text = hover_text()
+    if text.byte_length() == 0:
+        return String("hover: nothing known about that")
+    var out = String("hover: ")
+    for byte in text.as_bytes():
+        var c = Int(byte)
+        out += " " if (c == 10 or c == 13) else chr(c)
+    return out^
+
+
+def hover_close(hwnd: Int) raises -> String:
+    """Put the hover box away.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        That it is closed.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    doc[].hover = False
+    _touch(hwnd)
+    return String("hover closed")
+
+
+def hover_is_open(hwnd: Int) raises -> Bool:
+    """Whether the hover box is up, for the key handler.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        True while it is showing.
+
+    Raises:
+        If the window has no document.
+    """
+    return _doc_at(hwnd)[].hover
+
+
+def references_at_caret(hwnd: Int) raises -> String:
+    """Ask where the thing under the caret is used.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What was asked, or why it was not.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    if doc[].uri.byte_length() == 0 or not is_ready():
+        return String("no language server for this document")
+    sync(hwnd)
+    clear_references()
+    doc[].pane_refs = True
+    _ = request_references(doc[].uri, doc[].caret_line, doc[].caret_col)
+    _touch(hwnd)
+    return (
+        String("asked who uses ") + String(doc[].caret_line + 1) + ":"
+        + String(doc[].caret_col + 1)
+    )
+
+
+def references_wait(hwnd: Int, milliseconds: Int) raises -> String:
+    """Pump until the references arrive.
+
+    Args:
+        hwnd: The window.
+        milliseconds: How long to wait.
+
+    Returns:
+        The list, or that nothing came.
+
+    Raises:
+        If the window has no document.
+    """
+    var before = references_serial()
+    var deadline = perf_counter_ns() + milliseconds * 1_000_000
+    while perf_counter_ns() < deadline:
+        _ = pump(hwnd)
+        if references_serial() != before:
+            _touch(hwnd)
+            return references_report(hwnd)
+        # Ten milliseconds of being idle, not ten of being hung: `settle`
+        # dispatches whatever the window manager has queued and comes back
+        # early if something arrived.
+        _ = settle(hwnd, 10)
+    return String("no references arrived")
+
+
+def references_report(hwnd: Int) raises -> String:
+    """The references, one per line, the way the issues pane lists them.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        `references N` and then a line each.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    var total = reference_count()
+    var out = String("references ") + String(total) + "\n"
+    if not doc[].pane_refs:
+        out = (
+            String("references (pane not showing them) ") + String(total)
+            + "\n"
+        )
+    for i in range(total):
+        # The file's own name rather than the whole URI: a reference list is
+        # read at a glance and a URI is sixty characters of prefix.
+        var uri = reference_uri(i)
+        var cut = uri.rfind("/")
+        var name = String(uri[byte=cut + 1 :]) if cut >= 0 else uri
+        out += (
+            name + ":" + String(reference_line(i) + 1) + ":"
+            + String(reference_character(i) + 1) + "\n"
+        )
+    return out^
+
+
+def goto_reference(hwnd: Int, n: Int) raises -> String:
+    """Go to the nth reference, one-based, the way the pane numbers them.
+
+    Args:
+        hwnd: The window.
+        n: Which one.
+
+    Returns:
+        Where it went, or why it did not.
+
+    Raises:
+        If the window has no document.
+    """
+    var total = reference_count()
+    if total == 0:
+        return String("no references")
+    if n < 1 or n > total:
+        return String("there are ") + String(total) + " references"
+    return jump_to(
+        hwnd,
+        reference_uri(n - 1),
+        reference_line(n - 1),
+        reference_character(n - 1),
+    )
+
+
+def pane_problems(hwnd: Int) raises -> String:
+    """Put the issues pane back to showing problems.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        That it is back.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    doc[].pane_refs = False
+    _touch(hwnd)
+    return String("pane showing problems")

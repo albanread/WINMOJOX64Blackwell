@@ -51,8 +51,21 @@ from ide.window import (
     find_text,
     goto,
     hittest_report,
+    definition_at_caret,
+    definition_wait,
+    hover_at_caret,
+    hover_close,
+    hover_report,
+    hover_wait,
+    jump_back,
+    goto_reference,
     line_height_of,
     line_text,
+    open_path,
+    pane_problems,
+    references_at_caret,
+    references_report,
+    references_wait,
     move_key,
     page_lines,
     presents_immediately,
@@ -70,6 +83,7 @@ from ide.win32 import (
     RECT,
     dpi_of,
     dpi_scale,
+    drain,
     private_bytes,
     scaled,
     win32,
@@ -237,6 +251,13 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         ]()
         _ = InvalidateRect(hwnd, 0, c_int(0))
         _ = UpdateWindow(hwnd)
+        # UpdateWindow sends WM_PAINT straight to the procedure and leaves
+        # everything else the window manager had for us sitting in the queue.
+        # Draining it here is what stops an unattended run from being a
+        # window that draws frames and answers nothing -- which Windows
+        # treats as hung, and composites as a ghost. See the note on the
+        # pump in ide/win32.mojo.
+        _ = drain(hwnd)
         return String("painted")
 
     if verb == "frame":
@@ -262,6 +283,7 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             _ = scroll_by(hwnd, 1)
             _ = InvalidateRect(hwnd, 0, c_int(0))
             _ = UpdateWindow(hwnd)
+            _ = drain(hwnd)
             var took = perf_counter_ns() - t0
             if took > worst:
                 worst = took
@@ -488,6 +510,62 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         if rest == "close":
             return popup_close(hwnd)
         return complete_at_caret(hwnd)
+
+    # ---- sprint 2.5: navigation --------------------------------------
+    # Three verbs with one shape, matching the three requests. Each asks and
+    # returns; `wait` is what a check uses in place of the window's timer,
+    # and it does the going-there as well, because a definition that arrives
+    # and is not followed is not what F12 does.
+    if verb == "definition" or verb == "def":
+        if rest.startswith("wait"):
+            var ms = 8000
+            var sp = rest.find(" ")
+            if sp > 0:
+                ms = Int(String(rest[byte=sp + 1 :]).strip())
+            return definition_wait(hwnd, ms)
+        return definition_at_caret(hwnd)
+
+    if verb == "hover":
+        if rest == "show":
+            return hover_report(hwnd)
+        if rest == "close":
+            return hover_close(hwnd)
+        if rest.startswith("wait"):
+            var ms = 8000
+            var sp = rest.find(" ")
+            if sp > 0:
+                ms = Int(String(rest[byte=sp + 1 :]).strip())
+            return hover_wait(hwnd, ms)
+        return hover_at_caret(hwnd)
+
+    if verb == "references" or verb == "refs":
+        # `references N` goes to the nth, the way `issues N` does -- one verb
+        # shape for two lists that are read the same way.
+        if rest == "show":
+            return references_report(hwnd)
+        if rest == "close":
+            return pane_problems(hwnd)
+        if rest.startswith("wait"):
+            var ms = 8000
+            var sp = rest.find(" ")
+            if sp > 0:
+                ms = Int(String(rest[byte=sp + 1 :]).strip())
+            return references_wait(hwnd, ms)
+        if rest.byte_length() > 0:
+            return goto_reference(hwnd, Int(rest))
+        return references_at_caret(hwnd)
+
+    if verb == "back":
+        # Where the caret was before the last jump. The stack is what makes
+        # following a definition into a definition survivable.
+        return jump_back(hwnd)
+
+    if verb == "open":
+        # Opening by path, which is what a cross-file jump does underneath
+        # and what a check needs to set one up.
+        if rest.byte_length() == 0:
+            return String("usage: open <path>")
+        return open_path(hwnd, rest)
 
     if verb == "issues":
         # The issues pane, as text. The same list the pane draws and the same

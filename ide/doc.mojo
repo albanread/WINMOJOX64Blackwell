@@ -161,6 +161,21 @@ struct Doc(Movable):
     # being typed rather than being inserted after it.
     var popup_line: Int
     var popup_col: Int
+    # Sprint 2.5. Where the caret was before each jump, so F12 has a way
+    # back. A stack rather than one slot: following a definition into a
+    # definition into a definition is the normal way to read code, and an
+    # editor that only remembers the last hop strands you three files in.
+    var jump_uri: List[String]
+    var jump_line: List[Int]
+    var jump_col: List[Int]
+    # Whether the hover box is up. Its text lives in the language server
+    # client with the completions, for the same reason: it belongs to a
+    # request rather than to a document.
+    var hover: Bool
+    # Whether the issues pane is showing references instead of problems.
+    # One pane, two lists -- a second pane costs vertical space that a file
+    # wants more than a list does.
+    var pane_refs: Bool
     # The application half on its own: the keystroke to the last drawing
     # command, with the wait for the vertical blank left out. That wait is
     # real and a person experiences it, but it is the display's and not
@@ -193,6 +208,11 @@ struct Doc(Movable):
         self.popup_row = 0
         self.popup_line = 0
         self.popup_col = 0
+        self.jump_uri = List[String]()
+        self.jump_line = List[Int]()
+        self.jump_col = List[Int]()
+        self.hover = False
+        self.pane_refs = False
         self.work_total = 0
         self.work_worst = 0
 

@@ -352,3 +352,174 @@ def scaled(v: Int, scale: Float32) -> Float32:
         The device-pixel measurement.
     """
     return Float32(Int(Float32(v) * scale + 0.5))
+
+
+# ===----------------------------------------------------------------------===#
+# Paths
+# ===----------------------------------------------------------------------===#
+
+
+def absolute(path: String) raises -> String:
+    """A relative path made absolute, because a URI cannot be relative.
+
+    The server resolves nothing: a `file://` URI with a relative path in it is
+    a URI pointing at the root of the drive, and every diagnostic comes back
+    for a file that does not exist.
+    """
+    var GetFullPathNameW = win32[
+        def (
+            Pointer[UInt16, MutAnyOrigin],
+            UInt32,
+            Pointer[UInt16, MutAnyOrigin],
+            Int,
+        ) thin abi("C") -> UInt32,
+        "GetFullPathNameW",
+    ]()
+    var wide_path = List[UInt16]()
+    for byte in path.as_bytes():
+        wide_path.append(UInt16(Int(byte)))
+    wide_path.append(0)
+    var buffer = List[UInt16]()
+    for _ in range(1024):
+        buffer.append(0)
+    var n = GetFullPathNameW(
+        wide_path.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+        UInt32(1024),
+        buffer.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+        0,
+    )
+    _ = wide_path
+    if n == 0 or n >= UInt32(1024):
+        return path
+    var out = String("")
+    for k in range(Int(n)):
+        out += chr(Int(buffer[k]))
+    return out^
+
+
+# ===----------------------------------------------------------------------===#
+# The message pump
+#
+# A window belongs to the thread that created it, and that thread has to
+# dispatch messages or the window is not a window. Not a style preference: the
+# window manager sends messages that must be answered synchronously, and
+# Windows watches whether they are. A thread that has not pumped for about
+# five seconds is declared hung -- the title bar gains "(Not Responding)" and
+# DWM stops using the window's own surface, drawing a ghost of it instead, or
+# white where it has no ghost to draw.
+#
+# Griddle's `--cmd` mode drove the window for whole runs without ever pumping.
+# Every command arrived by SendMessage, which Windows dispatches inline; every
+# repaint went through UpdateWindow, which also bypasses the queue; and every
+# wait was a Sleep loop that drained the language server's pipe and nothing
+# else. A `lsp wait 25000` was twenty-five seconds of a window that answered
+# nothing. That is why unattended screenshots came back with bands of white in
+# them, and it is not a Direct2D problem: the frames were drawn and presented,
+# and then composited from a ghost.
+#
+# So: `drain` after anything that might have queued work, and `settle` instead
+# of Sleep in anything that waits. Both are what the real message loop does,
+# factored out so the headless path and the interactive one are the same
+# machinery rather than two shapes that can drift apart.
+# ===----------------------------------------------------------------------===#
+
+# Neither of these is in the metadata -- they are #defines in winuser.h rather
+# than an enumeration, so there is no row to look up and they are written here
+# with their names.
+comptime PM_REMOVE = 0x0001
+comptime QS_ALLINPUT = 0x04FF
+comptime WAIT_TIMEOUT = 0x00000102
+
+
+def drain(hwnd: Int) raises -> Int:
+    """Dispatch every message waiting for this thread, and return how many.
+
+    `hwnd` of zero means every window on the thread, which is what a pump
+    wants: a window with a menu or a dialog has more than one, and draining
+    only one of them leaves the others hung.
+
+    Args:
+        hwnd: A window to filter on, or 0 for all of this thread's.
+
+    Returns:
+        How many messages were dispatched.
+
+    Raises:
+        If the entry points cannot be resolved.
+    """
+    var PeekMessageW = win32[
+        def (
+            Pointer[MSG, MutAnyOrigin], Int, UInt32, UInt32, UInt32
+        ) thin abi("C") -> c_int,
+        "PeekMessageW",
+    ]()
+    var TranslateMessage = win32[
+        def (Pointer[MSG, MutAnyOrigin]) thin abi("C") -> c_int,
+        "TranslateMessage",
+    ]()
+    var DispatchMessageW = win32[
+        def (Pointer[MSG, MutAnyOrigin]) thin abi("C") -> Int,
+        "DispatchMessageW",
+    ]()
+    var PostQuitMessage = win32[
+        def (c_int) thin abi("C") -> NoneType, "PostQuitMessage"
+    ]()
+
+    var msg = MSG()
+    var n = 0
+    # A bound rather than `while True`: a window that posts a message from its
+    # own handler can feed this loop faster than it drains, and a pump that
+    # never returns is the hang it exists to prevent.
+    while n < 512:
+        var got = PeekMessageW(
+            Pointer(to=msg).unsafe_origin_cast[MutAnyOrigin](),
+            0,
+            UInt32(0),
+            UInt32(0),
+            UInt32(PM_REMOVE),
+        )
+        if got == 0:
+            break
+        if msg.message == UInt32(winkb_constant["WM_QUIT"]()):
+            # Taken off the queue by this pump but meant for the real loop.
+            # Putting it back is what keeps a quit that arrives during a
+            # command from being swallowed.
+            PostQuitMessage(c_int(Int(msg.wParam)))
+            break
+        _ = TranslateMessage(Pointer(to=msg).unsafe_origin_cast[MutAnyOrigin]())
+        _ = DispatchMessageW(Pointer(to=msg).unsafe_origin_cast[MutAnyOrigin]())
+        n += 1
+    _ = hwnd
+    return n
+
+
+def settle(hwnd: Int, milliseconds: Int) raises -> Int:
+    """Wait up to `milliseconds`, staying responsive while waiting.
+
+    `MsgWaitForMultipleObjects` sleeps until either a message arrives or the
+    time runs out, which is the difference between a window that is idle and a
+    window that is hung. A `Sleep` of the same length is indistinguishable
+    from a crash as far as the window manager is concerned.
+
+    Args:
+        hwnd: A window to drain, or 0 for all of this thread's.
+        milliseconds: How long to wait at most.
+
+    Returns:
+        How many messages were dispatched.
+
+    Raises:
+        If the entry points cannot be resolved.
+    """
+    var MsgWaitForMultipleObjects = win32[
+        def (UInt32, Int, c_int, UInt32, UInt32) thin abi("C") -> UInt32,
+        "MsgWaitForMultipleObjects",
+    ]()
+    _ = MsgWaitForMultipleObjects(
+        UInt32(0),  # no handles: this waits on the queue alone
+        0,
+        c_int(0),  # bWaitAll, meaningless with no handles
+        UInt32(milliseconds),
+        UInt32(QS_ALLINPUT),
+    )
+    return drain(hwnd)

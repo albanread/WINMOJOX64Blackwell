@@ -178,6 +178,19 @@ screenshots this sprint already had:
 
 A blank window fails it in the same second it appears.
 
+## A second cause, found afterwards
+
+Some of the white in this story was not Direct2D at all. Griddle's headless
+mode never dispatched a Windows message, so the window was hung by Windows'
+own definition and DWM composited a ghost of it. That is written up in
+[event-loop.md](event-loop.md), and it accounts for the bands of white through
+unattended screenshots — though not for the hour in which nothing could
+present at all, which a 150-line spike that exits in under a second reproduced
+too.
+
+Fixing the pump took the partially-blank rate from about forty per cent to
+about twenty-five. The remainder is still unexplained.
+
 ## The rule
 
 Adding to the one in

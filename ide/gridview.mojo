@@ -57,6 +57,11 @@ from ide.diagnostics import (
 )
 from ide.find import matches_in_line
 from ide.lsp import (
+    hover_text,
+    reference_character,
+    reference_count,
+    reference_line,
+    reference_uri,
     completion_count,
     g_comp_detail,
     g_comp_label,
@@ -1263,3 +1268,263 @@ def _starts_in_docstring(rope: Rope, line: Int) raises -> Bool:
     for i in range(from_line, line):
         inside = triple_state_after(rope.line(i), inside)
     return inside
+
+
+comptime HOVER_MAX_ROWS = 7
+comptime HOVER_WIDTH = 620
+
+
+def hover_lines(text: String) -> List[String]:
+    """The server's hover markdown, as lines a box can show.
+
+    Hover comes back as markdown -- a fenced `mojo` block with the signature
+    in it, a `---` rule, then the docstring with `###` headings. Rendering
+    markdown is not this sprint and a box full of backticks and hashes is
+    worse than no box, so the marks come off and the text stays.
+
+    Blank runs collapse to one, because a docstring's paragraph breaks would
+    otherwise eat most of a seven-line box.
+
+    Args:
+        text: The hover contents.
+
+    Returns:
+        The lines, capped at what the box will show.
+    """
+    var out = List[String]()
+    var current = String("")
+    var blank_pending = False
+    var i = 0
+    var bytes = text.as_bytes()
+    var n = len(bytes)
+    while i <= n:
+        var end_of_line = i == n or Int(bytes[i]) == 10
+        if not end_of_line:
+            if Int(bytes[i]) != 13:
+                current += chr(Int(bytes[i]))
+            i += 1
+            continue
+        var line = String(current.strip())
+        current = String("")
+        i += 1
+
+        # A fence, a rule, or an empty line: nothing to show, but an empty
+        # line is worth remembering as a paragraph break.
+        if line.startswith("```") or line == "---" or line == "***":
+            i += 0
+        elif line.byte_length() == 0:
+            blank_pending = len(out) > 0
+        else:
+            # Headings lose their hashes; the words were the point.
+            while line.startswith("#"):
+                line = String(String(line[byte=1:]).strip())
+            if blank_pending and len(out) < HOVER_MAX_ROWS:
+                out.append(String(""))
+            blank_pending = False
+            if len(out) < HOVER_MAX_ROWS:
+                out.append(line)
+        if len(out) >= HOVER_MAX_ROWS:
+            break
+    return out^
+
+
+def draw_hover(
+    mut grid: Grid,
+    chrome: Chrome,
+    rope: Rope,
+    region: D2D_RECT_F,
+    caret_line: Int,
+    caret_col: Int,
+    revision: Int,
+) raises:
+    """What the server says the thing under the caret is, in a box below it.
+
+    The same box as the completion popup and placed by the same rules -- below
+    the caret, above it when there is no room, clipped to the editor field. A
+    reader's eye is already at the caret; both of these exist so it does not
+    have to leave.
+
+    Args:
+        grid: The view.
+        chrome: The render target and text format.
+        rope: The document, for the caret's x.
+        region: The editor field.
+        caret_line: Where the caret is.
+        caret_col: And its offset.
+        revision: The document revision.
+
+    Raises:
+        If DirectWrite refuses.
+    """
+    if chrome.target == 0 or chrome.text_format == 0:
+        return
+    var lines = hover_lines(hover_text())
+    if len(lines) == 0:
+        return
+
+    var this = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.target
+    )
+    var dwrite = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.dwrite
+    )
+
+    var caret_row = caret_line - grid.top_line
+    var x = region.left + scaled(GUTTER_W, chrome.scale) + caret_x(
+        grid, dwrite, chrome, rope, caret_line, caret_col, revision
+    )
+    var row_h = scaled(POPUP_ROW_H, chrome.scale)
+    var pad = scaled(6, chrome.scale)
+    var height = Float32(len(lines)) * row_h + pad * 2
+    var y = region.top + Float32(caret_row + 1) * grid.line_height + 2
+    if y + height > region.bottom:
+        y = region.top + Float32(caret_row) * grid.line_height - height - 2
+    if y < region.top:
+        y = region.top
+    var right = x + scaled(HOVER_WIDTH, chrome.scale)
+    if right > region.right - 8:
+        right = region.right - 8
+        x = right - scaled(HOVER_WIDTH, chrome.scale)
+    if x < region.left:
+        x = region.left
+
+    var clip = region
+    com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[D2D_RECT_F, MutAnyOrigin],
+            UInt32,
+        ) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PushAxisAlignedClip",
+    ](this)(this, com_addr(clip), UInt32(0))
+    _ = clip
+
+    _fill_rect(this, chrome.target, x, y, right, y + height, POPUP)
+    _fill_rect(this, chrome.target, x, y, right, y + 1, LINE)
+    _fill_rect(this, chrome.target, x, y + height - 1, right, y + height, LINE)
+    # The accent down the left edge is what separates this from the completion
+    # list at a glance: same box, different thing being said.
+    _fill_rect(
+        this, chrome.target, x, y, x + scaled(2, chrome.scale), y + height,
+        EMBER,
+    )
+
+    var ink = _brush(chrome.target, INK)
+    if ink == 0:
+        return
+    for n in range(len(lines)):
+        if lines[n].byte_length() == 0:
+            continue
+        var layout = _make_layout(dwrite, chrome, lines[n], 100000.0)
+        if layout != 0:
+            _draw_layout(
+                this,
+                layout,
+                ink,
+                x + pad + scaled(4, chrome.scale),
+                y + pad + Float32(n) * row_h,
+            )
+            _release(layout)
+    _release(ink)
+
+    com_method_of[
+        def (OpaquePointer[MutUntrackedOrigin]) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PopAxisAlignedClip",
+    ](this)(this)
+
+
+def draw_references(
+    mut grid: Grid, chrome: Chrome, region: D2D_RECT_F
+) raises:
+    """The reference list, in the issues pane, laid out like the issues are.
+
+    One pane showing two lists rather than two panes: the bottom of the window
+    is the scarcest space in an editor, and a list of places is read exactly
+    the way a list of problems is.
+
+    Args:
+        grid: The view, for its measured advance.
+        chrome: The render target and text format.
+        region: The issues pane.
+
+    Raises:
+        If DirectWrite refuses.
+    """
+    if chrome.target == 0 or chrome.text_format == 0:
+        return
+    var total = reference_count()
+
+    var this = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.target
+    )
+    var dwrite = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.dwrite
+    )
+    var ink = _brush(chrome.target, INK)
+    var dim = _brush(chrome.target, DIM)
+    if ink == 0:
+        return
+
+    var clip = region
+    com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[D2D_RECT_F, MutAnyOrigin],
+            UInt32,
+        ) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PushAxisAlignedClip",
+    ](this)(this, com_addr(clip), UInt32(0))
+    _ = clip
+
+    # The pane says what it is showing. It has two jobs now and a person who
+    # pressed Shift+F12 should not have to work out which one it is doing.
+    var heading = String("REFERENCES  ") + String(total)
+    if total == 0:
+        heading = String("REFERENCES  none")
+    var head_layout = _make_layout(dwrite, chrome, heading, 100000.0)
+    if head_layout != 0:
+        _draw_layout(
+            this, head_layout, dim if dim != 0 else ink,
+            region.left + scaled(12, chrome.scale),
+            region.top + scaled(6, chrome.scale),
+        )
+        _release(head_layout)
+
+    var rows = Int(
+        (region.bottom - region.top - scaled(ISSUE_TOP_PAD, chrome.scale))
+        / scaled(ISSUE_ROW_H, chrome.scale)
+    )
+    var n = 0
+    while n < total and n < rows:
+        var y = (
+            region.top
+            + scaled(ISSUE_TOP_PAD, chrome.scale)
+            + Float32(n) * scaled(ISSUE_ROW_H, chrome.scale)
+        )
+        var uri = reference_uri(n)
+        var cut = uri.rfind("/")
+        var name = String(uri[byte=cut + 1 :]) if cut >= 0 else uri
+        var text = (
+            String(n + 1) + ".  " + name + ":"
+            + String(reference_line(n) + 1) + ":"
+            + String(reference_character(n) + 1)
+        )
+        var layout = _make_layout(dwrite, chrome, text, 100000.0)
+        if layout != 0:
+            _draw_layout(
+                this, layout, ink, region.left + scaled(26, chrome.scale), y
+            )
+            _release(layout)
+        n += 1
+    _release(ink)
+    if dim != 0:
+        _release(dim)
+
+    com_method_of[
+        def (OpaquePointer[MutUntrackedOrigin]) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PopAxisAlignedClip",
+    ](this)(this)

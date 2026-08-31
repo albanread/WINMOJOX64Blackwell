@@ -86,6 +86,66 @@ if ($out -match 'alive after resize: True') {
     Record 'window-resize' 'FAIL' 'did not survive the resize'
 }
 
+# ---- 5b. and it answers while it is working ---------------------------------
+# The one that was missing, and its absence hid a real defect for a day.
+#
+# A window belongs to the thread that made it and that thread must dispatch
+# messages. Griddle's headless mode did not: commands arrived by SendMessage
+# (dispatched inline), repaints went through UpdateWindow (which bypasses the
+# queue), and every wait was a Sleep. So for the whole of an unattended run
+# the window answered nothing, Windows declared the thread hung after about
+# five seconds, and DWM composited a ghost -- which is what put bands of white
+# through screenshots that every other check called fine.
+#
+# `IsHungAppWindow` is Windows' own opinion and `SendMessageTimeout` with
+# SMTO_ABORTIFHUNG is the question a shell asks before it draws your window.
+# Both, because the first can lag and the second is the one that matters.
+Add-Type -ErrorAction SilentlyContinue @"
+using System; using System.Runtime.InteropServices;
+public class GriddleHang {
+  [DllImport("user32.dll")] public static extern bool IsHungAppWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr SendMessageTimeout(
+      IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout,
+      out IntPtr res);
+}
+"@
+$hwndFile = Join-Path $env:TEMP 'griddle.hwnd'
+Remove-Item $hwndFile -ErrorAction SilentlyContinue
+# Long enough to outlast the five seconds Windows waits before deciding a
+# window is hung. `frame` is the busiest thing the editor does.
+#
+# One string rather than an array of arguments, and it matters: PowerShell
+# re-quotes an array and `'frame 3000'` arrived as bare `frame`, which runs
+# the default sixty frames and is over before this check can ask anything.
+# The failure reads as "the run ended", which is true and says nothing about
+# why.
+$busy = Start-Process -FilePath $Exe -PassThru -NoNewWindow `
+        -RedirectStandardOutput (Join-Path $env:TEMP 'griddle-busy.out') `
+        -RedirectStandardError (Join-Path $env:TEMP 'griddle-busy.err') `
+        -ArgumentList '--lines 5000 --cmd "frame 3000"'
+Start-Sleep -Seconds 7
+if ($busy.HasExited) {
+    Record 'answers while busy' 'FAIL' 'the run ended before it could be asked'
+} elseif (-not (Test-Path $hwndFile)) {
+    Record 'answers while busy' 'FAIL' 'the window never published its handle'
+} else {
+    $h = [IntPtr][int](Get-Content $hwndFile)
+    $res = [IntPtr]::Zero
+    # SMTO_ABORTIFHUNG = 0x0002: returns zero rather than waiting out the
+    # timeout when the window is one Windows has already given up on.
+    $answered = [GriddleHang]::SendMessageTimeout(
+        $h, 0, [IntPtr]::Zero, [IntPtr]::Zero, 0x0002, 3000, [ref]$res)
+    $hung = [GriddleHang]::IsHungAppWindow($h)
+    if ($answered -eq [IntPtr]::Zero -or $hung) {
+        Record 'answers while busy' 'FAIL' `
+            "hung=$hung, WM_NULL answered=$($answered -ne [IntPtr]::Zero) -- the thread is not pumping"
+    } else {
+        Record 'answers while busy' 'PASS' `
+            'WM_NULL answered 7s into a frame run; Windows does not call it hung'
+    }
+}
+Stop-Process -Id $busy.Id -Force -ErrorAction SilentlyContinue
+
 # ---- 6. the app photographs itself -----------------------------------------
 # PNG magic alone would pass on a truncated file, and a byte count alone
 # would pass on garbage, so decode it and check the dimensions are the
