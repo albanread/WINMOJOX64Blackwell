@@ -2007,21 +2007,57 @@ def has_breakpoint(line: Int) -> Bool:
 # ===----------------------------------------------------------------------===#
 
 comptime _g_var_rows = named_global["gridview.varrows", List[String]]
+comptime _g_frame_rows = named_global["gridview.framerows", Int]
 comptime _g_stop_line = named_global["gridview.stopline", Int]
 comptime _g_stop_live = named_global["gridview.stoplive", Int]
 
 
-def set_variable_rows(var rows: List[String]):
-    """Hand the pane the variables to show, already formatted.
+def set_variable_rows(var rows: List[String], frames: Int = 0):
+    """Hand the pane what to show while stopped, already formatted.
+
+    One list holding the call stack and then the locals, with a count of how
+    many of the rows are frames. One list rather than two because the pane
+    draws one column and a click lands on one row; keeping them apart would
+    mean two hit tests over regions that have to be worked out from each
+    other anyway.
 
     Formatted by the caller because "name = value  (type)" is a decision about
     what a person wants to read, and this module's decision is only where the
     text goes.
 
     Args:
-        rows: One per variable.
+        rows: The frame rows followed by the variable rows.
+        frames: How many of them are frames.
     """
     _g_var_rows()[] = rows^
+    _g_frame_rows()[] = frames
+
+
+def frame_rows() -> Int:
+    """How many of the pane's rows are call-stack frames.
+
+    Returns:
+        The count; rows below this are variables.
+    """
+    return _g_frame_rows()[]
+
+
+def debug_row_at(region: D2D_RECT_F, y: Float32, scale: Float32) -> Int:
+    """Which row of the debug pane a click at `y` is on, or -1.
+
+    Args:
+        region: The pane.
+        y: A client y coordinate.
+        scale: Device pixels per design pixel.
+
+    Returns:
+        The row index, or -1.
+    """
+    var into = y - region.top - scaled(ISSUE_TOP_PAD, scale)
+    if into < 0:
+        return -1
+    var row = Int(into / scaled(ISSUE_ROW_H, scale))
+    return -1 if row >= variable_rows() else row
 
 
 def variable_rows() -> Int:
@@ -2090,9 +2126,11 @@ def draw_variables(chrome: Chrome, region: D2D_RECT_F) raises:
     ](this)(this, com_addr(clip), UInt32(0))
     _ = clip
 
-    var heading = String("VARIABLES  ") + String(total)
+    var heading = String("DEBUG  ") + String(frame_rows()) + " frames"
+    if total > frame_rows():
+        heading += ", " + String(total - frame_rows()) + " locals"
     if total == 0:
-        heading = String("VARIABLES  none in scope")
+        heading = String("DEBUG  not stopped")
     var head_layout = _make_layout(dwrite, chrome, heading, 100000.0)
     if head_layout != 0:
         _draw_layout(
@@ -2115,8 +2153,14 @@ def draw_variables(chrome: Chrome, region: D2D_RECT_F) raises:
         )
         var layout = _make_layout(dwrite, chrome, _g_var_rows()[][n], 100000.0)
         if layout != 0:
+            # Frames in the dim ink, locals in the bright: the stack is where
+            # you are and the locals are what you came to read.
             _draw_layout(
-                this, layout, ink, region.left + scaled(26, chrome.scale), y
+                this,
+                layout,
+                dim if (n < frame_rows() and dim != 0) else ink,
+                region.left + scaled(26, chrome.scale),
+                y,
             )
             _release(layout)
         n += 1

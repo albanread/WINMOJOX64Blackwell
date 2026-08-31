@@ -97,6 +97,8 @@ from ide.lsp import (
 )
 from ide.gridview import (
     GUTTER_W,
+    debug_row_at,
+    frame_rows,
     set_stop_line,
     set_variable_rows,
     output_row_at,
@@ -408,6 +410,27 @@ def caret_click(hwnd: Int, x: Int, y: Int) raises -> String:
         if which < 0:
             return String("the tab strip")
         return switch_tab(hwnd, which)
+
+    # A frame in the debug pane is a place too, and clicking one walks the
+    # stack: the caret goes to that frame's line and the locals become its
+    # locals. Execution has not moved -- browsing a stack is reading, not
+    # stepping -- so the halted line stays where it is.
+    if doc[].pane_mode == PANE_VARIABLES:
+        var debug_pane = full.issues()
+        if (
+            Float32(x) >= debug_pane.left
+            and Float32(x) < debug_pane.right
+            and Float32(y) >= debug_pane.top
+            and Float32(y) <= debug_pane.bottom
+        ):
+            var row = debug_row_at(debug_pane, Float32(y), scale)
+            if row < 0 or row >= frame_rows():
+                return String("the debug pane")
+            select_frame(row)
+            var where = frame_source(row)
+            if where.byte_length() > 0 and frame_line(row) >= 0:
+                return jump_to(hwnd, file_uri(where), frame_line(row), 0)
+            return String("that frame has no source")
 
     # A diagnostic in the output pane is a place, and clicking a place
     # should go there. This is the edit-build-fix loop closing: the compiler
@@ -3345,15 +3368,50 @@ def debug_launch(hwnd: Int) raises -> String:
         stem = cut^
     var program = stem + ".debug.exe"
 
+    # A binary that is not there is the difference between "no breakpoints
+    # verified and nothing ever stops" and a sentence saying what is wrong.
+    # lldb-dap attaches to a missing program without complaint and then simply
+    # never halts, which reads as a broken debugger rather than a missing
+    # build -- and is exactly what a stale debug build looks like.
+    if file_stamp(program) == 0:
+        return (
+            String("no debug build at ") + program
+            + "; press F5 to build one"
+        )
+
     var tools = _debug_tools()
     var said = start_debug(tools[0], tools[1], program)
-    var verified = set_breakpoints(path, breakpoint_lines(hwnd))
+
+    # Every tab's breakpoints, not only the one on screen. DAP's
+    # setBreakpoints is per source file and replaces that file's whole set, so
+    # a debugger told about one file simply does not stop in the others --
+    # which reads as breakpoints that silently do not work, and is the bug
+    # tabs introduced the moment a second file could hold one.
+    var verified = 0
+    var asked = 0
+    for tab in range(tab_count()):
+        var address = tab_doc(tab)
+        if address == 0:
+            continue
+        var other = Pointer[Doc, MutAnyOrigin](unsafe_from_address=address)
+        if len(other[].breakpoints) == 0:
+            continue
+        var where = path_of_uri(other[].uri)
+        if where.byte_length() == 0:
+            continue
+        var lines = List[Int]()
+        for at in other[].breakpoints:
+            lines.append(at)
+        asked += len(lines)
+        var got = set_breakpoints(where, lines)
+        if got > 0:
+            verified += got
     configuration_done()
     _doc_at(hwnd)[].pane_mode = PANE_VARIABLES
     _touch(hwnd)
     return (
-        said + "; " + String(verified) + " of "
-        + String(len(breakpoint_lines(hwnd))) + " breakpoints verified"
+        said + "; " + String(verified) + " of " + String(asked)
+        + " breakpoints verified"
     )
 
 
@@ -3439,18 +3497,27 @@ def debug_poll(hwnd: Int) raises -> Bool:
             _ = caret_move(hwnd, stop_line(), 0)
             follow_caret(hwnd)
         var rows = List[String]()
+        var frames = frame_count()
+        for i in range(frames):
+            var where = frame_source(i)
+            var cut = where.rfind(chr(0x5C))
+            var name = String(where[byte=cut + 1 :]) if cut >= 0 else where
+            rows.append(
+                "#" + String(i) + "  " + frame_name(i) + "   " + name + ":"
+                + String(frame_line(i) + 1)
+            )
         for i in range(variable_count()):
             rows.append(
                 variable_name(i) + " = " + variable_value(i)
                 + "   (" + variable_type(i) + ")"
             )
-        set_variable_rows(rows^)
+        set_variable_rows(rows^, frames)
         set_stop_line(stop_line(), True)
         _doc_at(hwnd)[].pane_mode = PANE_VARIABLES
     else:
         set_stop_line(-1, debugging())
         if not debugging():
-            set_variable_rows(List[String]())
+            set_variable_rows(List[String](), 0)
     _touch(hwnd)
     return True
 

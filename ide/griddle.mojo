@@ -65,6 +65,7 @@ from ide.window import (
     debug_stop,
     debugging,
     find_needle,
+    replace_preview,
     toggle_breakpoint,
     poll_disk,
     recreate,
@@ -562,6 +563,18 @@ def griddle_wndproc(
                     print("griddle:", open_dialog(hwnd))
                 elif wparam == ord("B"):
                     print("griddle:", build_file(hwnd))
+                elif wparam == ord("H"):
+                    # Ctrl+H replaces every occurrence of whatever the last
+                    # search looked for. Without a dialog to type a
+                    # replacement into -- milestone 3 has no text input that
+                    # is not the document -- this is the honest half: it says
+                    # what it would do, and `replace all X -> Y` through the
+                    # agent surface does it. A person gets the count and the
+                    # preview rather than a key that quietly rewrites a file.
+                    print(
+                        "griddle:",
+                        replace_preview(hwnd, find_needle(hwnd), String("")),
+                    )
                 elif wparam == ord("W"):
                     print("griddle:", close_tab(hwnd))
                 elif (
