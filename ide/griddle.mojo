@@ -115,6 +115,13 @@ from ide.window import (
     save_dialog,
     definition_at_caret,
     hover_at_caret,
+    about,
+    clear_breakpoints,
+    copy,
+    cut,
+    paste,
+    find_text,
+    new_tab,
     outline,
     pane_problems,
     pane_python,
@@ -582,6 +589,21 @@ def griddle_wndproc(
                     return 0
                 # Z, Y and A are virtual key codes, which are the ASCII
                 # capitals for letters -- one of Win32's few kindnesses.
+                # X, C and V: the three keys every Windows program has had
+                # since 1990. They call what the Edit menu calls, so a
+                # feature cannot work from one and not the other.
+                if wparam == ord("X"):
+                    print("griddle:", cut(hwnd))
+                    return 0
+                if wparam == ord("C"):
+                    print("griddle:", copy(hwnd))
+                    return 0
+                if wparam == ord("V"):
+                    print("griddle:", paste(hwnd))
+                    return 0
+                if wparam == ord("N"):
+                    print("griddle:", new_tab(hwnd))
+                    return 0
                 if wparam == ord("Z"):
                     _ = edit_key(hwnd, "redo" if shift else "undo")
                 elif wparam == ord("Y"):
@@ -749,6 +771,78 @@ def griddle_wndproc(
             if which == 1022:  # View > Reset Zoom
                 print("griddle:", zoom_reset(hwnd))
                 return 0
+            if which == 1006:  # File > New
+                print("griddle:", new_tab(hwnd))
+                return 0
+            if which == 1007:  # File > Close Tab
+                print("griddle:", close_tab(hwnd))
+                return 0
+            if which == 1030:  # Edit > Undo
+                print("griddle:", edit_key(hwnd, "undo"))
+                return 0
+            if which == 1031:  # Edit > Redo
+                print("griddle:", edit_key(hwnd, "redo"))
+                return 0
+            if which == 1032:  # Edit > Cut
+                print("griddle:", cut(hwnd))
+                return 0
+            if which == 1033:  # Edit > Copy
+                print("griddle:", copy(hwnd))
+                return 0
+            if which == 1034:  # Edit > Paste
+                print("griddle:", paste(hwnd))
+                return 0
+            if which == 1035:  # Edit > Select All
+                print("griddle:", move_key(hwnd, "all", False))
+                return 0
+            if which == 1036:  # Edit > Find
+                print("griddle:", find_text(hwnd, find_needle(hwnd)))
+                return 0
+            if which == 1037:  # Edit > Find Next
+                print("griddle:", find_again(hwnd, False))
+                return 0
+            if which == 1038:  # Edit > Find Previous
+                print("griddle:", find_again(hwnd, True))
+                return 0
+            if which == 1039:  # Edit > Replace
+                print(
+                    "griddle:",
+                    replace_preview(hwnd, find_needle(hwnd), String("")),
+                )
+                return 0
+            if which == 1040:  # Edit > Find in Project
+                print("griddle:", search_in_project(hwnd, find_needle(hwnd)))
+                return 0
+            if which == 1050:  # Go > Definition
+                print("griddle:", definition_at_caret(hwnd))
+                return 0
+            if which == 1051:  # Go > References
+                print("griddle:", references_at_caret(hwnd))
+                return 0
+            if which == 1052:  # Go > Symbol in File
+                print("griddle:", outline(hwnd))
+                return 0
+            if which == 1053:  # Go > Back
+                print("griddle:", jump_back(hwnd))
+                return 0
+            if which == 1054:  # Go > Next Tab
+                print("griddle:", next_tab(hwnd, 1))
+                return 0
+            if which == 1055:  # Go > Previous Tab
+                print("griddle:", next_tab(hwnd, -1))
+                return 0
+            if which == 1027:  # Build > Step Out
+                print("griddle:", debug_step(hwnd, "out"))
+                return 0
+            if which == 1017:  # Build > Run to Cursor
+                print("griddle:", run_to_caret(hwnd))
+                return 0
+            if which == 1018:  # Build > Evaluate
+                print("griddle:", debug_evaluate(hwnd, String("")))
+                return 0
+            if which == 1019:  # Build > Clear All Breakpoints
+                print("griddle:", clear_breakpoints(hwnd))
+                return 0
             if which == 1023:  # View > Outline
                 print("griddle:", outline(hwnd))
                 return 0
@@ -791,7 +885,15 @@ def griddle_wndproc(
             if which == 1003:  # File > Open
                 print("griddle:", open_dialog(hwnd))
                 return 0
-            if (wparam & 0xFFFF) == 1001:  # File > Exit
+            if which == 1002:  # Help > About
+                # It said nothing at all until a check walked the bar and
+                # asked what every item was wired to. An About that does
+                # nothing is the smallest possible broken promise, and the
+                # answer is one a person actually wants: which build this is
+                # and what it is running on.
+                print("griddle:", about())
+                return 0
+            if which == 1001:  # File > Exit
                 # Through WM_CLOSE, so Exit asks about unsaved work the same
                 # way the X button does. Two ways out of a program is two
                 # places to forget the question.

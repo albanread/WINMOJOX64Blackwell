@@ -43,7 +43,11 @@ from ide.python_env import (
 )
 from ide.tree import project_root
 from ide.window import (
+    about,
+    copy,
+    cut,
     document_path,
+    paste,
     pane_python,
     pane_toolchain,
     all_text,
@@ -137,6 +141,7 @@ from ide.window import (
     type_text,
 )
 from ide.menu import invoke as invoke_menu
+from ide.menu import report as menu_report
 from ide.tsf import self_check as tsf_self_check
 from ide.screenshot import capture
 from ide.dap import debug_log, debugging, resume
@@ -945,7 +950,26 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         var chrome = Pointer[Chrome, MutAnyOrigin](unsafe_from_address=stored)
         return simulate(chrome[].drop_target)
 
+    # The three keys every Windows program has. They are verbs as well as
+    # keys because the clipboard is the one editor feature whose correctness
+    # can only be shown against another program, and a check needs to drive
+    # both ends.
+    if verb == "about":
+        return about(hwnd)
+
+    if verb == "copy":
+        return copy(hwnd)
+    if verb == "cut":
+        return cut(hwnd)
+    if verb == "paste":
+        return paste(hwnd)
+
     if verb == "menu":
+        # `menu list` reads the bar; `menu Title > Item` fires one. Reading
+        # and firing want to be different verbs because a walk of the whole
+        # bar that fired every item would stop at File > Exit.
+        if rest == "list" or rest == "":
+            return menu_report(hwnd)
         return invoke_menu(hwnd, rest)
 
     if verb == "screenshot":

@@ -41,6 +41,7 @@ from ide.doc import (
     Snapshot,
 )
 from ide.edit import (
+    delete_selection,
     caret_of_byte,
     remember,
     restate_dirty,
@@ -61,12 +62,19 @@ from ide.edit import (
 )
 from ide.diagnostics import count_for_shown, nth_visible, summary
 from ide.find import find_next, find_prev, select_match
-from ide.toolchain import component_path
+from ide.toolchain import (
+    component_path,
+    gpu_at,
+    gpu_count,
+    mojo_version,
+    toolchain_root,
+)
 from ide.python_env import (
     project_location,
     python_report,
 )
 from ide.python_env import variables as python_variables
+from ide.clipboard import clipboard_text, set_clipboard_text
 from ide.symbols import (
     clear_symbols,
     matching_symbols,
@@ -4325,3 +4333,149 @@ def pane_python(hwnd: Int) raises -> String:
     _doc_at(hwnd)[].pane_mode = PANE_PYTHON
     _touch(hwnd)
     return String("pane showing python")
+
+
+def new_tab(hwnd: Int) raises -> String:
+    """Start an empty document in a tab of its own.
+
+    An untitled document has no uri, and that absence is what every other
+    part of the editor already keys on: `save` turns into Save As, the
+    language server is not told about it, and the disk watcher has nothing to
+    watch. So there is nothing to special-case here beyond making the tab.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        Which tab it became.
+
+    Raises:
+        If the tab cannot be adopted.
+    """
+    var store = alloc[Doc](1, alignment=8)
+    # Emplaced rather than assigned, for the reason `open_path` gives: an
+    # assignment destroys what was there first, and what is there is whatever
+    # the allocator last held.
+    store.unsafe_write(Doc(Rope(String(""))))
+    var which = adopt_tab(hwnd, Int(store))
+    _touch(hwnd)
+    return String("new document in tab ") + String(which + 1)
+
+
+# ===----------------------------------------------------------------------===#
+# Cut, copy and paste
+#
+# The clipboard module owns the Win32 and the CRLF convention. What is left
+# here is what the three verbs mean to a document, which is where the
+# judgement is: copy with nothing selected takes the whole line, because that
+# is what every editor a person has used does and because copying nothing is
+# never what they meant.
+# ===----------------------------------------------------------------------===#
+
+
+def copy(hwnd: Int) raises -> String:
+    """Put the selection on the clipboard, or the caret's line if there is none.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What was copied, in words.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    var text = selected_text(doc[])
+    var whole_line = False
+    if text.byte_length() == 0:
+        # The line, including its newline, so pasting it puts a line back
+        # rather than splicing text into the middle of another one.
+        text = doc[].rope.line(doc[].caret_line) + "\n"
+        whole_line = True
+    if not set_clipboard_text(text):
+        return String("the clipboard would not take it")
+    if whole_line:
+        return String("copied line ") + String(doc[].caret_line + 1)
+    return String("copied ") + String(text.byte_length()) + " bytes"
+
+
+def cut(hwnd: Int) raises -> String:
+    """Copy the selection and remove it.
+
+    With nothing selected this cuts the caret's line, matching `copy` -- the
+    pair have to agree or Ctrl+X and Ctrl+C mean different things by "this".
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What was cut.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    var said = copy(hwnd)
+    if not said.startswith("copied"):
+        return said
+    remember(doc[])
+    if not delete_selection(doc[]):
+        # No selection, so `copy` took the whole line and this takes the same
+        # line away, newline included.
+        var start = byte_at(doc[].rope, doc[].caret_line, 0)
+        var finish = start + doc[].rope.line(doc[].caret_line).byte_length() + 1
+        if finish > doc[].rope.byte_length():
+            finish = doc[].rope.byte_length()
+        apply(doc[], start, finish, String(""))
+    restate_dirty(doc[])
+    _touch(hwnd)
+    return String("cut") + String(said[byte=6:])
+
+
+def paste(hwnd: Int) raises -> String:
+    """Insert the clipboard at the caret, replacing the selection.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        How much arrived, or that nothing did.
+
+    Raises:
+        If the window has no document.
+    """
+    var text = clipboard_text()
+    if text.byte_length() == 0:
+        return String("the clipboard has no text")
+    var doc = _doc_at(hwnd)
+    remember(doc[])
+    insert(doc[], text)
+    restate_dirty(doc[])
+    follow_caret(hwnd)
+    _touch(hwnd)
+    return String("pasted ") + String(text.byte_length()) + " bytes"
+
+
+def about(hwnd: Int = 0) raises -> String:
+    """What this build is, and what it is standing on.
+
+    Every fact here is one the toolchain module measured rather than one this
+    file declares, so About cannot drift into claiming a version Griddle is
+    not running.
+
+    Args:
+        hwnd: Unused; taken so the menu and the agent call it alike.
+
+    Returns:
+        Three lines: the program, the compiler, and the machine.
+
+    Raises:
+        If the toolchain cannot be read.
+    """
+    _ = hwnd
+    var out = String("Griddle -- a Mojo IDE for Windows, written in Mojo") + "\n"
+    out += "  " + mojo_version() + " from " + toolchain_root() + "\n"
+    if gpu_count() > 0:
+        out += "  " + gpu_at(0) + "\n"
+    return out^

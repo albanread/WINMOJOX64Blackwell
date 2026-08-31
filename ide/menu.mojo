@@ -22,6 +22,38 @@ from ide.win32 import win32
 
 # Command ids. Small and explicit: the agent never uses them -- it uses the
 # visible names -- but WM_COMMAND arrives carrying one.
+comptime ID_FILE_NEW = 1006
+comptime ID_FILE_CLOSE_TAB = 1007
+
+# Edit. An IDE without cut, copy and paste is not an editor, and Griddle had
+# none of the three until this sprint. The menu is where that absence was
+# loudest, which is a fair argument for building the menu bar early.
+comptime ID_EDIT_UNDO = 1030
+comptime ID_EDIT_REDO = 1031
+comptime ID_EDIT_CUT = 1032
+comptime ID_EDIT_COPY = 1033
+comptime ID_EDIT_PASTE = 1034
+comptime ID_EDIT_SELECT_ALL = 1035
+comptime ID_EDIT_FIND = 1036
+comptime ID_EDIT_FIND_NEXT = 1037
+comptime ID_EDIT_FIND_PREV = 1038
+comptime ID_EDIT_REPLACE = 1039
+comptime ID_EDIT_SEARCH_PROJECT = 1040
+
+# Go. Everything that moves the caret somewhere it was not, which is a
+# different kind of act from editing and earns its own list.
+comptime ID_GO_DEFINITION = 1050
+comptime ID_GO_REFERENCES = 1051
+comptime ID_GO_SYMBOL = 1052
+comptime ID_GO_BACK = 1053
+comptime ID_GO_NEXT_TAB = 1054
+comptime ID_GO_PREV_TAB = 1055
+
+comptime ID_BUILD_STEP_OUT = 1027
+comptime ID_BUILD_RUN_TO_CARET = 1017
+comptime ID_BUILD_EVALUATE = 1018
+comptime ID_BUILD_CLEAR_BREAKPOINTS = 1019
+
 comptime ID_VIEW_OUTLINE = 1023
 comptime ID_VIEW_TOOLCHAIN = 1024
 comptime ID_VIEW_PYTHON = 1025
@@ -77,10 +109,61 @@ def build(hwnd: Int) raises:
             "Save\tCtrl+S")
     _append(AppendMenuW, file, winkb_constant["MF_STRING"](), ID_FILE_SAVE_AS,
             "Save As...\tCtrl+Shift+S")
+    _append(AppendMenuW, file, winkb_constant["MF_STRING"](),
+            ID_FILE_NEW, "New\tCtrl+N")
+    _append(AppendMenuW, file, winkb_constant["MF_STRING"](),
+            ID_FILE_CLOSE_TAB, "Close Tab\tCtrl+W")
     _append(AppendMenuW, file, winkb_constant["MF_SEPARATOR"](), 0, "")
     _append(AppendMenuW, file, winkb_constant["MF_STRING"](), ID_FILE_EXIT,
             "Exit")
     _append(AppendMenuW, bar, winkb_constant["MF_POPUP"](), file, "File")
+
+    # Edit and Go sit where every Windows editor puts them, between File
+    # and View. The order within each is the order a person reaches for
+    # them, not the order they were implemented.
+    var edit = CreatePopupMenu()
+    _append(AppendMenuW, edit, winkb_constant["MF_STRING"](),
+            ID_EDIT_UNDO, "Undo\tCtrl+Z")
+    _append(AppendMenuW, edit, winkb_constant["MF_STRING"](),
+            ID_EDIT_REDO, "Redo\tCtrl+Y")
+    _append(AppendMenuW, edit, winkb_constant["MF_SEPARATOR"](), 0, "")
+    _append(AppendMenuW, edit, winkb_constant["MF_STRING"](),
+            ID_EDIT_CUT, "Cut\tCtrl+X")
+    _append(AppendMenuW, edit, winkb_constant["MF_STRING"](),
+            ID_EDIT_COPY, "Copy\tCtrl+C")
+    _append(AppendMenuW, edit, winkb_constant["MF_STRING"](),
+            ID_EDIT_PASTE, "Paste\tCtrl+V")
+    _append(AppendMenuW, edit, winkb_constant["MF_STRING"](),
+            ID_EDIT_SELECT_ALL, "Select All\tCtrl+A")
+    _append(AppendMenuW, edit, winkb_constant["MF_SEPARATOR"](), 0, "")
+    _append(AppendMenuW, edit, winkb_constant["MF_STRING"](),
+            ID_EDIT_FIND, "Find\tCtrl+F")
+    _append(AppendMenuW, edit, winkb_constant["MF_STRING"](),
+            ID_EDIT_FIND_NEXT, "Find Next\tF3")
+    _append(AppendMenuW, edit, winkb_constant["MF_STRING"](),
+            ID_EDIT_FIND_PREV, "Find Previous\tShift+F3")
+    _append(AppendMenuW, edit, winkb_constant["MF_STRING"](),
+            ID_EDIT_REPLACE, "Replace\tCtrl+H")
+    _append(AppendMenuW, edit, winkb_constant["MF_STRING"](),
+            ID_EDIT_SEARCH_PROJECT, "Find in Project\tCtrl+Shift+F")
+    _append(AppendMenuW, bar, winkb_constant["MF_POPUP"](), edit, "Edit")
+
+    var go = CreatePopupMenu()
+    _append(AppendMenuW, go, winkb_constant["MF_STRING"](),
+            ID_GO_DEFINITION, "Definition\tF12")
+    _append(AppendMenuW, go, winkb_constant["MF_STRING"](),
+            ID_GO_REFERENCES, "References\tShift+F12")
+    _append(AppendMenuW, go, winkb_constant["MF_STRING"](),
+            ID_GO_SYMBOL, "Symbol in File\tCtrl+Shift+O")
+    _append(AppendMenuW, go, winkb_constant["MF_SEPARATOR"](), 0, "")
+    _append(AppendMenuW, go, winkb_constant["MF_STRING"](),
+            ID_GO_BACK, "Back\tAlt+Left")
+    _append(AppendMenuW, go, winkb_constant["MF_SEPARATOR"](), 0, "")
+    _append(AppendMenuW, go, winkb_constant["MF_STRING"](),
+            ID_GO_NEXT_TAB, "Next Tab\tCtrl+Tab")
+    _append(AppendMenuW, go, winkb_constant["MF_STRING"](),
+            ID_GO_PREV_TAB, "Previous Tab\tCtrl+Shift+Tab")
+    _append(AppendMenuW, bar, winkb_constant["MF_POPUP"](), go, "Go")
 
     var view = CreatePopupMenu()
     _append(AppendMenuW, view, winkb_constant["MF_STRING"](),
@@ -117,7 +200,16 @@ def build(hwnd: Int) raises:
     _append(AppendMenuW, build, winkb_constant["MF_STRING"](),
             ID_BUILD_STEP_INTO, "Step Into\tF11")
     _append(AppendMenuW, build, winkb_constant["MF_STRING"](),
+            ID_BUILD_STEP_OUT, "Step Out\tShift+F11")
+    _append(AppendMenuW, build, winkb_constant["MF_STRING"](),
+            ID_BUILD_RUN_TO_CARET, "Run to Cursor\tCtrl+F10")
+    _append(AppendMenuW, build, winkb_constant["MF_STRING"](),
+            ID_BUILD_EVALUATE, "Evaluate\tCtrl+I")
+    _append(AppendMenuW, build, winkb_constant["MF_SEPARATOR"](), 0, "")
+    _append(AppendMenuW, build, winkb_constant["MF_STRING"](),
             ID_BUILD_BREAKPOINT, "Toggle Breakpoint\tF9")
+    _append(AppendMenuW, build, winkb_constant["MF_STRING"](),
+            ID_BUILD_CLEAR_BREAKPOINTS, "Clear All Breakpoints")
     _append(AppendMenuW, build, winkb_constant["MF_SEPARATOR"](), 0, "")
     _append(AppendMenuW, build, winkb_constant["MF_STRING"](), ID_BUILD_STOP,
             "Stop\tShift+F5")
@@ -150,6 +242,68 @@ def _append(
     )
     # The label must outlive the call: Windows copies it, but not before.
     _ = label
+
+
+def report(hwnd: Int) raises -> String:
+    """The whole menu bar, as text, without invoking any of it.
+
+    Reading the bar and firing it are different acts, and a check that wanted
+    the first had to do the second: walking the items by invoking them meant
+    File > Exit ended the walk, and Save As put a modal dialog in front of it.
+    This asks Windows what the menus contain and answers with names, which is
+    also the only list of Griddle's features that cannot drift from the
+    features -- it is read from the live menu rather than written down.
+
+    Args:
+        hwnd: The window whose menu to walk.
+
+    Returns:
+        `menu N` and a `Title > Item (id)` line each.
+
+    Raises:
+        If the menu cannot be read.
+    """
+    var GetMenu = win32[def (Int) thin abi("C") -> Int, "GetMenu"]()
+    var GetSubMenu = win32[
+        def (Int, c_int) thin abi("C") -> Int, "GetSubMenu"
+    ]()
+    var GetMenuItemCount = win32[
+        def (Int) thin abi("C") -> c_int, "GetMenuItemCount"
+    ]()
+    var GetMenuStringW = win32[
+        def (
+            Int, UInt32, Pointer[UInt16, MutAnyOrigin], c_int, UInt32
+        ) thin abi("C") -> c_int,
+        "GetMenuStringW",
+    ]()
+    var GetMenuItemID = win32[
+        def (Int, c_int) thin abi("C") -> UInt32, "GetMenuItemID"
+    ]()
+
+    var bar = GetMenu(hwnd)
+    if bar == 0:
+        return String("menu 0")
+    var lines = String("")
+    var total = 0
+    var count = Int(GetMenuItemCount(bar))
+    for i in range(count):
+        var title = _item_text(GetMenuStringW, bar, i)
+        var sub = GetSubMenu(bar, c_int(i))
+        if sub == 0:
+            continue
+        var sub_count = Int(GetMenuItemCount(sub))
+        for j in range(sub_count):
+            var name = _item_text(GetMenuStringW, sub, j)
+            if name.byte_length() == 0:
+                # A separator has no name. It is a line on the screen and
+                # nothing to a person naming a command.
+                continue
+            var id = Int(GetMenuItemID(sub, c_int(j)))
+            lines += (
+                "  " + title + " > " + name + " (" + String(id) + ")\n"
+            )
+            total += 1
+    return String("menu ") + String(total) + "\n" + lines
 
 
 def invoke(hwnd: Int, path: StringSlice) raises -> String:

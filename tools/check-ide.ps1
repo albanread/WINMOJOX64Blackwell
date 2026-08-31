@@ -681,6 +681,57 @@ if ($reached -eq 3) {
     Record 'view-menu' 'FAIL' "$reached of 3 view items reachable"
 }
 
+# 33. Every menu item names a command that exists.
+# The bar is the feature list a person can see, so an item wired to nothing
+# is a promise the program breaks. `menu list` reads the live menu rather
+# than a list written down here, so it cannot drift from what is on screen;
+# what is written down is the expectation that each item's id is handled,
+# which is checked against the window procedure's source. Reading and firing
+# are separate verbs because a walk that fired every item would stop at
+# File > Exit and would put a Save As dialog in front of the rest.
+$out = Ask 'menu list'
+$rows = @([regex]::Matches($out, '(?m)^\s+(.+?) \((\d+)\)\s*$'))
+$src = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'ide\griddle.mojo') -Raw
+$unhandled = @()
+foreach ($row in $rows) {
+    $id = $row.Groups[2].Value
+    if ($src -notmatch "which == $id\b") { $unhandled += $row.Groups[1].Value }
+}
+$expected = @('File > New', 'Edit > Cut', 'Edit > Copy', 'Edit > Paste',
+              'Go > Definition', 'View > Toolchain', 'Build > Step Out')
+$absent = @($expected | Where-Object { $out -notmatch [regex]::Escape($_) })
+if ($rows.Count -lt 40) {
+    Record 'menu-complete' 'FAIL' "only $($rows.Count) items in the bar"
+} elseif ($absent.Count -gt 0) {
+    Record 'menu-complete' 'FAIL' "missing: $($absent -join ', ')"
+} elseif ($unhandled.Count -gt 0) {
+    Record 'menu-complete' 'FAIL' "wired to nothing: $($unhandled -join ', ')"
+} else {
+    Record 'menu-complete' 'PASS' "$($rows.Count) items, every one handled"
+}
+
+# 34. Copy and paste round-trip through the real Windows clipboard.
+# Not a self-consistency check: PowerShell reads and writes the clipboard
+# with the same API every other Windows program uses, so this proves the
+# format -- CF_UNICODETEXT, CRLF, a NUL terminator -- and not merely that
+# Griddle agrees with itself. Both halves in ONE process, because each launch
+# starts on a fresh document and the mark has to survive from paste to copy.
+$mark = "griddle-clipboard-" + (Get-Random)
+Set-Clipboard -Value $mark
+$out = Ask "goto 1;;paste;;move all;;copy"
+$back = ''
+# Flattened before comparing: without -Raw honoured this comes back as an
+# array of lines, and .Contains on an array is exact element equality, which
+# a line that merely starts with the mark fails.
+try { $back = (Get-Clipboard) -join "`n" } catch { }
+if ($out -notmatch 'pasted \d+ bytes') {
+    Record 'clipboard' 'FAIL' 'paste did not take what Windows held'
+} elseif ($back -like "*$mark*") {
+    Record 'clipboard' 'PASS' 'pasted from Windows and copied back to it'
+} else {
+    Record 'clipboard' 'FAIL' 'copy did not reach the Windows clipboard'
+}
+
 # ---- summary ---------------------------------------------------------------
 $bad = @($results | Where-Object Verdict -eq 'FAIL').Count
 Write-Host ""
