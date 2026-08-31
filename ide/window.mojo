@@ -30,6 +30,7 @@ from ide.caret import is_simple
 from ide.chrome import Chrome, Layout
 from ide.doc import Doc, Grid, LINE_H, Snapshot
 from ide.edit import (
+    restate_dirty,
     apply,
     backspace,
     byte_at,
@@ -1839,7 +1840,8 @@ def save_as(hwnd: Int, path: String) raises -> String:
     except err:
         return String("cannot write ") + path + ": " + String(err)
 
-    doc[].dirty = False
+    doc[].saved_depth = len(doc[].past)
+    restate_dirty(doc[])
     var full = absolute(path)
     var was = doc[].uri
     doc[].uri = file_uri(full)

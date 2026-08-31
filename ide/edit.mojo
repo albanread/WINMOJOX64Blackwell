@@ -86,6 +86,26 @@ def selection_bytes(doc: Doc) -> Tuple[Int, Int]:
     return (a, b) if a <= b else (b, a)
 
 
+def restate_dirty(mut doc: Doc):
+    """Work out whether the document differs from what is on disk.
+
+    Not a flag that edits set and saves clear: that version can only ever go
+    one way, so undoing every edit you made leaves an editor insisting you
+    have unsaved work and a person saving a file they never changed.
+
+    The measure is the depth of the undo history. Saving records how deep it
+    was; the document is clean whenever it is that deep again, whether it got
+    there by undoing or by redoing. A depth of -1 means the history has been
+    trimmed past the saved point and there is no way back to it, so the
+    document is dirty from then on -- which is true, and the safe direction to
+    be wrong in if it ever were not.
+
+    Args:
+        doc: The document.
+    """
+    doc.dirty = doc.saved_depth < 0 or len(doc.past) != doc.saved_depth
+
+
 def remember(mut doc: Doc):
     """Push the document onto the history, before it changes.
 
@@ -101,6 +121,12 @@ def remember(mut doc: Doc):
         for i in range(1, len(doc.past)):
             kept.append(doc.past[i].copy())
         doc.past = kept^
+        # The saved point has just moved down one. If it fell off the bottom
+        # there is no longer a sequence of undos that reaches it, and saying
+        # so is more honest than a depth that would coincidentally match
+        # again a thousand edits later.
+        if doc.saved_depth >= 0:
+            doc.saved_depth -= 1
     # A new edit ends the future. Keeping it would mean a history that forks,
     # which no editor offers and nobody can hold in their head.
     doc.future.clear()
@@ -127,7 +153,7 @@ def apply(mut doc: Doc, start: Int, end: Int, var text: String) raises:
     var added = len(text.as_bytes())
     doc.rope = doc.rope.replace(start, end, text^)
     doc.revision += 1
-    doc.dirty = True
+    restate_dirty(doc)
     var where = caret_of_byte(doc.rope, start + added)
     doc.caret_line = where[0]
     doc.caret_col = where[1]
@@ -318,7 +344,7 @@ def undo(mut doc: Doc) raises -> Bool:
     doc.anchor_line = was.anchor_line
     doc.anchor_col = was.anchor_col
     doc.revision += 1
-    doc.dirty = True
+    restate_dirty(doc)
     return True
 
 
@@ -334,7 +360,7 @@ def redo(mut doc: Doc) raises -> Bool:
     doc.anchor_line = next.anchor_line
     doc.anchor_col = next.anchor_col
     doc.revision += 1
-    doc.dirty = True
+    restate_dirty(doc)
     return True
 
 

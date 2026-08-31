@@ -122,6 +122,11 @@ struct Doc(Movable):
     var anchor_col: Int
     # Changed since it was opened or last saved.
     var dirty: Bool
+    # How deep the undo history was when this document was last saved, so
+    # undoing back to that point can report the document clean again. -1 means
+    # the way back has been lost -- see `remember`, which drops the oldest
+    # snapshot once the history is full.
+    var saved_depth: Int
     # Where the document has been, and where it was going before someone
     # changed their mind. A new edit clears the redo stack, because a history
     # that forks is a history nobody can reason about.
@@ -193,6 +198,7 @@ struct Doc(Movable):
         self.anchor_line = 0
         self.anchor_col = 0
         self.dirty = False
+        self.saved_depth = 0
         self.past = List[Snapshot]()
         self.future = List[Snapshot]()
         self.pending = 0

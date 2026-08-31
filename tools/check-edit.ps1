@@ -149,6 +149,11 @@ $cases = @(
     @{n='undo-restores-bytes'; f='a'; c='type abc;;undo;;state'; w='bytes=31'}
 
     # ---- document state -------------------------------------------------
+    # Undoing back to where you started is being back where you started.
+    # A flag that edits set and saves clear can only go one way, and leaves an
+    # editor insisting on unsaved work that no longer exists.
+    @{n='undo-returns-to-clean'; f='a'; c='type X;;undo;;dirty'; w='dirty no'}
+    @{n='redo-is-dirty-again'; f='a'; c='type X;;undo;;redo;;dirty'; w='dirty yes'}
     @{n='clean-when-opened'; f='a'; c='state'; w='dirty=False'}
     @{n='revision-advances'; f='a'; c='type a;;state'; w='rev=1'}
     @{n='bytes-grow'; f='a'; c='type abc;;state'; w='bytes=34'}
