@@ -39,6 +39,13 @@ $utf8 = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText($uni,
     "$([char]0xD83D)$([char]0xDE00)x`n$([char]0x4E2D)$([char]0x6587)y`n", $utf8)
 
+# A third fixture, for the indentation rules. Mojo's syntax is its
+# indentation, so what Enter does with it is not a convenience here.
+$code = Join-Path $dir 'code.mojo'
+[System.IO.File]::WriteAllText($code,
+    "def main():`n    var x = 1`nprint(`"a:`")`nif y:  # why`n        deep = 1`n",
+    $utf8)
+
 $TAB = [char]9
 
 function Drive($fixture, $commands) {
@@ -79,6 +86,22 @@ $cases = @(
     @{n='enter-splits-after'; f='a'; c='caret 0 5;;enter;;text 2'; w='(?m)^ beta$'}
     @{n='enter-adds-a-line'; f='a'; c='enter;;state'; w='lines=5'}
     @{n='enter-moves-caret'; f='a'; c='caret 0 5;;enter;;caret'; w='line=1 col=0'}
+    # Indentation. The first is the rule that makes the language typeable;
+    # the rest are the ways a naive version of it goes wrong.
+    @{n='enter-indents-after-colon'; f='c'; c='caret 0 11;;enter;;type X;;text';
+      w='(?m)^    X$'}
+    @{n='enter-keeps-indentation'; f='c'; c='caret 1 13;;enter;;type X;;text';
+      w='(?m)^    X$'}
+    # A colon inside a string opens nothing: print("a:") is not a block.
+    @{n='enter-ignores-colon-in-string'; f='c'; c='caret 2 11;;enter;;type X;;text';
+      w='(?m)^X$'}
+    # ...but one before a comment does, so `if y:  # why` still indents.
+    @{n='enter-sees-past-a-comment'; f='c'; c='caret 3 12;;enter;;type X;;text';
+      w='(?m)^    X$'}
+    # Splitting inside the indentation carries only what was before the
+    # caret; the rest stays with the text it belongs to.
+    @{n='enter-splits-indentation'; f='c'; c='caret 4 4;;enter;;type X;;text';
+      w='(?m)^    X    deep = 1$'}
     @{n='enter-at-line-start'; f='a'; c='enter;;text 2'; w='(?m)^alpha beta$'}
 
     # ---- selection ------------------------------------------------------
@@ -133,7 +156,9 @@ $cases = @(
 )
 
 foreach ($c in $cases) {
-    $fixture = if ($c.f -eq 'u') { $uni } else { $ascii }
+    $fixture = $ascii
+    if ($c.f -eq 'u') { $fixture = $uni }
+    elseif ($c.f -eq 'c') { $fixture = $code }
     $out = Drive $fixture $c.c
     if ($out -match $c.w) {
         Record $c.n 'PASS' ''

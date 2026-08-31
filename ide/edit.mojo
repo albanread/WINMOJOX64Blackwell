@@ -189,9 +189,116 @@ def delete_forward(mut doc: Doc) raises:
     apply(doc, at, to_byte, String(""))
 
 
+comptime INDENT = 4
+"""Spaces per level. Mojo is written with spaces and this fork's own tree has
+no tabs in it; an editor that inserts one produces a file that looks right
+here and wrong everywhere else."""
+
+
+def leading_space(line: String) -> String:
+    """The whitespace a line begins with, verbatim.
+
+    Verbatim rather than counted, because a file that is indented with tabs
+    should keep being indented with tabs even by an editor that would not have
+    chosen them. Copying what is there cannot make a file inconsistent; a
+    count and a re-render can.
+
+    Args:
+        line: The line.
+
+    Returns:
+        Its leading run of spaces and tabs.
+    """
+    var bytes = line.as_bytes()
+    var i = 0
+    while i < len(bytes):
+        var c = Int(bytes[i])
+        if c != 0x20 and c != 0x09:
+            break
+        i += 1
+    return String(line[byte=0:i])
+
+
+def opens_a_block(line: String) -> Bool:
+    """Whether a line ends in a colon, ignoring a trailing comment.
+
+    The rule that makes an indentation-significant language bearable to type:
+    `def main():` and the next line should already be indented. The comment is
+    stripped first so `if x:  # why` counts, and a colon inside a string does
+    not -- `print("a:")` opens nothing.
+
+    Args:
+        line: The line.
+
+    Returns:
+        True when the next line belongs inside a new block.
+    """
+    var bytes = line.as_bytes()
+    var n = len(bytes)
+    var last = -1
+    var i = 0
+    var quote = 0
+    while i < n:
+        var c = Int(bytes[i])
+        if quote != 0:
+            if c == 0x5C:
+                i += 2
+                continue
+            if c == quote:
+                quote = 0
+            i += 1
+            continue
+        if c == 0x22 or c == 0x27:
+            quote = c
+            i += 1
+            continue
+        if c == 0x23:  # a comment: nothing after it is code
+            break
+        if c != 0x20 and c != 0x09:
+            last = c
+        i += 1
+    return last == 0x3A  # ':'
+
+
 def newline(mut doc: Doc) raises:
-    """Split the line at the caret."""
-    insert(doc, String("\n"))
+    """Split the line at the caret, keeping the indentation.
+
+    Two rules, and no more: the new line starts with whatever the old one
+    started with, and one level deeper when the old one ended in a colon.
+    Anything cleverer -- guessing dedents, re-indenting what is already there
+    -- is an editor moving code a person did not ask it to move, and in a
+    language where indentation is the syntax that is not a small thing to be
+    wrong about.
+    """
+    var here = doc.rope.line(doc.caret_line)
+    var indent = leading_space(here)
+    if opens_a_block(here):
+        indent += " " * INDENT
+    # The caret's own column matters: splitting a line in the middle should
+    # not carry the indentation of text that is staying behind. Only the part
+    # of the indentation that is actually before the caret is copied.
+    var units = _units_before_col(here, doc.caret_col)
+    if units < indent.byte_length():
+        var cut = String(indent[byte=0:units])
+        indent = cut^
+    insert(doc, String("\n") + indent)
+
+
+def _units_before_col(line: String, col: Int) -> Int:
+    """How many bytes of a line precede a UTF-16 column.
+
+    Only ever asked about the leading whitespace, which is ASCII, so this is
+    the simple walk rather than the general one.
+
+    Args:
+        line: The line.
+        col: A UTF-16 offset into it.
+
+    Returns:
+        The byte offset, clamped to the line's length.
+    """
+    var n = line.byte_length()
+    return n if col >= n else col
 
 
 def undo(mut doc: Doc) raises -> Bool:
