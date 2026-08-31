@@ -240,3 +240,7 @@ mojo/docs/releases/nightly.md
 # COM spike oracle, built on demand by run-com-checks.ps1
 spikes/com/oracle_stream.dll
 spikes/com/*.obj
+
+# Griddle writes where you left off into the project it opened. That is
+# one developer's window state, not a fact about the project.
+.griddle-session.json

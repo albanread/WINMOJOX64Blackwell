@@ -17,6 +17,7 @@
 # in NSTask over there; everything between the two -- the framing, the
 # dispatch, the diagnostics, the completions -- is the same code.
 from ide.json import JSON, parse
+from ide.symbols import clear_symbols, symbols_request_id, take_symbols
 from ide.pipeutf8 import take_chunk
 from ide.pipes import Child, kill, read_some, set_env, spawn, write_all
 from std.memory import OpaquePointer, Pointer, alloc
@@ -980,6 +981,8 @@ def _handle(var msg: JSON):
                 g_sig_request()[] = 0
                 _put_sig(String(), String())
                 g_sig_serial()[] += 1
+            elif bad == symbols_request_id():
+                clear_symbols()
             elif bad == g_ren_request()[]:
                 g_ren_request()[] = 0
                 clear_rename()
@@ -1015,6 +1018,16 @@ def _handle(var msg: JSON):
         if id == g_ren_request()[] and id != 0:
             g_ren_request()[] = 0
             _take_rename(msg.get("result")[])
+            return
+        # Document symbols live in their own module because they are a view
+        # rather than a piece of the protocol's plumbing, but a reply can only
+        # be recognised here -- an id this dispatch does not claim is dropped
+        # on the floor, silently, which is the correct behaviour for a stray
+        # message and a mystery for a feature. `take_symbols` clears its own
+        # outstanding id, which is what makes a late or duplicate reply
+        # harmless.
+        if id == symbols_request_id() and id != 0:
+            take_symbols(msg.get("result")[])
             return
         if id == g_comp_request()[] and id != 0:
             # Answered, whatever we do with it: leaving the id live would let
@@ -1083,12 +1096,45 @@ def _collect_completions(items: JSON):
         i += 1
 
 
+# The one thing the server says that means "I have finished reading this
+# file". It publishes diagnostics for a document when its parse completes,
+# empty list and all, so a question that is only answerable from a finished
+# parse can wait for this rather than for a guessed number of milliseconds.
+comptime g_parse_serial = named_global["lsp.parse.serial", Int]
+comptime g_parsed_uri = named_global["lsp.parse.uri", List[String]]
+
+
+def parse_serial() -> Int:
+    """How many documents have finished parsing since the server started.
+
+    Returns:
+        A number that only goes up.
+    """
+    return g_parse_serial()[]
+
+
+def parsed_uri() -> String:
+    """Which document the last parse was of.
+
+    Returns:
+        The uri, or empty before the first one.
+    """
+    var slot = g_parsed_uri()
+    return slot[][0] if len(slot[]) > 0 else String()
+
+
 def _take_diagnostics(params: JSON):
     # A publish replaces that document's set and touches no other. The server
     # sends one of these per document it is watching, so clearing everything
     # here -- which is what this used to do -- meant the last file to be
     # analysed owned the display.
     let uri = params.get("uri")[].as_string()
+    g_parse_serial()[] += 1
+    var seen = g_parsed_uri()
+    if len(seen[]) == 0:
+        seen[].append(uri)
+    else:
+        seen[][0] = uri
     _drop_diagnostics_for(uri)
     let list = params.get("diagnostics")[]
     var i = 0

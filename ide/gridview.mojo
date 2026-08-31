@@ -58,6 +58,7 @@ from ide.diagnostics import (
     on_line,
 )
 from ide.find import matches_in_line
+from ide.symbols import symbol_at, symbol_count, symbol_kind_name
 from ide.lsp import (
     hover_text,
     reference_character,
@@ -2173,3 +2174,114 @@ def draw_variables(chrome: Chrome, region: D2D_RECT_F) raises:
         "ID2D1RenderTarget",
         "PopAxisAlignedClip",
     ](this)(this)
+
+
+def draw_outline(chrome: Chrome, region: D2D_RECT_F) raises:
+    """The file's symbols, in the issues pane, indented by nesting.
+
+    The fourth list to use this one pane. It earns the space the same way the
+    others do -- it is a list of places in a file, and the pane is where lists
+    of places go -- and it is worth more here than in a sidebar of its own,
+    because the sidebar already holds the project tree and a person reading
+    one file does not want half their window spent on two trees.
+
+    Args:
+        chrome: The render target and text format.
+        region: The issues pane.
+
+    Raises:
+        If DirectWrite refuses.
+    """
+    if chrome.target == 0 or chrome.text_format == 0:
+        return
+    var total = symbol_count()
+
+    var this = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.target
+    )
+    var dwrite = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.dwrite
+    )
+    var ink = _brush(chrome.target, INK)
+    var dim = _brush(chrome.target, DIM)
+    if ink == 0:
+        return
+
+    var clip = region
+    com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[D2D_RECT_F, MutAnyOrigin],
+            UInt32,
+        ) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PushAxisAlignedClip",
+    ](this)(this, com_addr(clip), UInt32(0))
+    _ = clip
+
+    var heading = String("OUTLINE  ") + String(total)
+    if total == 0:
+        heading = String("OUTLINE  none")
+    var head_layout = _make_layout(dwrite, chrome, heading, 100000.0)
+    if head_layout != 0:
+        _draw_layout(
+            this, head_layout, dim if dim != 0 else ink,
+            region.left + scaled(12, chrome.scale),
+            region.top + scaled(6, chrome.scale),
+        )
+        _release(head_layout)
+
+    var rows = Int(
+        (region.bottom - region.top - scaled(ISSUE_TOP_PAD, chrome.scale))
+        / scaled(ISSUE_ROW_H, chrome.scale)
+    )
+    var n = 0
+    while n < total and n < rows:
+        var y = (
+            region.top
+            + scaled(ISSUE_TOP_PAD, chrome.scale)
+            + Float32(n) * scaled(ISSUE_ROW_H, chrome.scale)
+        )
+        var one = symbol_at(n)
+        # The indent is drawn as text rather than as an x offset because the
+        # font is monospaced and spaces are therefore exact, and because a
+        # row that starts at the pane's left edge can be hit-tested by its y
+        # alone -- an indented row whose x mattered would need the click
+        # handler to know the same arithmetic.
+        var text = (
+            " " * (one.depth * 2) + one.name + "   " + symbol_kind_name(one.kind)
+        )
+        var layout = _make_layout(dwrite, chrome, text, 100000.0)
+        if layout != 0:
+            _draw_layout(
+                this, layout, ink, region.left + scaled(26, chrome.scale), y
+            )
+            _release(layout)
+        n += 1
+    _release(ink)
+    if dim != 0:
+        _release(dim)
+
+    com_method_of[
+        def (OpaquePointer[MutUntrackedOrigin]) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PopAxisAlignedClip",
+    ](this)(this)
+
+
+def outline_row_at(region: D2D_RECT_F, y: Float32, scale: Float32) -> Int:
+    """Which symbol a click at `y` is on, or -1.
+
+    Args:
+        region: The pane.
+        y: A client y coordinate.
+        scale: Device pixels per design pixel.
+
+    Returns:
+        The row index, or -1.
+    """
+    var into = y - region.top - scaled(ISSUE_TOP_PAD, scale)
+    if into < 0:
+        return -1
+    var row = Int(into / scaled(ISSUE_ROW_H, scale))
+    return -1 if row >= symbol_count() else row

@@ -27,6 +27,7 @@ from ide.drop import last as last_drop, simulate
 from ide.gridview import (
     GUTTER_W,
 )
+from ide.symbols import symbols_report
 from ide.window import (
     all_text,
     caret_click,
@@ -56,7 +57,10 @@ from ide.window import (
     hover_at_caret,
     hover_close,
     hover_report,
+    goto_symbol,
     hover_wait,
+    outline,
+    outline_wait,
     jump_back,
     goto_reference,
     build_file,
@@ -580,6 +584,24 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             return hover_wait(hwnd, ms)
         return hover_at_caret(hwnd)
 
+    # The outline is a fourth of the same shape, with one addition: `outline
+    # <text>` goes to a symbol, which is what the shortcut does, and what a
+    # person means when they name one.
+    if verb == "outline" or verb == "symbols":
+        if rest == "show":
+            return symbols_report()
+        if rest == "close":
+            return pane_problems(hwnd)
+        if rest.startswith("wait"):
+            var ms = 8000
+            var sp = rest.find(" ")
+            if sp > 0:
+                ms = Int(String(rest[byte=sp + 1 :]).strip())
+            return outline_wait(hwnd, ms)
+        if rest.byte_length() > 0:
+            return goto_symbol(hwnd, rest)
+        return outline(hwnd)
+
     if verb == "references" or verb == "refs":
         # `references N` goes to the nth, the way `issues N` does -- one verb
         # shape for two lists that are read the same way.
@@ -665,9 +687,17 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             return breakpoints_report(hwnd)
         if rest == "clear":
             return clear_breakpoints(hwnd)
-        if rest.byte_length() > 0:
-            return toggle_breakpoint(hwnd, Int(rest) - 1)
-        return toggle_breakpoint(hwnd, -1)
+        # `break N if <expression>` stops there only when it holds.
+        var when = String("")
+        var body = rest
+        var gate = body.find(" if ")
+        if gate > 0:
+            when = String(String(body[byte=gate + 4 :]).strip())
+            var head = String(String(body[byte=0:gate]).strip())
+            body = head^
+        if body.byte_length() > 0:
+            return toggle_breakpoint(hwnd, Int(body) - 1, when)
+        return toggle_breakpoint(hwnd, -1, when)
 
     if verb == "search":
         # Results land in the output pane, written the way a compiler writes a

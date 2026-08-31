@@ -33,6 +33,7 @@ from ide.doc import (
     Grid,
     LINE_H,
     PANE_ISSUES,
+    PANE_OUTLINE,
     PANE_REFERENCES,
     PANE_VARIABLES,
     Snapshot,
@@ -58,7 +59,18 @@ from ide.edit import (
 )
 from ide.diagnostics import count_for_shown, nth_visible, summary
 from ide.find import find_next, find_prev, select_match
+from ide.symbols import (
+    clear_symbols,
+    matching_symbols,
+    request_symbols,
+    symbol_at,
+    symbol_count,
+    symbols_report,
+    symbols_serial,
+)
 from ide.lsp import (
+    parse_serial,
+    parsed_uri,
     did_change,
     did_open,
     g_diag_col,
@@ -101,6 +113,7 @@ from ide.gridview import (
     frame_rows,
     set_stop_line,
     set_variable_rows,
+    outline_row_at,
     output_row_at,
     tab_at,
     tree_row_at,
@@ -448,6 +461,23 @@ def caret_click(hwnd: Int, x: Int, y: Int) raises -> String:
             if where.byte_length() > 0 and frame_line(row) >= 0:
                 return jump_to(hwnd, file_uri(where), frame_line(row), 0)
             return String("that frame has no source")
+
+    if doc[].pane_mode == PANE_OUTLINE:
+        var out_of = full.issues()
+        if (
+            Float32(x) >= out_of.left
+            and Float32(x) < out_of.right
+            and Float32(y) >= out_of.top
+            and Float32(y) <= out_of.bottom
+        ):
+            var row = outline_row_at(out_of, Float32(y), scale)
+            if row < 0:
+                return String("the outline pane")
+            var one = symbol_at(row)
+            _ = caret_move(hwnd, one.line, one.column)
+            follow_caret(hwnd)
+            _touch(hwnd)
+            return String("went to ") + one.name
 
     # A diagnostic in the output pane is a place, and clicking a place
     # should go there. This is the edit-build-fix loop closing: the compiler
@@ -3158,12 +3188,16 @@ def reload_document(hwnd: Int) raises -> String:
 # ===----------------------------------------------------------------------===#
 
 
-def toggle_breakpoint(hwnd: Int, line: Int) raises -> String:
+def toggle_breakpoint(
+    hwnd: Int, line: Int, condition: String = String("")
+) raises -> String:
     """Put a breakpoint on a line, or take it off.
 
     Args:
         hwnd: The window.
         line: Zero-based. A negative line means the caret's own.
+        condition: An expression the debugger evaluates before stopping, or
+            empty to stop every time.
 
     Returns:
         What happened.
@@ -3178,6 +3212,8 @@ def toggle_breakpoint(hwnd: Int, line: Int) raises -> String:
     for i in range(len(doc[].breakpoints)):
         if doc[].breakpoints[i] == at:
             _ = doc[].breakpoints.pop(i)
+            if i < len(doc[].breakpoint_conditions):
+                _ = doc[].breakpoint_conditions.pop(i)
             _touch(hwnd)
             return String("breakpoint cleared at ") + String(at + 1)
     # Kept in order so the gutter and any list read the same way round, and so
@@ -3188,7 +3224,18 @@ def toggle_breakpoint(hwnd: Int, line: Int) raises -> String:
             where = i
             break
     doc[].breakpoints.insert(where, at)
+    doc[].breakpoint_conditions.insert(where, condition)
     _touch(hwnd)
+    if condition.byte_length() > 0:
+        # Said out loud, because a conditional breakpoint that silently
+        # behaves like an unconditional one is worse than no feature: a person
+        # would sit through every iteration wondering what they got wrong.
+        return (
+            String("breakpoint set at ") + String(at + 1) + " when "
+            + condition
+            + "  (this toolchain's debugger ignores conditions and will stop"
+            + " every time -- see docs/debugger-conditions.md)"
+        )
     return String("breakpoint set at ") + String(at + 1)
 
 
@@ -3225,8 +3272,15 @@ def breakpoints_report(hwnd: Int) raises -> String:
     """
     var doc = _doc_at(hwnd)
     var out = String("breakpoints ") + String(len(doc[].breakpoints)) + "\n"
-    for at in doc[].breakpoints:
-        out += String(at + 1) + ": " + doc[].rope.line(at).strip() + "\n"
+    for i in range(len(doc[].breakpoints)):
+        var at = doc[].breakpoints[i]
+        out += String(at + 1) + ": " + String(doc[].rope.line(at).strip())
+        if (
+            i < len(doc[].breakpoint_conditions)
+            and doc[].breakpoint_conditions[i].byte_length() > 0
+        ):
+            out += "   when " + doc[].breakpoint_conditions[i]
+        out += "\n"
     return out^
 
 
@@ -3331,6 +3385,7 @@ def debug_file(hwnd: Int) raises -> String:
 
 
 comptime g_debug_pending = named_global["ide.debugpending", Int]
+comptime g_was_debugging = named_global["ide.wasdebugging", Int]
 
 
 def debug_after_build(hwnd: Int) raises -> Bool:
@@ -3419,8 +3474,11 @@ def debug_launch(hwnd: Int) raises -> String:
         var lines = List[Int]()
         for at in other[].breakpoints:
             lines.append(at)
+        var whens = List[String]()
+        for when in other[].breakpoint_conditions:
+            whens.append(when)
         asked += len(lines)
-        var got = set_breakpoints(where, lines)
+        var got = set_breakpoints(where, lines, whens)
         if got > 0:
             verified += got
     configuration_done()
@@ -3539,6 +3597,15 @@ def debug_poll(hwnd: Int) raises -> Bool:
         set_stop_line(-1, debugging())
         if not debugging():
             set_variable_rows(List[String](), 0)
+            # A debug session that ends says so. Without this a person presses
+            # F5, the program runs to completion, the marks quietly disappear
+            # and nothing anywhere says whether it finished or fell over.
+            if g_was_debugging()[] != 0:
+                g_was_debugging()[] = 0
+                append_output(String("\n[the debuggee ended]\n"))
+                _doc_at(hwnd)[].pane_mode = PANE_ISSUES
+        else:
+            g_was_debugging()[] = 1
     _touch(hwnd)
     return True
 
@@ -4033,3 +4100,156 @@ def clear_temporary_breakpoint(hwnd: Int) raises:
     for at in doc[].breakpoints:
         lines.append(at)
     _ = set_breakpoints(path, lines)
+
+
+# ===----------------------------------------------------------------------===#
+# The shape of the file
+#
+# The outline is the one LSP feature whose answer is about the whole document
+# rather than about a position in it, which is why it can be asked for once
+# and then read many times: the reply is still true after the caret moves. It
+# goes stale when the text changes, and `outline` is cheap enough to re-ask
+# rather than track that.
+# ===----------------------------------------------------------------------===#
+
+
+comptime g_outline_mark = named_global["ide.outline.mark", Int]
+
+
+def outline(hwnd: Int) raises -> String:
+    """Ask the server what is in this file, and show it in the pane.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What was asked, or why it was not.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    if doc[].uri.byte_length() == 0 or not is_ready():
+        return String("no language server for this document")
+    sync(hwnd)
+    doc[].pane_mode = PANE_OUTLINE
+    # The mark is taken here rather than in the wait, because a reply can
+    # arrive in between: documentSymbol is answered from an already-parsed
+    # tree and comes back in single-digit milliseconds, which is faster than
+    # a person -- or a check driving one command after another -- can get to
+    # the next line. A wait that sampled the serial itself would sample it
+    # after the answer had already bumped it, and then wait out its whole
+    # deadline for a second answer that nobody asked for.
+    g_outline_mark()[] = symbols_serial()
+    _ = request_symbols(doc[].uri)
+    _touch(hwnd)
+    return String("asked what is in this file")
+
+
+def outline_wait(hwnd: Int, milliseconds: Int) raises -> String:
+    """Pump until the outline arrives.
+
+    Args:
+        hwnd: The window.
+        milliseconds: How long to wait.
+
+    Returns:
+        The outline, or that nothing came.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    var before = g_outline_mark()[]
+    var deadline = perf_counter_ns() + milliseconds * 1_000_000
+    # Up to three asks, because of a thing this server does that is worth
+    # stating plainly: asked for a document's symbols while it is still
+    # parsing that document, it does not say "not yet" -- it answers, with an
+    # empty list or with however much of the file it has read. A spike put
+    # the same question five times to the same unchanged file and got 0, 61,
+    # 0, 0, 0 without a settle and 61 every time with one. So an empty
+    # outline is not evidence of an empty file, and the difference between
+    # the two is another parse.
+    var tries = 0
+    while perf_counter_ns() < deadline:
+        _ = pump(hwnd)
+        if symbols_serial() != before:
+            if symbol_count() > 0 or tries >= 2:
+                _touch(hwnd)
+                return symbols_report()
+            # Nothing came back. Wait for this document's parse to finish --
+            # a diagnostics publish for it, which is the server's only "I
+            # have read this file" -- and ask once more.
+            tries += 1
+            var parsed = parse_serial()
+            while perf_counter_ns() < deadline and (
+                parse_serial() == parsed or parsed_uri() != doc[].uri
+            ):
+                _ = pump(hwnd)
+                _ = settle(hwnd, 10)
+            if perf_counter_ns() >= deadline:
+                return symbols_report()
+            before = symbols_serial()
+            g_outline_mark()[] = before
+            _ = request_symbols(doc[].uri)
+            continue
+        _ = settle(hwnd, 10)
+    return String("no outline arrived")
+
+
+def goto_symbol(hwnd: Int, query: String) raises -> String:
+    """Go to the symbol whose name matches `query`.
+
+    Go-to-symbol without a box to type into: the going-to is the part that is
+    hard and the part a check can drive, and the box is a menu sprint's work.
+    An outline that has not been fetched is fetched, because a person pressing
+    this shortcut has asked a question about the file, not about the cache.
+
+    Args:
+        hwnd: The window.
+        query: Part of a name, matched case-insensitively.
+
+    Returns:
+        Where it went, or what it found instead.
+
+    Raises:
+        If the window has no document.
+    """
+    if symbol_count() == 0:
+        _ = outline(hwnd)
+        var came = outline_wait(hwnd, 10000)
+        if symbol_count() == 0:
+            return came
+    var hits = matching_symbols(query)
+    if len(hits) == 0:
+        return String("no symbol matching ") + repr(query)
+    # The list stays in file order -- a filtered outline that reshuffles on
+    # every keystroke is a different list each time -- but the jump does not
+    # have to take the first line of it. Someone who types a whole name means
+    # that name: `outline` should not land on `g_outline_mark` because that
+    # happens to be defined higher up the file.
+    var want = query.lower()
+    var chosen = hits[0]
+    var best = 2
+    for at in hits:
+        var name = symbol_at(at).name.lower()
+        var rank = 0 if name == want else (1 if name.startswith(want) else 2)
+        if rank < best:
+            best = rank
+            chosen = at
+        if best == 0:
+            break
+    var one = symbol_at(chosen)
+    _ = caret_move(hwnd, one.line, one.column)
+    follow_caret(hwnd)
+    _touch(hwnd)
+    var out = (
+        String("went to ") + one.name + " at " + String(one.line + 1)
+        + ":" + String(one.column + 1)
+    )
+    if len(hits) > 1:
+        # Said, because a person who typed three letters and got the wrong one
+        # of eleven should know there were eleven, rather than conclude the
+        # editor cannot find theirs.
+        out += "  (" + String(len(hits)) + " matched)"
+    return out^

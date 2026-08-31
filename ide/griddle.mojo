@@ -39,7 +39,13 @@ from std.memory import alloc
 from ide.agent import agent_command
 from ide.chrome import Chrome, bring_up, draw, finish, release
 from ide.drop import register as register_drop, revoke as revoke_drop
-from ide.doc import Doc, LINE_H, PANE_REFERENCES, PANE_VARIABLES
+from ide.doc import (
+    Doc,
+    LINE_H,
+    PANE_OUTLINE,
+    PANE_REFERENCES,
+    PANE_VARIABLES,
+)
 from ide.gridview import (
     draw_hover,
     draw_variables,
@@ -50,6 +56,7 @@ from ide.gridview import (
     draw_tree,
     set_tab_labels,
     draw_popup,
+    draw_outline,
     draw_references,
     draw_text,
     release_cache,
@@ -102,6 +109,7 @@ from ide.window import (
     save_dialog,
     definition_at_caret,
     hover_at_caret,
+    outline,
     hover_close,
     hover_is_open,
     jump_back,
@@ -353,6 +361,8 @@ def griddle_wndproc(
                         # calls this is not reading the problem list.
                         if doc[].pane_mode == PANE_VARIABLES:
                             draw_variables(chrome[], layout.issues())
+                        elif doc[].pane_mode == PANE_OUTLINE:
+                            draw_outline(chrome[], layout.issues())
                         elif doc[].pane_mode == PANE_REFERENCES:
                             draw_references(
                                 doc[].grid, chrome[], layout.issues()
@@ -571,6 +581,13 @@ def griddle_wndproc(
                     # Ctrl+Shift+F, the search-everywhere chord every editor
                     # shares. Plain Ctrl+F stays with the document.
                     print("griddle:", search_in_project(hwnd, find_needle(hwnd)))
+                elif wparam == ord("O") and shift:
+                    # Ctrl+Shift+O, the go-to-symbol chord, opposite Ctrl+O
+                    # for open the way Ctrl+Shift+F sits opposite Ctrl+F.
+                    # Without a box to type into it shows the outline, which
+                    # is the half of the feature that is worth having on its
+                    # own: a list of what is in this file, clickable.
+                    print("griddle:", outline(hwnd))
                 elif wparam == ord("O"):
                     print("griddle:", open_dialog(hwnd))
                 elif wparam == ord("B"):

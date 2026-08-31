@@ -614,7 +614,11 @@ def _clear_variables():
 
 
 # ── Configuration ───────────────────────────────────────────────────────────
-def set_breakpoints(source: String, lines: List[Int]) raises -> Int:
+def set_breakpoints(
+    source: String,
+    lines: List[Int],
+    conditions: List[String] = List[String](),
+) raises -> Int:
     """Set every breakpoint for one file, replacing whatever was there.
 
     DAP has no "add one breakpoint": `setBreakpoints` is the complete set for
@@ -656,6 +660,21 @@ def set_breakpoints(source: String, lines: List[Int]) raises -> Int:
         # `- 1` in `_take_stack` are the only two places the two conventions
         # touch, and they have to stay a matched pair.
         one.set(String("line"), JSON(lines[i] + 1))
+        # A condition, when this breakpoint has one. Sent only when it is
+        # not empty: an empty string is a condition that is always false in
+        # some adapters and always true in others, and neither is "no
+        # condition".
+        #
+        # Correct on the wire and ignored at the other end, on this
+        # toolchain. Verified by logging the request -- the adapter receives
+        # {"line": 9, "condition": "False"} and stops anyway, as it does for
+        # `1 == 2` and for any expression over a local. LLDB fails safe when
+        # a breakpoint condition cannot be evaluated, and the Mojo expression
+        # evaluator in this build cannot evaluate one. The field stays because
+        # it is right and costs nothing; what must not happen is an editor
+        # implying it works. See docs/debugger-conditions.md.
+        if i < len(conditions) and conditions[i].byte_length() > 0:
+            one.set(String("condition"), JSON(conditions[i]))
         wanted.push(one^)
 
     var where = JSON.object()

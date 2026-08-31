@@ -25,6 +25,7 @@ from ide.rope import Rope
 comptime PANE_ISSUES = 0
 comptime PANE_REFERENCES = 1
 comptime PANE_VARIABLES = 2
+comptime PANE_OUTLINE = 3
 """What the bottom-left pane is showing.
 
 One pane and three lists rather than three panes: the bottom of the window is
@@ -148,6 +149,11 @@ struct Doc(Movable):
     # particular session: you set them, you run, you fix something, you run
     # again, and they are still where you put them.
     var breakpoints: List[Int]
+    # One condition per breakpoint, in the same order, empty for the ones with
+    # none. Two parallel lists rather than a list of pairs because a
+    # breakpoint is a line first and a condition only sometimes, and every
+    # place that only wants the lines would otherwise have to unpack them.
+    var breakpoint_conditions: List[String]
     # Where the document has been, and where it was going before someone
     # changed their mind. A new edit clears the redo stack, because a history
     # that forks is a history nobody can reason about.
@@ -222,6 +228,7 @@ struct Doc(Movable):
         self.saved_depth = 0
         self.disk_stamp = 0
         self.breakpoints = List[Int]()
+        self.breakpoint_conditions = List[String]()
         self.past = List[Snapshot]()
         self.future = List[Snapshot]()
         self.pending = 0
