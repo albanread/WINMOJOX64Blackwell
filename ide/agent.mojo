@@ -59,9 +59,14 @@ from ide.window import (
     hover_wait,
     jump_back,
     goto_reference,
+    build_file,
+    build_wait,
     is_dirty,
+    output_report,
+    run_file,
     save,
     save_as,
+    stop_build,
     line_height_of,
     line_text,
     open_path,
@@ -557,6 +562,33 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         if rest.byte_length() > 0:
             return goto_reference(hwnd, Int(rest))
         return references_at_caret(hwnd)
+
+    if verb == "run":
+        # F5's verb. The document is saved first, because running the version
+        # on disk while the window shows another one is how a person spends
+        # ten minutes debugging an edit they had not saved.
+        if rest.startswith("wait"):
+            var sp = rest.find(" ")
+            var ms = 30000
+            if sp > 0:
+                ms = Int(String(rest[byte=sp + 1 :]).strip())
+            return build_wait(hwnd, ms)
+        return run_file(hwnd)
+
+    if verb == "build":
+        if rest.startswith("wait"):
+            var sp = rest.find(" ")
+            var ms = 120000
+            if sp > 0:
+                ms = Int(String(rest[byte=sp + 1 :]).strip())
+            return build_wait(hwnd, ms)
+        return build_file(hwnd)
+
+    if verb == "output":
+        return output_report(hwnd)
+
+    if verb == "stop":
+        return stop_build()
 
     if verb == "save":
         # `save` writes where it came from; `save as <path>` writes elsewhere

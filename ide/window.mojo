@@ -93,10 +93,21 @@ from ide.gridview import (
     col_at_x,
     status_line,
 )
+from ide.build import (
+    is_building,
+    output_count,
+    output_line,
+    output_serial,
+    poll as poll_build,
+    start as start_build,
+    stop as stop_build,
+    what_ran,
+)
 from ide.rope import Rope
 from ide.win32 import (
     RECT,
     absolute,
+    env_or,
     dpi_scale,
     drain,
     scaled,
@@ -2077,3 +2088,151 @@ def save_dialog(hwnd: Int) raises -> String:
     if path.byte_length() == 0:
         return String("not saved")
     return save_as(hwnd, path)
+
+
+# ===----------------------------------------------------------------------===#
+# Build and run
+#
+# Milestone 4. The command is composed here because this is where the document
+# and its path are; ide/build.mojo knows about processes and pipes and nothing
+# about which file is open.
+# ===----------------------------------------------------------------------===#
+
+
+def _toolchain() raises -> Tuple[String, String]:
+    """The mojo compiler and the stdlib to build against.
+
+    Overridable by environment for the same reason the language server's path
+    is: a check, a release and a working tree disagree about where the
+    toolchain lives, and none of them should have to patch a source file.
+
+    Returns:
+        The compiler path and the stdlib path, both absolute.
+
+    Raises:
+        Never in practice.
+    """
+    var exe = String(env_or("WINMOJO_MOJO", ""))
+    if exe.byte_length() == 0:
+        exe = String("bazel-bin/KGEN/tools/mojo/mojo.exe")
+    var stdlib = String(env_or("WINMOJO_STDLIB", "mojo/stdlib"))
+    return (absolute(exe), absolute(stdlib))
+
+
+def run_file(hwnd: Int) raises -> String:
+    """Run the open document, with its output in the output pane.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What was started, or why it was not.
+
+    Raises:
+        If the process cannot be created.
+    """
+    var path = document_path(hwnd)
+    if path.byte_length() == 0:
+        return String("save the file first; there is nothing to run")
+    # Saved first, deliberately. Running the version on disk while the window
+    # shows a different one is how a person spends ten minutes debugging an
+    # edit they had not saved.
+    if is_dirty(hwnd):
+        var wrote = save(hwnd)
+        if not wrote.startswith("saved"):
+            return wrote
+    var tools = _toolchain()
+    return start_build(
+        '"' + tools[0] + '" run -I "' + tools[1] + '" -I . "' + path + '"'
+    )
+
+
+def build_file(hwnd: Int) raises -> String:
+    """Compile the open document to an executable beside it.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What was started, or why it was not.
+
+    Raises:
+        If the process cannot be created.
+    """
+    var path = document_path(hwnd)
+    if path.byte_length() == 0:
+        return String("save the file first; there is nothing to build")
+    if is_dirty(hwnd):
+        var wrote = save(hwnd)
+        if not wrote.startswith("saved"):
+            return wrote
+    var out = path
+    if out.endswith(".mojo"):
+        var stem = String(out[byte=0 : out.byte_length() - 5])
+        out = stem^
+    out += ".exe"
+    var tools = _toolchain()
+    return start_build(
+        '"' + tools[0] + '" build --no-optimization -I "' + tools[1]
+        + '" -I . -o "' + out + '" "' + path + '"'
+    )
+
+
+def build_poll(hwnd: Int) raises -> Bool:
+    """Take whatever the child has written and repaint if anything came.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        True if the pane changed.
+
+    Raises:
+        If a pipe read fails.
+    """
+    var changed = poll_build()
+    if changed:
+        _touch(hwnd)
+    return changed
+
+
+def build_wait(hwnd: Int, milliseconds: Int) raises -> String:
+    """Pump until the run finishes, or the time runs out.
+
+    Args:
+        hwnd: The window.
+        milliseconds: How long to wait.
+
+    Returns:
+        The output, or that it is still going.
+
+    Raises:
+        If a pipe read fails.
+    """
+    var deadline = perf_counter_ns() + milliseconds * 1_000_000
+    while perf_counter_ns() < deadline:
+        _ = build_poll(hwnd)
+        if not is_building():
+            return output_report(hwnd)
+        _ = settle(hwnd, 10)
+    return String("still running after ") + String(milliseconds) + " ms"
+
+
+def output_report(hwnd: Int) raises -> String:
+    """The output pane as text, the way the pane shows it.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        `output N` and then a line each.
+
+    Raises:
+        Never in practice.
+    """
+    _ = hwnd
+    var total = output_count()
+    var out = String("output ") + String(total) + "\n"
+    for i in range(total):
+        out += output_line(i) + "\n"
+    return out^

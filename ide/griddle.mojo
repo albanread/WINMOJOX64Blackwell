@@ -43,6 +43,7 @@ from ide.doc import Doc, LINE_H
 from ide.gridview import (
     draw_hover,
     draw_issues,
+    draw_output,
     draw_popup,
     draw_references,
     draw_text,
@@ -50,9 +51,13 @@ from ide.gridview import (
     status_line,
 )
 from ide.window import (
+    build_file,
+    build_poll,
     caret_click,
     complete_at_caret,
     document_path,
+    run_file,
+    stop_build,
     open_dialog,
     retitle,
     save,
@@ -91,6 +96,7 @@ from ide.tsf import Tsf, activate, deactivate
 from ide.win32 import (
     COPYDATASTRUCT,
     absolute,
+    env_or,
     drain,
     MSG,
     RECT,
@@ -334,6 +340,9 @@ def griddle_wndproc(
                             draw_issues(
                                 doc[].grid, chrome[], layout.issues()
                             )
+                        draw_output(
+                            doc[].grid, chrome[], layout.output()
+                        )
                         # Last, and over everything: a popup that the text
                         # can draw on top of is not a popup. The hover box
                         # is the same box and obeys the same rule, and the
@@ -527,6 +536,18 @@ def griddle_wndproc(
                         print("griddle:", save(hwnd))
                 elif wparam == ord("O"):
                     print("griddle:", open_dialog(hwnd))
+                elif wparam == ord("B"):
+                    print("griddle:", build_file(hwnd))
+                return 0
+
+            # F5 runs what is open, Shift+F5 stops it. The document is
+            # saved first; running the version on disk while the window shows
+            # another one is a way to lose an afternoon.
+            if wparam == winkb_constant["VK_F5"]():
+                if shift:
+                    print("griddle:", stop_build())
+                else:
+                    print("griddle:", run_file(hwnd))
                 return 0
 
             # F3 repeats the search; shift reverses it. The needle lives on
@@ -562,6 +583,14 @@ def griddle_wndproc(
         # The language server, drained. Its own timer id, checked against
         # its own window, for the reason the close timer's comment gives.
         if message == UInt32(winkb_constant["WM_TIMER"]()):
+            # A running program's output goes into the pane as it is
+            # produced, on whichever timer happens to tick. Not gated on the
+            # LSP's id: a document with no language server still has to be
+            # able to watch its program run.
+            try:
+                _ = build_poll(hwnd)
+            except:
+                pass
             if wparam == LSP_TIMER_ID:
                 try:
                     _ = lsp_pump(hwnd)
@@ -573,6 +602,15 @@ def griddle_wndproc(
         # the same command the menu does.
         if message == UInt32(winkb_constant["WM_COMMAND"]()):
             var which = wparam & 0xFFFF
+            if which == 1010:  # Build > Run
+                print("griddle:", run_file(hwnd))
+                return 0
+            if which == 1011:  # Build > Build
+                print("griddle:", build_file(hwnd))
+                return 0
+            if which == 1012:  # Build > Stop
+                print("griddle:", stop_build())
+                return 0
             if which == 1004:  # File > Save
                 print("griddle:", save(hwnd))
                 return 0
@@ -621,17 +659,6 @@ comptime CLOSE_TIMER_ID = 0x6721
 # looking at the line, rare enough that an idle editor is idle.
 comptime LSP_TIMER_ID = 0x6722
 comptime LSP_POLL_MS = 50
-
-
-def env_or(name: StringSlice, fallback: StringSlice) -> String:
-    """An environment variable, or a fallback when it is unset."""
-    try:
-        var value = getenv(String(name))
-        if value.byte_length() > 0:
-            return value
-    except:
-        pass
-    return String(fallback)
 
 
 def dark_titlebar(hwnd: Int) raises -> Int32:

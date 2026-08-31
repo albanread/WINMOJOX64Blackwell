@@ -71,6 +71,7 @@ from ide.lsp import (
     g_diag_msg,
     g_diag_sev,
 )
+from ide.build import is_building, output_count, output_line
 from ide.rope import Rope
 from ide.win32 import scaled
 from ide.syntax import (
@@ -1516,6 +1517,100 @@ def draw_references(
         if layout != 0:
             _draw_layout(
                 this, layout, ink, region.left + scaled(26, chrome.scale), y
+            )
+            _release(layout)
+        n += 1
+    _release(ink)
+    if dim != 0:
+        _release(dim)
+
+    com_method_of[
+        def (OpaquePointer[MutUntrackedOrigin]) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PopAxisAlignedClip",
+    ](this)(this)
+
+
+def draw_output(
+    mut grid: Grid, chrome: Chrome, region: D2D_RECT_F
+) raises:
+    """The build log, in the output pane, tail first.
+
+    The tail rather than the head: a build log is read from the end, because
+    the end is where it says what went wrong. A pane that shows the first
+    forty lines of a compiler's output shows the banner.
+
+    Args:
+        grid: The view, for its measured advance.
+        chrome: The render target and text format.
+        region: The output pane.
+
+    Raises:
+        If DirectWrite refuses.
+    """
+    if chrome.target == 0 or chrome.text_format == 0:
+        return
+    var total = output_count()
+
+    var this = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.target
+    )
+    var dwrite = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.dwrite
+    )
+    var ink = _brush(chrome.target, INK)
+    var dim = _brush(chrome.target, DIM)
+    if ink == 0:
+        return
+
+    var clip = region
+    com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[D2D_RECT_F, MutAnyOrigin],
+            UInt32,
+        ) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PushAxisAlignedClip",
+    ](this)(this, com_addr(clip), UInt32(0))
+    _ = clip
+
+    var heading = String("OUTPUT")
+    if is_building():
+        heading += "   running"
+    elif total > 0:
+        heading += "   " + String(total) + " lines"
+    var head_layout = _make_layout(dwrite, chrome, heading, 100000.0)
+    if head_layout != 0:
+        _draw_layout(
+            this, head_layout, dim if dim != 0 else ink,
+            region.left + scaled(12, chrome.scale),
+            region.top + scaled(6, chrome.scale),
+        )
+        _release(head_layout)
+
+    var rows = Int(
+        (region.bottom - region.top - scaled(ISSUE_TOP_PAD, chrome.scale))
+        / scaled(ISSUE_ROW_H, chrome.scale)
+    )
+    if rows < 1:
+        rows = 1
+    var first = total - rows
+    if first < 0:
+        first = 0
+    var n = 0
+    while first + n < total and n < rows:
+        var y = (
+            region.top
+            + scaled(ISSUE_TOP_PAD, chrome.scale)
+            + Float32(n) * scaled(ISSUE_ROW_H, chrome.scale)
+        )
+        var layout = _make_layout(
+            dwrite, chrome, output_line(first + n), 100000.0
+        )
+        if layout != 0:
+            _draw_layout(
+                this, layout, ink, region.left + scaled(12, chrome.scale), y
             )
             _release(layout)
         n += 1

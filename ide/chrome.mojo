@@ -573,54 +573,71 @@ def draw(
 
     # Hairlines where regions meet. Drawn as thin filled rectangles rather
     # than strokes: a stroke straddles its line and lands on half-pixels.
+    #
+    # Off the layout's rectangles, like everything else. Written longhand from
+    # the constants they were the same arithmetic the layout does, until the
+    # layout started scaling and they did not -- so the panes moved and their
+    # borders stayed behind.
+    var hair = scaled(1, chrome.scale)
+    var rail = layout.rail()
+    var editor = layout.editor()
+    var bar = layout.status()
     _fill(
         chrome.target,
-        D2D_RECT_F(
-            Float32(RAIL_W), 0, Float32(RAIL_W + 1), Float32(height - STATUS_H)
-        ),
+        D2D_RECT_F(rail.right, 0, rail.right + hair, bar.top),
+        LINE,
+    )
+    _fill(
+        chrome.target,
+        D2D_RECT_F(editor.left, 0, editor.left + hair, bar.top),
+        LINE,
+    )
+    _fill(
+        chrome.target,
+        D2D_RECT_F(0, bar.top - hair, Float32(width), bar.top),
         LINE,
     )
     _fill(
         chrome.target,
         D2D_RECT_F(
-            Float32(RAIL_W + SIDEBAR_W),
-            0,
-            Float32(RAIL_W + SIDEBAR_W + 1),
-            Float32(height - STATUS_H),
-        ),
-        LINE,
-    )
-    _fill(
-        chrome.target,
-        D2D_RECT_F(
-            0,
-            Float32(height - STATUS_H - 1),
-            Float32(width),
-            Float32(height - STATUS_H),
-        ),
-        LINE,
-    )
-    _fill(
-        chrome.target,
-        D2D_RECT_F(
-            Float32(RAIL_W + SIDEBAR_W),
-            Float32(height - STATUS_H - PANE_H - 1),
-            Float32(width),
-            Float32(height - STATUS_H - PANE_H),
+            editor.left, editor.bottom - hair, Float32(width), editor.bottom
         ),
         LINE,
     )
 
     # The rail's selected item, as the one piece of accent on screen.
-    _fill(chrome.target, D2D_RECT_F(0, 12, 3, 44), EMBER)
+    _fill(
+        chrome.target,
+        D2D_RECT_F(
+            0, scaled(12, chrome.scale), scaled(3, chrome.scale),
+            scaled(44, chrome.scale),
+        ),
+        EMBER,
+    )
 
-    _label(chrome, "GRIDDLE", Float32(RAIL_W + 14), 10, DIM)
-    _label(chrome, "ISSUES", Float32(RAIL_W + SIDEBAR_W + 12),
-           Float32(height - STATUS_H - PANE_H + 8), DIM)
-    _label(chrome, "OUTPUT",
-           Float32((width + RAIL_W + SIDEBAR_W) // 2 + 12),
-           Float32(height - STATUS_H - PANE_H + 8), DIM)
-    _label(chrome, status, 12, Float32(height - STATUS_H + 7), DIM)
+    # Every one of these is placed off the layout's own rectangles rather than
+    # off the constants. They used to be written out longhand -- `RAIL_W +
+    # SIDEBAR_W + 12`, `height - STATUS_H - PANE_H + 8` -- which was the same
+    # arithmetic the layout does and stopped being so the moment the layout
+    # started scaling: the panes moved and their headings stayed at 96 DPI.
+    var issues = layout.issues()
+    var output = layout.output()
+    _label(
+        chrome, "GRIDDLE", layout.rail_w() + scaled(14, chrome.scale),
+        scaled(10, chrome.scale), DIM,
+    )
+    _label(
+        chrome, "ISSUES", issues.left + scaled(12, chrome.scale),
+        issues.top + scaled(8, chrome.scale), DIM,
+    )
+    _label(
+        chrome, "OUTPUT", output.left + scaled(12, chrome.scale),
+        output.top + scaled(8, chrome.scale), DIM,
+    )
+    _label(
+        chrome, status, scaled(12, chrome.scale),
+        layout.status().top + scaled(7, chrome.scale), DIM,
+    )
 
     return layout
 

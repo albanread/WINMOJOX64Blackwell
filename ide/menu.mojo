@@ -22,6 +22,9 @@ from ide.win32 import win32
 
 # Command ids. Small and explicit: the agent never uses them -- it uses the
 # visible names -- but WM_COMMAND arrives carrying one.
+comptime ID_BUILD_RUN = 1010
+comptime ID_BUILD_BUILD = 1011
+comptime ID_BUILD_STOP = 1012
 comptime ID_FILE_OPEN = 1003
 comptime ID_FILE_SAVE = 1004
 comptime ID_FILE_SAVE_AS = 1005
@@ -67,6 +70,16 @@ def build(hwnd: Int) raises:
     _append(AppendMenuW, file, winkb_constant["MF_STRING"](), ID_FILE_EXIT,
             "Exit")
     _append(AppendMenuW, bar, winkb_constant["MF_POPUP"](), file, "File")
+
+    var build = CreatePopupMenu()
+    _append(AppendMenuW, build, winkb_constant["MF_STRING"](), ID_BUILD_RUN,
+            "Run\tF5")
+    _append(AppendMenuW, build, winkb_constant["MF_STRING"](), ID_BUILD_BUILD,
+            "Build\tCtrl+B")
+    _append(AppendMenuW, build, winkb_constant["MF_SEPARATOR"](), 0, "")
+    _append(AppendMenuW, build, winkb_constant["MF_STRING"](), ID_BUILD_STOP,
+            "Stop\tShift+F5")
+    _append(AppendMenuW, bar, winkb_constant["MF_POPUP"](), build, "Build")
 
     var help = CreatePopupMenu()
     _append(AppendMenuW, help, winkb_constant["MF_STRING"](), 1002, "About")
