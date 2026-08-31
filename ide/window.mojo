@@ -27,6 +27,7 @@ from ide.caret import is_simple
 from ide.chrome import Chrome, Layout
 from ide.doc import Doc, Grid
 from ide.edit import (
+    apply,
     backspace,
     byte_at,
     delete_forward,
@@ -52,6 +53,12 @@ from ide.lsp import (
     is_ready,
     is_running,
     poll,
+    clear_completions,
+    completion_count,
+    g_comp_detail,
+    g_comp_insert,
+    g_comp_label,
+    request_completion,
     set_shown_uri,
     start,
     stop,
@@ -66,7 +73,7 @@ from ide.gridview import (
     status_line,
 )
 from ide.rope import Rope
-from ide.win32 import RECT, win32
+from ide.win32 import RECT, dpi_scale, scaled, win32
 
 def doc_of(hwnd: Int) raises -> Int:
     """The address of a window's document, or zero if it has none."""
@@ -107,7 +114,7 @@ def page_lines(hwnd: Int) raises -> Int:
     var rc = RECT()
     _ = GetClientRect(hwnd, Pointer(to=rc).unsafe_origin_cast[MutAnyOrigin]())
     var editor = Layout(
-        Int(rc.right - rc.left), Int(rc.bottom - rc.top)
+        Int(rc.right - rc.left), Int(rc.bottom - rc.top), dpi_scale(hwnd)
     ).editor()
     # One line short of a screenful, so a page turn keeps a line of context.
     var whole = doc[].grid.visible_lines(editor.bottom - editor.top) - 1
@@ -250,10 +257,13 @@ def caret_click(hwnd: Int, x: Int, y: Int) raises -> String:
     ]()
     var rc = RECT()
     _ = GetClientRect(hwnd, Pointer(to=rc).unsafe_origin_cast[MutAnyOrigin]())
+    var scale = dpi_scale(hwnd)
     var editor = Layout(
-        Int(rc.right - rc.left), Int(rc.bottom - rc.top)
+        Int(rc.right - rc.left), Int(rc.bottom - rc.top), scale
     ).editor()
-    var full = Layout(Int(rc.right - rc.left), Int(rc.bottom - rc.top))
+    var full = Layout(
+        Int(rc.right - rc.left), Int(rc.bottom - rc.top), scale
+    )
     var pane = full.issues()
     # The issues pane is below the editor field and to the left. A click there
     # is a person asking to go somewhere, not to put the caret in a list.
@@ -263,7 +273,7 @@ def caret_click(hwnd: Int, x: Int, y: Int) raises -> String:
         and Float32(x) >= pane.left
         and Float32(x) <= pane.right
     ):
-        var row = issue_row_at(pane, Float32(y))
+        var row = issue_row_at(pane, Float32(y), scale)
         if row < 0:
             return String("the issues heading")
         return goto_issue(hwnd, row)
@@ -278,7 +288,7 @@ def caret_click(hwnd: Int, x: Int, y: Int) raises -> String:
         line = last
     if line < 0:
         line = 0
-    var into = Float32(x) - editor.left - Float32(GUTTER_W)
+    var into = Float32(x) - editor.left - scaled(GUTTER_W, dpi_scale(hwnd))
     if into < 0:
         into = 0
     move_to(
@@ -367,6 +377,26 @@ def _doc_at(hwnd: Int) raises -> Pointer[Doc, MutAnyOrigin]:
     if address == 0:
         raise Error("this window has no document")
     return Pointer[Doc, MutAnyOrigin](unsafe_from_address=address)
+
+
+def line_height_of(hwnd: Int) raises -> Float32:
+    """How tall one text row is on this window, in device pixels.
+
+    The grid holds it because scrolling and hit testing both divide by it, and
+    it is scaled from the display's DPI when the chrome is brought up. Exposed
+    so the agent surface can report the number the editor is using rather than
+    the constant it started from.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        The row height.
+
+    Raises:
+        If the window has no document.
+    """
+    return _doc_at(hwnd)[].grid.line_height
 
 
 def follow_caret(hwnd: Int) raises:
@@ -995,3 +1025,157 @@ def stop_server() raises:
     """
     if is_running():
         stop()
+
+
+# ===----------------------------------------------------------------------===#
+# The completion popup
+#
+# The list itself lives in the language server client -- it arrives
+# asynchronously and belongs to a request, not to a document -- so what the
+# document keeps is only whether the popup is up and which row is chosen.
+# ===----------------------------------------------------------------------===#
+
+
+def complete_at_caret(hwnd: Int) raises -> String:
+    """Ask the server what could go here, and put the popup up.
+
+    The request is asynchronous: this returns as soon as it is sent, and the
+    items arrive on a later pump. So the popup opens now and fills in when the
+    answer comes, which is also what stops a slow server from freezing a
+    keystroke.
+    """
+    var doc = _doc_at(hwnd)
+    if doc[].uri.byte_length() == 0 or not is_ready():
+        return String("no language server for this document")
+    sync(hwnd)
+    clear_completions()
+    doc[].popup = True
+    doc[].popup_row = 0
+    doc[].popup_line = doc[].caret_line
+    doc[].popup_col = doc[].caret_col
+    _ = request_completion(doc[].uri, doc[].caret_line, doc[].caret_col)
+    _touch(hwnd)
+    return String("asked for completions at ") + String(
+        doc[].caret_line + 1
+    ) + ":" + String(doc[].caret_col + 1)
+
+
+def popup_move(hwnd: Int, by: Int) raises -> String:
+    """Move the chosen row, wrapping at both ends."""
+    var doc = _doc_at(hwnd)
+    var total = completion_count()
+    if not doc[].popup or total == 0:
+        return String("no popup")
+    doc[].popup_row = (doc[].popup_row + by + total) % total
+    _touch(hwnd)
+    return (
+        String("row ") + String(doc[].popup_row + 1) + " of " + String(total)
+        + ": " + g_comp_label()[][doc[].popup_row]
+    )
+
+
+def popup_close(hwnd: Int) raises -> String:
+    """Put the popup away without taking anything from it."""
+    var doc = _doc_at(hwnd)
+    doc[].popup = False
+    clear_completions()
+    _touch(hwnd)
+    return String("popup closed")
+
+
+def popup_accept(hwnd: Int) raises -> String:
+    """Take the chosen completion, replacing the word being typed.
+
+    The word is what was there when the popup opened plus whatever has been
+    typed since, so the replacement starts at the identifier's beginning and
+    not at the caret. Inserting at the caret is how an editor turns `Drag`
+    into `DragDragOver`.
+    """
+    var doc = _doc_at(hwnd)
+    var total = completion_count()
+    if not doc[].popup or total == 0:
+        return String("no popup")
+    var row = doc[].popup_row
+    if row < 0 or row >= total:
+        row = 0
+    var text = g_comp_insert()[][row]
+    if text.byte_length() == 0:
+        text = g_comp_label()[][row]
+
+    # Back up over the identifier the caret is sitting at the end of.
+    var line_text = doc[].rope.line(doc[].caret_line)
+    var bytes = line_text.as_bytes()
+    var at = byte_at(doc[].rope, doc[].caret_line, doc[].caret_col)
+    var line_start = doc[].rope.line_start(doc[].caret_line)
+    var back = at - line_start
+    while back > 0:
+        var c = Int(bytes[back - 1])
+        var wordish = (
+            (c >= ord("a") and c <= ord("z"))
+            or (c >= ord("A") and c <= ord("Z"))
+            or (c >= ord("0") and c <= ord("9"))
+            or c == ord("_")
+        )
+        if not wordish:
+            break
+        back -= 1
+
+    doc[].popup = False
+    apply(doc[], line_start + back, at, text)
+    clear_completions()
+    follow_caret(hwnd)
+    _touch(hwnd)
+    return String("accepted ") + g_comp_label()[][row] if False else (
+        String("accepted, ") + String(doc[].rope.line(doc[].caret_line))
+    )
+
+
+def popup_report(hwnd: Int) raises -> String:
+    """What the popup is showing, for a check to read."""
+    var doc = _doc_at(hwnd)
+    var total = completion_count()
+    if not doc[].popup:
+        return String("popup closed")
+    if total == 0:
+        return String("popup open, still waiting")
+    var out = (
+        String("popup open, ") + String(total) + " item(s), row "
+        + String(doc[].popup_row + 1) + "\n"
+    )
+    for i in range(total if total < 12 else 12):
+        out += (
+            (String("> ") if i == doc[].popup_row else String("  "))
+            + g_comp_label()[][i] + "  " + g_comp_detail()[][i] + "\n"
+        )
+    return out^
+
+
+def popup_is_open(hwnd: Int) raises -> Bool:
+    """Whether the popup is up, for the key handler to ask."""
+    var address = doc_of(hwnd)
+    if address == 0:
+        return False
+    return Pointer[Doc, MutAnyOrigin](unsafe_from_address=address)[].popup
+
+
+def popup_state(hwnd: Int) raises -> Tuple[Bool, Int, Int, Int]:
+    """Whether the popup is up, its row, and the caret it hangs from."""
+    var doc = _doc_at(hwnd)
+    return (doc[].popup, doc[].popup_row, doc[].caret_line, doc[].caret_col)
+
+
+def popup_wait(hwnd: Int, milliseconds: Int) raises -> String:
+    """Pump until the completion answer arrives, or the time runs out.
+
+    The window's timer does this while a person is still deciding what to
+    type. A check has no timer, so it says when to wait -- the same shape as
+    `lsp_wait`, and for the same reason.
+    """
+    var Sleep = win32[def (UInt32) thin abi("C") -> NoneType, "Sleep"]()
+    var deadline = perf_counter_ns() + milliseconds * 1_000_000
+    while perf_counter_ns() < deadline:
+        _ = pump(hwnd)
+        if completion_count() > 0:
+            return popup_report(hwnd)
+        Sleep(UInt32(10))
+    return String("no completions arrived")

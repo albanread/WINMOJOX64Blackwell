@@ -22,6 +22,7 @@
 #include "KGEN/POPDialect/POPUtils.h"
 #include "KGEN/Support/Configuration.h"
 #include "KGEN/Support/NameMangling.h"
+#include "KGEN/Support/WinKB.h"
 #include "KGEN/TransformUtils/ManglingUtils.h"
 #include "Support/Compiler/DiagnosticHandler.h"
 #include "Support/StringExtras.h"
@@ -956,6 +957,14 @@ constexpr StringRef kComMethodParamTypeSQL =
     WINKB_IFACE_CHAIN_CTE
     "SELECT p.type_name FROM interface_method_params p "
     "WHERE p.ordinal = ?3 AND p.method_id = " WINKB_CHAIN_METHOD_ID;
+// And its name, which is Windows' own and Hungarian. Only the editor asks for
+// this: a binding does not care what a parameter is called, but a completion
+// that offers `arg0, arg1, arg2` is worse than one that offers something a
+// person can read.
+constexpr StringRef kComMethodParamNameSQL =
+    WINKB_IFACE_CHAIN_CTE
+    "SELECT p.param_name FROM interface_method_params p "
+    "WHERE p.ordinal = ?3 AND p.method_id = " WINKB_CHAIN_METHOD_ID;
 // Total absolute slot count of an interface's vtable, inherited slots
 // included -- what a static vtable for the interface must provide.
 constexpr StringRef kComMethodCountSQL =
@@ -1033,6 +1042,176 @@ constexpr StringRef kConstantTextSQL =
 constexpr StringRef kSchemaVersionSQL =
     "SELECT value FROM schema_meta WHERE key = 'schema_version'";
 
+} // namespace
+
+//===----------------------------------------------------------------------===//
+// The metadata, for tools that are not the elaborator
+//
+// Sprint 2.4. The language server offers the unimplemented methods of an
+// interface as completions inside a `class` body, with the parameter types the
+// database records. Same database, same queries, different caller -- see
+// KGEN/Support/WinKB.h for why it is worth exposing.
+//===----------------------------------------------------------------------===//
+
+namespace M {
+namespace KGEN {
+
+/// The Mojo spelling of a metadata type, for a COM method parameter.
+///
+/// Everything a COM method takes is either a pointer or a value of some width,
+/// and the class surface's own `_check_arg` validates exactly that: the width.
+/// So the width is what this has to get right, and it comes from the database
+/// rather than from a table somebody typed.
+///
+/// The database has no signedness -- the column exists and is null for every
+/// row -- so a four-byte value becomes UInt32. That is what the width check
+/// accepts and what every existing hand-written class body already says.
+static std::string mojoTypeFor(StringRef metadataType) {
+  // A pointer is a pointer. The class surface takes them as Int, because
+  // that is what a vtable slot passes and what every implementation in this
+  // tree already spells.
+  if (metadataType.ends_with("*"))
+    return "Int";
+
+  // The primitive spellings carry their width in their name and have no row
+  // of their own in `types` -- size_bits is null for `u32`.
+  static const struct { StringRef meta, mojo; } kPrimitives[] = {
+      {"u8", "UInt8"},     {"i8", "Int8"},      {"u16", "UInt16"},
+      {"i16", "Int16"},    {"u32", "UInt32"},   {"i32", "Int32"},
+      {"u64", "UInt64"},   {"i64", "Int64"},    {"f32", "Float32"},
+      {"f64", "Float64"},  {"usize", "Int"},    {"isize", "Int"},
+  };
+  for (const auto &prim : kPrimitives)
+    if (metadataType == prim.meta)
+      return prim.mojo.str();
+
+  // Everything else -- an enum, a struct passed by value, an interface -- is
+  // whatever width the database says. A struct wider than a register is
+  // passed by address on this ABI and so is an Int too.
+  auto widthOr = WinKBDatabase::get().queryInt("type_width", {metadataType});
+  if (!widthOr) {
+    llvm::consumeError(widthOr.takeError());
+    return "Int";
+  }
+  switch (*widthOr) {
+  case 1:
+    return "UInt8";
+  case 2:
+    return "UInt16";
+  case 4:
+    return "UInt32";
+  default:
+    return "Int";
+  }
+}
+
+/// A readable Mojo name for a Windows parameter name.
+///
+/// The database has Windows' own names, which are Hungarian: `grfKeyState`,
+/// `pdwEffect`, `pDataObj`. Offering those verbatim in a completion would
+/// teach a naming convention this repository does not use, so the prefix comes
+/// off and the rest is lower-cased with underscores. The NAME is cosmetic --
+/// a person renames it freely -- while the type is not, which is why only one
+/// of the two is invented here.
+static std::string mojoNameFor(StringRef windowsName) {
+  if (windowsName.empty())
+    return "arg";
+  // Strip a leading run of Hungarian: lower-case letters before the first
+  // upper-case one, when there is an upper-case one to follow.
+  size_t at = 0;
+  while (at < windowsName.size() && llvm::isLower(windowsName[at]))
+    ++at;
+  StringRef rest = (at < windowsName.size()) ? windowsName.drop_front(at)
+                                             : windowsName;
+
+  // CamelCase to snake_case.
+  std::string out;
+  for (size_t i = 0; i < rest.size(); ++i) {
+    char c = rest[i];
+    if (llvm::isUpper(c)) {
+      if (i)
+        out += '_';
+      out += llvm::toLower(c);
+    } else {
+      out += c;
+    }
+  }
+  return out.empty() ? "arg" : out;
+}
+
+llvm::Expected<std::vector<WinKBMethod>>
+winkbInterfaceMethods(StringRef interfaceName) {
+  auto &db = WinKBDatabase::get();
+  auto countOr = db.queryInt("com_method_count", {interfaceName});
+  if (!countOr)
+    return countOr.takeError();
+
+  std::vector<WinKBMethod> methods;
+  // Slots 0, 1 and 2 are IUnknown's -- QueryInterface, AddRef, Release -- and
+  // are synthesised for every object rather than implemented by anyone. A
+  // completion that offered them would be offering to break the object.
+  for (int64_t slot = 3; slot < *countOr; ++slot) {
+    std::string slotText = std::to_string(slot);
+    auto nameOr = db.queryString("com_method_at_slot", {interfaceName, slotText});
+    if (!nameOr) {
+      llvm::consumeError(nameOr.takeError());
+      continue;
+    }
+    WinKBMethod method;
+    method.name = *nameOr;
+    method.slot = static_cast<int>(slot);
+    if (method.name.empty())
+      continue;
+
+    auto paramsOr =
+        db.queryInt("com_method_param_count", {interfaceName, method.name});
+    if (!paramsOr) {
+      llvm::consumeError(paramsOr.takeError());
+      methods.push_back(std::move(method));
+      continue;
+    }
+    for (int64_t i = 0; i < *paramsOr; ++i) {
+      auto typeOr = db.queryString(
+          "com_method_param_type", {interfaceName, method.name, std::to_string(i)});
+      if (!typeOr) {
+        llvm::consumeError(typeOr.takeError());
+        break;
+      }
+      method.paramTypes.push_back(*typeOr);
+      auto nameOr2 = db.queryString(
+          "com_method_param_name",
+          {interfaceName, method.name, std::to_string(i)});
+      if (nameOr2) {
+        method.paramNames.push_back(*nameOr2);
+      } else {
+        llvm::consumeError(nameOr2.takeError());
+        method.paramNames.push_back(std::string());
+      }
+    }
+    methods.push_back(std::move(method));
+  }
+  return methods;
+}
+
+std::string winkbMojoSignature(const WinKBMethod &method) {
+  std::string out = "(mut self";
+  for (size_t i = 0; i < method.paramTypes.size(); ++i) {
+    out += ", ";
+    out += (i < method.paramNames.size() && !method.paramNames[i].empty())
+               ? mojoNameFor(method.paramNames[i])
+               : ("arg" + std::to_string(i));
+    out += ": ";
+    out += mojoTypeFor(method.paramTypes[i]);
+  }
+  out += ") raises";
+  return out;
+}
+
+} // namespace KGEN
+} // namespace M
+
+namespace {
+
 const WinKBQueryDef kQueries[] = {
     {"db_schema_version", 0, kSchemaVersionSQL},
     {"struct_size", 1, kStructSizeSQL},
@@ -1042,6 +1221,7 @@ const WinKBQueryDef kQueries[] = {
     {"com_method_ret_type", 2, kComMethodRetTypeSQL},
     {"com_method_param_count", 2, kComMethodParamCountSQL},
     {"com_method_param_type", 3, kComMethodParamTypeSQL},
+    {"com_method_param_name", 3, kComMethodParamNameSQL},
     {"com_method_count", 1, kComMethodCountSQL},
     {"com_interface_base", 1, kComInterfaceBaseSQL},
     {"com_has_method", 2, kComHasMethodSQL},

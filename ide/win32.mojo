@@ -271,3 +271,84 @@ def private_bytes() raises -> Int:
     ) == 0:
         return 0
     return counters.PagefileUsage
+
+
+# ===----------------------------------------------------------------------===#
+# Scale
+#
+# Every measurement in the editor is written once, at 96 DPI, and multiplied
+# through here. That is the whole scheme: the layout constants stay readable
+# numbers a person can reason about (`RAIL_W = 52`), and exactly one function
+# knows what a pixel is worth on the display the window is actually on.
+#
+# The zoom control the View menu will grow belongs here too. A person zooming
+# in and a person moving the window to a denser display want the same thing --
+# everything bigger by the same factor -- so zoom multiplies this rather than
+# forking a second scale, and every rectangle in the program then follows for
+# free. See IDE-DESIGN.md, the menu sprint.
+# ===----------------------------------------------------------------------===#
+
+
+def dpi_of(hwnd: Int) -> Int:
+    """The dots per inch of the display this window is on.
+
+    `GetDpiForWindow` needs the process to be per-monitor aware to answer
+    honestly, which the manifest arranges; on a system-aware or unaware
+    process it reports the system value instead, which is still better than
+    assuming. It arrived in Windows 10 1607, so a machine older than that
+    falls back to 96 rather than failing to start.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        The DPI, or 96 if Windows will not say.
+
+    Raises:
+        Never in practice; the lookup is guarded.
+    """
+    try:
+        var GetDpiForWindow = win32[
+            def (Int) thin abi("C") -> UInt32, "GetDpiForWindow"
+        ]()
+        var dpi = Int(GetDpiForWindow(hwnd))
+        if dpi >= 48:
+            return dpi
+    except:
+        pass
+    return 96
+
+
+def dpi_scale(hwnd: Int) -> Float32:
+    """Device pixels per design pixel for this window.
+
+    1.0 on a 96 DPI display, 1.5 at 150%, 2.0 at 200%.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        The factor every layout constant is multiplied by.
+
+    Raises:
+        Never in practice.
+    """
+    return Float32(dpi_of(hwnd)) / 96.0
+
+
+def scaled(v: Int, scale: Float32) -> Float32:
+    """A design pixel measurement in device pixels, rounded to a whole one.
+
+    Rounded because these become the edges of filled rectangles and the
+    positions of hairlines, and a hairline on a half pixel is drawn as two
+    grey ones. The rounding is done once, here, so that two rectangles meant
+    to meet still meet after scaling.
+
+    Args:
+        v: The measurement, written at 96 DPI.
+        scale: What a design pixel is worth.
+
+    Returns:
+        The device-pixel measurement.
+    """
+    return Float32(Int(Float32(v) * scale + 0.5))

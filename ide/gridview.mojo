@@ -33,11 +33,19 @@ from ide.chrome import (
     D2D_COLOR_F,
     D2D_RECT_F,
     EMBER,
+    DIM,
     ERROR,
     INK,
+    LINE,
     Layout,
     MATCH,
+    POPUP,
+    POPUP_SEL,
     SELECT,
+    SYN_COMMENT,
+    SYN_KEYWORD,
+    SYN_NUMBER,
+    SYN_STRING,
     WARN,
 )
 from ide.doc import Doc, Grid
@@ -48,8 +56,27 @@ from ide.diagnostics import (
     on_line,
 )
 from ide.find import matches_in_line
-from ide.lsp import g_diag_col, g_diag_end, g_diag_line, g_diag_msg, g_diag_sev
+from ide.lsp import (
+    completion_count,
+    g_comp_detail,
+    g_comp_label,
+    g_diag_col,
+    g_diag_end,
+    g_diag_line,
+    g_diag_msg,
+    g_diag_sev,
+)
 from ide.rope import Rope
+from ide.win32 import scaled
+from ide.syntax import (
+    KIND_COMMENT,
+    KIND_PLAIN,
+    KIND_KEYWORD,
+    KIND_NUMBER,
+    KIND_STRING,
+    highlight_runs,
+    triple_state_after,
+)
 
 
 # Cascadia Mono at 12pt. The advance and line height are asked of DirectWrite
@@ -138,6 +165,9 @@ def draw_text(
     var height = region.bottom - region.top
     var count = grid.visible_lines(height)
     var total = rope.line_count()
+    # The gutter, in the device pixels this display actually has. Named once
+    # rather than scaled at each of the eight places it is added to an x.
+    var gutter = scaled(GUTTER_W, chrome.scale)
 
     # The selection, normalised so the drawing loop never has to think about
     # which end the person started from.
@@ -155,6 +185,10 @@ def draw_text(
         first_col = caret_col
         last_line = anchor_line
         last_col = anchor_col
+
+    # The docstring state for the first visible line, worked out once. Every
+    # line after it takes the state the line before left behind.
+    var in_triple = _starts_in_docstring(rope, grid.top_line)
 
     var row = 0
     while row < count:
@@ -182,9 +216,9 @@ def draw_text(
                     _fill_rect(
                         this,
                         chrome.target,
-                        region.left + Float32(GUTTER_W) + hx,
+                        region.left + gutter + hx,
                         y,
-                        region.left + Float32(GUTTER_W) + hx2,
+                        region.left + gutter + hx2,
                         y + grid.line_height,
                         MATCH,
                     )
@@ -217,17 +251,22 @@ def draw_text(
                 _fill_rect(
                     this,
                     chrome.target,
-                    region.left + Float32(GUTTER_W) + from_x,
+                    region.left + gutter + from_x,
                     y,
-                    region.left + Float32(GUTTER_W) + to_x,
+                    region.left + gutter + to_x,
                     y + grid.line_height,
                     SELECT,
                 )
 
-        var layout = _layout_for(grid, dwrite, chrome, rope, line, revision)
+        var layout = _layout_for(
+            grid, dwrite, chrome, rope, line, revision, in_triple
+        )
+        # Advance before drawing: what this line leaves open is what the next
+        # one begins inside.
+        in_triple = triple_state_after(rope.line(line), in_triple)
         if layout != 0:
             _draw_layout(
-                this, layout, brush, region.left + Float32(GUTTER_W), y
+                this, layout, brush, region.left + gutter, y
             )
             grid.drawn += 1
 
@@ -236,7 +275,7 @@ def draw_text(
         # save almost nothing.
         var number = String(line + 1)
         var num_layout = _make_layout(
-            dwrite, chrome, number, Float32(GUTTER_W - TEXT_PAD)
+            dwrite, chrome, number, scaled(GUTTER_W - TEXT_PAD, chrome.scale)
         )
         if num_layout != 0:
             _draw_layout(this, num_layout, gutter_brush, region.left + 6, y)
@@ -266,8 +305,8 @@ def draw_text(
                 _squiggle(
                     this,
                     chrome.target,
-                    region.left + Float32(GUTTER_W) + ax,
-                    region.left + Float32(GUTTER_W) + bx,
+                    region.left + gutter + ax,
+                    region.left + gutter + bx,
                     y + grid.line_height - 2,
                     colour,
                 )
@@ -295,7 +334,7 @@ def draw_text(
             draw_caret(
                 this,
                 region.left
-                + Float32(GUTTER_W)
+                + gutter
                 + caret_x(
                     grid,
                     dwrite,
@@ -327,8 +366,17 @@ def _layout_for(
     rope: Rope,
     line: Int,
     revision: Int,
+    in_triple: Bool = False,
 ) raises -> Int:
-    """The cached layout for one line, making it only if it is not there."""
+    """The cached layout for one line, making it only if it is not there.
+
+    `in_triple` is passed in rather than worked out here. Deriving it per line
+    meant `_starts_in_docstring` walking its whole lookback for every line on
+    screen -- thirty-six lines times two hundred back is seven thousand rope
+    reads for one frame, and a keystroke changes the revision so every frame
+    paid it. Threaded down the visible range instead, it is two hundred reads
+    once plus one per line. It was 21 ms a keystroke; see docs/latency.md.
+    """
     var slot = line % grid.capacity
     if grid.cached_line[slot] == line and grid.cached_rev[slot] == revision:
         grid.hits += 1
@@ -340,7 +388,11 @@ def _layout_for(
     _release(grid.cached_layout[slot])
 
     var text = rope.line(line)
-    var made = _make_layout(dwrite, chrome, text, 4000.0)
+    # Coloured here, once, and then cached with the layout: the lexer runs
+    # when a line changes rather than when a frame is drawn.
+    var made = _make_layout(
+        dwrite, chrome, text, 4000.0, colour=True, in_triple=in_triple
+    )
     grid.cached_line[slot] = line
     grid.cached_rev[slot] = revision
     grid.cached_layout[slot] = made
@@ -352,8 +404,25 @@ def _make_layout(
     chrome: Chrome,
     text: String,
     width: Float32,
+    colour: Bool = False,
+    in_triple: Bool = False,
 ) raises -> Int:
-    """Lay one line out with DirectWrite."""
+    """Lay one line out with DirectWrite, optionally coloured.
+
+    Args:
+        dwrite: The factory.
+        chrome: For the text format and the render target.
+        text: The line.
+        width: How wide to lay it out.
+        colour: Whether to run the lexer over it and set colour ranges.
+        in_triple: Whether this line begins inside a triple-quoted string.
+
+    Returns:
+        The layout, or zero.
+
+    Raises:
+        If DirectWrite refuses.
+    """
     var wide = List[UInt16]()
     for ch in text.codepoints():
         var v = Int(ch)
@@ -391,6 +460,8 @@ def _make_layout(
         com_addr(layout),
     )
     _ = wide
+    if colour and layout != 0:
+        _colour_layout(layout, chrome, text, in_triple)
     return layout
 
 
@@ -900,15 +971,19 @@ def draw_issues(
     _ = clip
 
     var rows = Int(
-        (region.bottom - region.top - Float32(ISSUE_TOP_PAD))
-        / Float32(ISSUE_ROW_H)
+        (region.bottom - region.top - scaled(ISSUE_TOP_PAD, chrome.scale))
+        / scaled(ISSUE_ROW_H, chrome.scale)
     )
     var n = 0
     while n < total and n < rows:
         var which = nth_visible(n)
         if which < 0:
             break
-        var y = region.top + Float32(ISSUE_TOP_PAD) + Float32(n * ISSUE_ROW_H)
+        var y = (
+            region.top
+            + scaled(ISSUE_TOP_PAD, chrome.scale)
+            + Float32(n) * scaled(ISSUE_ROW_H, chrome.scale)
+        )
         # A dot in the row's severity colour, so the list scans by shape
         # rather than by reading every line.
         var colour = ERROR
@@ -941,17 +1016,250 @@ def draw_issues(
     _release(ink)
 
 
-def issue_row_at(region: D2D_RECT_F, y: Float32) -> Int:
+def issue_row_at(region: D2D_RECT_F, y: Float32, scale: Float32 = 1.0) -> Int:
     """Which issue row a click at `y` is on, or -1.
 
     Args:
         region: The issues pane.
         y: A client y coordinate.
+        scale: Device pixels per design pixel, so the rows this measures are
+            the rows `draw_issues` drew.
 
     Returns:
         The row index, or -1 if the click is above the first row.
     """
-    var into = y - region.top - Float32(ISSUE_TOP_PAD)
+    var into = y - region.top - scaled(ISSUE_TOP_PAD, scale)
     if into < 0:
         return -1
-    return Int(into / Float32(ISSUE_ROW_H))
+    return Int(into / scaled(ISSUE_ROW_H, scale))
+
+
+comptime POPUP_ROW_H = 17
+comptime POPUP_WIDTH = 520
+comptime POPUP_MAX_ROWS = 8
+
+
+def draw_popup(
+    mut grid: Grid,
+    chrome: Chrome,
+    rope: Rope,
+    region: D2D_RECT_F,
+    caret_line: Int,
+    caret_col: Int,
+    chosen: Int,
+    revision: Int,
+) raises:
+    """The completion list, under the caret.
+
+    Drawn last and clipped to the editor, so it sits over the text without
+    escaping the field. It follows the caret rather than living in a corner,
+    because the point of a completion popup is that the eye does not have to
+    go anywhere to read it.
+
+    Args:
+        grid: The view.
+        chrome: The render target and text format.
+        rope: The document, for the caret's x.
+        region: The editor field.
+        caret_line: Where the caret is.
+        caret_col: And its offset.
+        chosen: Which row is selected.
+        revision: The document revision.
+
+    Raises:
+        If DirectWrite refuses.
+    """
+    var total = completion_count()
+    if total == 0 or chrome.target == 0 or chrome.text_format == 0:
+        return
+
+    var this = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.target
+    )
+    var dwrite = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.dwrite
+    )
+
+    var rows = total if total < POPUP_MAX_ROWS else POPUP_MAX_ROWS
+    # Scroll the window of rows so the chosen one is always inside it.
+    var first = 0
+    if chosen >= rows:
+        first = chosen - rows + 1
+
+    var caret_row = caret_line - grid.top_line
+    var x = region.left + scaled(GUTTER_W, chrome.scale) + caret_x(
+        grid, dwrite, chrome, rope, caret_line, caret_col, revision
+    )
+    var y = region.top + Float32(caret_row + 1) * grid.line_height + 2
+    var row_h = scaled(POPUP_ROW_H, chrome.scale)
+    var pad = scaled(4, chrome.scale)
+    var height = Float32(rows) * row_h + pad * 2
+    # Above the caret instead, if there is no room below. An editor that puts
+    # its popup off the bottom of the window has a popup nobody can read.
+    if y + height > region.bottom:
+        y = region.top + Float32(caret_row) * grid.line_height - height - 2
+    if y < region.top:
+        y = region.top
+    var right = x + scaled(POPUP_WIDTH, chrome.scale)
+    if right > region.right - 8:
+        right = region.right - 8
+        x = right - scaled(POPUP_WIDTH, chrome.scale)
+    if x < region.left:
+        x = region.left
+
+    var clip = region
+    com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[D2D_RECT_F, MutAnyOrigin],
+            UInt32,
+        ) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PushAxisAlignedClip",
+    ](this)(this, com_addr(clip), UInt32(0))
+    _ = clip
+
+    _fill_rect(this, chrome.target, x, y, right, y + height, POPUP)
+    # A hairline, so the list reads as sitting on top of the code rather than
+    # being part of it.
+    _fill_rect(this, chrome.target, x, y, right, y + 1, LINE)
+    _fill_rect(this, chrome.target, x, y + height - 1, right, y + height, LINE)
+
+    var ink = _brush(chrome.target, INK)
+    var dim = _brush(chrome.target, DIM)
+    if ink == 0:
+        return
+
+    for n in range(rows):
+        var which = first + n
+        if which >= total:
+            break
+        var row_y = y + pad + Float32(n) * row_h
+        if which == chosen:
+            _fill_rect(
+                this, chrome.target,
+                x + 1, row_y, right - 1, row_y + row_h,
+                POPUP_SEL,
+            )
+        var label = g_comp_label()[][which]
+        var layout = _make_layout(dwrite, chrome, label, 100000.0)
+        if layout != 0:
+            _draw_layout(this, layout, ink, x + 10, row_y)
+            _release(layout)
+        # The signature, dimmer and to the right: it is the reason to choose
+        # this row, but the name is what is being looked for.
+        var detail = g_comp_detail()[][which]
+        if detail.byte_length() > 0 and dim != 0:
+            var dlayout = _make_layout(dwrite, chrome, detail, 100000.0)
+            if dlayout != 0:
+                _draw_layout(
+                    this, dlayout, dim,
+                    x + 10 + Float32(len(label.as_bytes()) + 2) * grid.advance,
+                    row_y,
+                )
+                _release(dlayout)
+
+    com_method_of[
+        def (OpaquePointer[MutUntrackedOrigin]) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PopAxisAlignedClip",
+    ](this)(this)
+    _release(ink)
+    _release(dim)
+
+
+def _colour_layout(
+    layout: Int, chrome: Chrome, text: String, in_triple: Bool
+) raises:
+    """Paint the lexer's runs onto a laid-out line.
+
+    `SetDrawingEffect` takes an IUnknown and Direct2D honours it when it is a
+    brush, so a line is laid out once and drawn once however many colours it
+    has. The alternative -- a layout per run, or a draw call per run -- is the
+    shape that makes a syntax-coloured editor slower than a plain one.
+
+    The four brushes are made once, with the render target, and kept on the
+    chrome. Making one per run instead is what an obvious first version does,
+    and it costs a Direct2D object per word per line per keystroke. The layout
+    takes its own reference on each, which is dropped when the layout is.
+
+    Ranges are in UTF-16 code units. The lexer counts codepoints, which is the
+    same number until a line contains an emoji, so the conversion is from its
+    exact byte offsets rather than from its column count.
+    """
+    var this = OpaquePointer[MutUntrackedOrigin](unsafe_from_address=layout)
+    for run in highlight_runs(text, in_triple):
+        if run.kind == KIND_PLAIN:
+            continue
+        var brush = chrome.brush_comment
+        if run.kind == KIND_STRING:
+            brush = chrome.brush_string
+        elif run.kind == KIND_KEYWORD:
+            brush = chrome.brush_keyword
+        elif run.kind == KIND_NUMBER:
+            brush = chrome.brush_number
+
+        if brush == 0:
+            continue
+        var range = DWRITE_TEXT_RANGE(
+            UInt32(_units_before(text, run.byte_start)),
+            UInt32(
+                _units_before(text, run.byte_start + run.byte_len)
+                - _units_before(text, run.byte_start)
+            ),
+        )
+        # The range is eight bytes and goes by value, which on this ABI means
+        # in a register as its bit pattern -- the same shape as the point in
+        # `_draw_layout`, and wrong the same silent way if it is passed by
+        # address instead.
+        var packed = Pointer(to=range).unsafe_bitcast[Int64]()[]
+        com_method_of[
+            def (
+                OpaquePointer[MutUntrackedOrigin], Int, Int64
+            ) thin abi("C") -> Int32,
+            "IDWriteTextLayout",
+            "SetDrawingEffect",
+        ](this)(this, brush, packed)
+        _ = range
+
+
+@fieldwise_init
+struct DWRITE_TEXT_RANGE(Defaultable, ImplicitlyCopyable, Movable):
+    """A run of text, in UTF-16 code units."""
+
+    var startPosition: UInt32
+    var length: UInt32
+
+    def __init__(out self):
+        """An empty range at the start."""
+        self.startPosition = 0
+        self.length = 0
+
+
+# How far back to look for an unterminated docstring. Two hundred lines is
+# further than any docstring in this tree and a fifth of a millisecond of rope
+# walking; scanning from the top of the file would be correct and would cost
+# the whole file on every newly exposed line.
+comptime DOCSTRING_LOOKBACK = 200
+
+
+def _starts_in_docstring(rope: Rope, line: Int) raises -> Bool:
+    """Whether a line begins inside a triple-quoted string.
+
+    The lexer is per-line, and this is the one piece of state a docstring
+    needs carried across lines -- without it every continuation line of every
+    docstring renders as code, which is the most obvious way for a
+    syntax-coloured editor to look wrong.
+
+    Bounded rather than exact. A docstring longer than the lookback would be
+    mis-coloured from that point on; the alternative is reading from the start
+    of the file each time a line scrolls into view, which on a 250,000-line
+    document is the whole document per keystroke.
+    """
+    var from_line = line - DOCSTRING_LOOKBACK
+    if from_line < 0:
+        from_line = 0
+    var inside = False
+    for i in range(from_line, line):
+        inside = triple_state_after(rope.line(i), inside)
+    return inside

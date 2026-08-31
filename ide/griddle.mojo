@@ -39,16 +39,22 @@ from std.memory import alloc
 from ide.agent import agent_command
 from ide.chrome import Chrome, bring_up, draw, finish, release
 from ide.drop import register as register_drop, revoke as revoke_drop
-from ide.doc import Doc
+from ide.doc import Doc, LINE_H
 from ide.gridview import (
     draw_issues,
+    draw_popup,
     draw_text,
     release_cache,
     status_line,
 )
 from ide.window import (
     caret_click,
+    complete_at_caret,
     file_uri,
+    popup_accept,
+    popup_close,
+    popup_is_open,
+    popup_move,
     pump as lsp_pump,
     start_server,
     stop_server,
@@ -75,6 +81,8 @@ from ide.win32 import (
     RECT,
     WNDCLASSEXW,
     WndProcType,
+    dpi_scale,
+    scaled,
     wide,
     win32,
 )
@@ -169,6 +177,79 @@ def griddle_wndproc(
         # the window's user data because this procedure is captureless --
         # Windows calls it, so it can hold nothing and must fetch what it
         # needs from the one place a window can keep something.
+        # A window dragged onto a display of a different density. Windows
+        # sends this only to a per-monitor-aware process -- which is what the
+        # manifest buys -- and hands over the rectangle the window should
+        # take, already worked out. Taking it is what stops the window
+        # growing or shrinking by a hair on every crossing.
+        #
+        # Everything drawn was sized for the old density: the font is baked
+        # into the text format at a point size, and every cached line layout
+        # was made with that format. So this goes through the same rebuild a
+        # lost device does -- new chrome at the new scale, cache dropped --
+        # rather than trying to rescale what is already there.
+        if message == UInt32(winkb_constant["WM_DPICHANGED"]()):
+            var GetWindowLongPtrW2 = win32[
+                def (Int, c_int) thin abi("C") -> Int, "GetWindowLongPtrW"
+            ]()
+            var stored2 = GetWindowLongPtrW2(
+                hwnd, c_int(winkb_constant["GWLP_USERDATA"]())
+            )
+            var SetWindowPos2 = win32[
+                def (
+                    Int, Int, c_int, c_int, c_int, c_int, UInt32
+                ) thin abi("C") -> c_int,
+                "SetWindowPos",
+            ]()
+            var suggested = Pointer[RECT, MutAnyOrigin](
+                unsafe_from_address=lparam
+            )
+            # SWP_NOZORDER | SWP_NOACTIVATE, named here because they are
+            # #defines and the metadata has no row for them.
+            _ = SetWindowPos2(
+                hwnd,
+                0,
+                c_int(Int(suggested[].left)),
+                c_int(Int(suggested[].top)),
+                c_int(Int(suggested[].right - suggested[].left)),
+                c_int(Int(suggested[].bottom - suggested[].top)),
+                UInt32(0x0004 | 0x0010),
+            )
+            if stored2 != 0:
+                var chrome2 = Pointer[Chrome, MutAnyOrigin](
+                    unsafe_from_address=stored2
+                )
+                var GetClientRect2 = win32[
+                    def (
+                        Int, Pointer[RECT, MutAnyOrigin]
+                    ) thin abi("C") -> c_int,
+                    "GetClientRect",
+                ]()
+                var rc2 = RECT()
+                _ = GetClientRect2(
+                    hwnd, Pointer(to=rc2).unsafe_origin_cast[MutAnyOrigin]()
+                )
+                try:
+                    recreate(
+                        chrome2,
+                        hwnd,
+                        Int(rc2.right - rc2.left),
+                        Int(rc2.bottom - rc2.top),
+                    )
+                    if chrome2[].doc != 0:
+                        Pointer[Doc, MutAnyOrigin](
+                            unsafe_from_address=chrome2[].doc
+                        )[].grid.line_height = scaled(
+                            LINE_H, chrome2[].scale
+                        )
+                except err:
+                    print("griddle: DPI change failed:", String(err))
+            var InvalidateRect2 = win32[
+                def (Int, Int, c_int) thin abi("C") -> c_int, "InvalidateRect"
+            ]()
+            _ = InvalidateRect2(hwnd, 0, c_int(0))
+            return 0
+
         if message == UInt32(winkb_constant["WM_PAINT"]()):
             var GetWindowLongPtrW = win32[
                 def (Int, c_int) thin abi("C") -> Int, "GetWindowLongPtrW"
@@ -231,6 +312,19 @@ def griddle_wndproc(
                             draw_issues(
                                 doc[].grid, chrome[], layout.issues()
                             )
+                        # Last, and over everything: a popup that the text
+                        # can draw on top of is not a popup.
+                        if doc[].popup:
+                            draw_popup(
+                                doc[].grid,
+                                chrome[],
+                                doc[].rope,
+                                layout.editor(),
+                                doc[].caret_line,
+                                doc[].caret_col,
+                                doc[].popup_row,
+                                doc[].revision,
+                            )
                 except err:
                     print("griddle: paint failed:", String(err))
                 # Every drawing command is issued; what remains is the
@@ -245,7 +339,8 @@ def griddle_wndproc(
                 # batch, and a batch left open poisons every frame after it,
                 # so a paint that failed half-way must still be closed.
                 try:
-                    if finish(chrome[]) == D2DERR_RECREATE_TARGET:
+                    var _hr = finish(chrome[])
+                    if _hr == D2DERR_RECREATE_TARGET:
                         recreate(chrome, hwnd, width, height)
                     # EndDraw has returned, which for a vsync-presenting
                     # target means the frame is on its way to the display.
@@ -324,7 +419,31 @@ def griddle_wndproc(
             var ctrl = (Int(ctrl_held) & 0x8000) != 0
             var page = page_lines(hwnd)
 
+            # While the popup is up it owns these keys. Letting the
+            # editor have them means Enter inserts a newline behind the list
+            # and Escape does nothing, which is every bad completion UI.
+            if popup_is_open(hwnd):
+                if wparam == winkb_constant["VK_ESCAPE"]():
+                    _ = popup_close(hwnd)
+                    return 0
+                if wparam == winkb_constant["VK_UP"]():
+                    _ = popup_move(hwnd, -1)
+                    return 0
+                if wparam == winkb_constant["VK_DOWN"]():
+                    _ = popup_move(hwnd, 1)
+                    return 0
+                if (
+                    wparam == winkb_constant["VK_RETURN"]()
+                    or wparam == winkb_constant["VK_TAB"]()
+                ):
+                    _ = popup_accept(hwnd)
+                    return 0
+
             if ctrl:
+                # Ctrl+Space: the universal "what can go here".
+                if wparam == winkb_constant["VK_SPACE"]():
+                    _ = complete_at_caret(hwnd)
+                    return 0
                 # Z, Y and A are virtual key codes, which are the ASCII
                 # capitals for letters -- one of Win32's few kindnesses.
                 if wparam == ord("Z"):
@@ -515,6 +634,30 @@ def load_document(path: String, lines: Int) raises -> Rope:
 
 
 def main() raises:
+    # DPI awareness. ide/griddle.manifest is what normally declares this, and
+    # a manifest is the right place because awareness is a property of the
+    # process from its first instruction rather than something to switch on
+    # part way through. This call is the fallback for a binary run without
+    # the manifest embedded or beside it, and it fails -- harmlessly, with
+    # ERROR_ACCESS_DENIED -- when the manifest already won.
+    #
+    # Without either, Windows reports a smaller desktop than there is, lets
+    # the process draw at that size and stretches the result: blurry text in
+    # an editor, which is the one thing an editor may not have.
+    #
+    # -4 is DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2. It is a sentinel
+    # handle value rather than an enumerator, so it is not in the metadata to
+    # be looked up; it is written here with its name because that is the only
+    # place it can be written.
+    try:
+        var SetProcessDpiAwarenessContext = win32[
+            def (Int) thin abi("C") -> c_int,
+            "SetProcessDpiAwarenessContext",
+        ]()
+        _ = SetProcessDpiAwarenessContext(-4)
+    except:
+        pass
+
     # Windows describes its own structures; a disagreement is a build
     # failure here rather than corruption at the first call.
     comptime assert (
@@ -647,10 +790,45 @@ def main() raises:
     # layout is arithmetic on whatever is left.
     build_menu(hwnd)
 
-    # Direct2D, before the window is shown, so the first paint has something
-    # to draw with. The chrome outlives this scope -- the window procedure
-    # picks it up on every WM_PAINT -- so it is heap-allocated and the window
-    # is told where it lives.
+    # 1200x800 was written for a 96 DPI display, so on a denser one the
+    # window has to grow with everything in it. Done after creation rather
+    # than in CreateWindowExW because the window has to exist before Windows
+    # will say which display it landed on.
+    var window_scale = dpi_scale(hwnd)
+    if window_scale != 1.0:
+        var SetWindowPos = win32[
+            def (
+                Int, Int, c_int, c_int, c_int, c_int, UInt32
+            ) thin abi("C") -> c_int,
+            "SetWindowPos",
+        ]()
+        # SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE. Not in the metadata --
+        # these are #defines rather than an enumeration -- so they are named
+        # here rather than looked up.
+        _ = SetWindowPos(
+            hwnd, 0, 0, 0,
+            c_int(Int(1200.0 * window_scale)),
+            c_int(Int(800.0 * window_scale)),
+            UInt32(0x0002 | 0x0004 | 0x0010),
+        )
+
+    # Shown BEFORE Direct2D is brought up, and the order is load-bearing.
+    # An ID2D1HwndRenderTarget makes a DXGI swap chain for the window it is
+    # given, and a swap chain made for a window that is not yet visible is
+    # born occluded. Occluded is not an error: EndDraw returns S_OK and the
+    # present is quietly skipped, so every HRESULT reads healthy, the text
+    # layouts are all built and drawn, and the window stays the blank white
+    # of a surface nothing was ever presented to. It cost most of an
+    # afternoon precisely because nothing reports it -- see
+    # docs/occlusion.md. The titlebar is darkened first so showing early
+    # costs no flash of light chrome.
+    var dark = dark_titlebar(hwnd)
+    _ = ShowWindow(hwnd, c_int(winkb_constant["SW_SHOW"]()))
+
+    # Direct2D, now that there is a visible window to present to. The chrome
+    # outlives this scope -- the window procedure picks it up on every
+    # WM_PAINT -- so it is heap-allocated and the window is told where it
+    # lives.
     var rc0 = RECT()
     var GetClientRect0 = win32[
         def (Int, Pointer[RECT, MutAnyOrigin]) thin abi("C") -> c_int,
@@ -682,6 +860,10 @@ def main() raises:
     if open_path.byte_length() > 0:
         doc_store[].uri = file_uri(absolute(open_path))
     chrome_store[].doc = Int(doc_store)
+    # One row, at this display's density. The grid holds it because scrolling
+    # and hit testing divide by it; the chrome holds the scale because the
+    # font was made at it. They have to agree, so it is set from the chrome.
+    doc_store[].grid.line_height = scaled(LINE_H, chrome_store[].scale)
     print(
         "griddle: document", doc_store[].rope.line_count(), "lines,",
         doc_store[].rope.byte_length(), "bytes",
@@ -709,14 +891,16 @@ def main() raises:
     except err:
         print("griddle: no text services (", String(err), ")")
 
-    var dark = dark_titlebar(hwnd)
-    _ = ShowWindow(hwnd, c_int(winkb_constant["SW_SHOW"]()))
     # Paint now rather than when the loop first idles: a command that reads
     # the grid's counters would otherwise be reading a window that has not
     # drawn a frame, and get zeroes that look like a bug.
+    var InvalidateRect0 = win32[
+        def (Int, Int, c_int) thin abi("C") -> c_int, "InvalidateRect"
+    ]()
     var UpdateWindow = win32[
         def (Int) thin abi("C") -> c_int, "UpdateWindow"
     ]()
+    _ = InvalidateRect0(hwnd, 0, c_int(0))
     _ = UpdateWindow(hwnd)
     print(
         "griddle: window", hwnd, "open  dark-titlebar hr =", dark,

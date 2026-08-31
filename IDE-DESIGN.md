@@ -137,11 +137,29 @@ The budget, and what enforces it:
 
 | action | budget | measured | mechanism |
 |---|---|---|---|
-| keystroke → glyph | ≤ 1 frame (6.9 ms @ 144 Hz, 16.7 @ 60) | **0.85 ms** of work, 5.1% of a frame at 60 Hz; 0 frames missed in 500 | O(log n) rope edit + one line redrawn + vsync present |
+| keystroke → glyph | ≤ 1 frame (6.9 ms @ 144 Hz, 16.7 @ 60) | **4.99 ms** of work, 29.9% of a frame at 60 Hz; 0 frames missed in 200 | O(log n) rope edit + the visible lines relaid + vsync present |
 | open 250k lines → first paint | < 100 ms | **16.7 ms** to build the rope | single-pass rope build; paint visible only |
-| full-speed scroll | 0 dropped frames | **0** in 300, worst frame 19.7 ms | draw exposed lines from the layout cache |
+| full-speed scroll | 0 dropped frames | **0** in 120, worst frame 17.7 ms | draw exposed lines from the layout cache |
 | literal find, 100 MB | < 200 ms | **11.8 ms** over 104 MB | leaf walk; the buffer is never flattened |
-| completion popup | < 50 ms after reply | not yet built | one layered window; the server did the work |
+| completion popup | < 50 ms after reply | built, sprint 2.4 | the list is drawn in the frame; the server did the work |
+
+The keystroke figure moved from 0.85 ms to 4.99 ms in sprint 2.4, and both
+halves of that are worth naming. Syntax colouring now runs on every line that
+is laid out, and the window is half again larger because the process became
+DPI-aware, so there are 36 lines on screen where there were 26. Neither is
+free and neither is a regression to fix — they are the cost of the feature and
+of drawing at the display's real resolution.
+
+What *was* a regression, briefly, is worth recording: the first version asked
+`_starts_in_docstring` for every line it drew, and that walks two hundred
+lines back each time. Thirty-six lines on screen made it seven thousand rope
+reads a frame, and a keystroke changes the revision so every frame paid it in
+full — **21.1 ms, 127% of a frame**. The state is threaded down the visible
+range instead, which is two hundred reads once plus one per line. Caching the
+four syntax brushes on the chrome rather than making one per coloured word
+was the obvious other suspect and turned out to be worth nothing measurable;
+it stayed anyway, because a Direct2D object per word per line per keystroke is
+not a thing to leave in on the grounds that it did not show up.
 
 All measured on this machine (60 Hz display) with the optimized build, by
 `tools/check-ide.ps1` and the `storm`, `frame` and `find-bench` verbs. The
@@ -151,10 +169,11 @@ costs 3.4 ms of work per keystroke rather than 0.85, still a fifth of a frame.
 **The keystroke number, precisely.** What is measured is the WM_CHAR handler
 being entered to the last drawing command being issued: the whole of this
 application's response. It does not include the keyboard, its driver and the
-message queue on one side, or scanout and panel response on the other. It is
-0.85 ms on a 14 MB document and 0.94 ms on a 104 MB one — the number does not
-track document size, which is the entire thesis and the reason the budget is
-holdable at all.
+message queue on one side, or scanout and panel response on the other. It does
+not track document size — it is the same on a 14 MB document as on a 104 MB
+one — which is the entire thesis and the reason the budget is holdable at all.
+It tracks the number of lines on screen, which is the right thing for it to
+track.
 
 Add one refresh interval for the wait at the vertical blank and that is
 keystroke-to-photon less the two hops above: worst observed 20.3 ms against a
@@ -168,6 +187,35 @@ person rather than something a sprint should do on its own. The application
 half is measured precisely instead, and the two unmeasured hops are named
 rather than folded into a number that would look more complete than it is.
 See `docs/latency.md`.
+
+### Scale: DPI now, zoom later, one number
+
+Every measurement in the editor is written once at 96 DPI — `RAIL_W = 52`,
+`GUTTER_W = 56`, `LINE_H = 16` — and multiplied through `scaled()` in
+`ide/win32.mojo`. Exactly one function knows what a pixel is worth.
+
+The process declares itself per-monitor-DPI-aware in `ide/griddle.manifest`,
+embedded into the executable by `mt.exe` at build time, with a
+`SetProcessDpiAwarenessContext` call in `main` as the fallback for a binary
+run without it. Without that declaration Windows reports a smaller desktop
+than there is, lets the process draw at that size and stretches the result:
+blurry text in an editor, which is the one thing an editor may not have. On
+the machine this was written on the desktop is 2560×1440 at 150%, reported as
+1707×960 — everything was being scaled up by half again.
+
+`WM_DPICHANGED` takes the window rect Windows suggests and then goes through
+the same rebuild a lost device does. It has to: the font size is baked into
+the text format, and every cached line layout was made with that format.
+
+**The View menu's zoom belongs here, and is one line when it comes.** A person
+zooming in and a person dragging the window to a denser display want the same
+thing — everything bigger by the same factor — so zoom multiplies this scale
+rather than forking a second one, and every rectangle, the gutter, the row
+height and the font follow for free. Ctrl+`+`, Ctrl+`-`, Ctrl+`0`, and View →
+Zoom In / Zoom Out / Reset Zoom naming the same three. What that sprint has to
+do beyond the multiply is invalidate the layout cache and rebuild the text
+format, which is what `recreate` already does for a DPI change — so the work
+is a zoom factor on the `Doc`, three menu items, and reusing that path.
 
 **Milestone 7, optional:** a D3D11 glyph-atlas renderer on the machinery
 `d3djulia` already proves, for guaranteed high-refresh scrolling. D2D is
@@ -554,7 +602,7 @@ Each small, each reusable beyond the IDE, each honest about origin:
 | 0 | shell: window, dark title bar, menus, custom-drawn chrome, **agent surface + self-screenshot**, drop-to-open | `check-ide.ps1` drives it headless; PNG from an unattended run; a dropped file's path echoed |
 | 1 | **rope · D2D grid · TSF · caret · selection · undo · find** — the long pole | 250k lines < 100 ms; keystroke storm under PresentMon ≤ 1 frame; **composition through a real IME**; rope + editing check suites |
 | 2 | LSP: probe, diagnostics, completion (incl. `windows_api.db` slots), definition; **diagnostics mapped out of `<class>` buffers** | completing an unfilled COM slot with true arity; clicking an in-class error lands in the user's file |
-| 3 | documents: the globals-to-`Document` refactor, tabs, open/save (`IFileOpenDialog`), dirty tracking, watcher | two tabs; re-open selects, not duplicates; Run-on-unsaved answered by save-all |
+| 3 | documents: the globals-to-`Document` refactor, tabs, open/save (`IFileOpenDialog`), dirty tracking, watcher; **the View menu, including Zoom In / Out / Reset** | two tabs; re-open selects, not duplicates; Run-on-unsaved answered by save-all; zoom changes the reported `scale` and every region with it |
 | 4 | build, run, console, jump-to-error, Examples view | **Griddle builds Griddle**; the mandelbrot runs from its card |
 | 5 | projects: lazy tree, project search, jump list MRU | open `ide/`, click through, search across it; recent projects on the taskbar |
 | 6 | Python & Toolchain views: venvs, four env values, version switcher, lookup | a compiled Mojo program imports a marker module from the project venv |

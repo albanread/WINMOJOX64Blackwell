@@ -111,11 +111,35 @@ if ($out -match 'caret line=6 col=12') {
 
 # 6. And clicking the row in the issues pane does the same thing, through the
 # same path a person's mouse takes.
-$out = Ask $broken 'lsp wait 25000;;views;;click 300 600;;caret'
-if ($out -match 'caret line=5 col=12') {
-    Record 'lsp-click-issue' 'PASS' 'a click in the pane landed on the first issue'
+#
+# The coordinate is computed from the pane the window reports, not written
+# down here. A window whose client area is a different size puts the issues
+# pane somewhere else, and a check that clicks at a remembered pixel then
+# fails for a reason that has nothing to do with what it is testing -- which
+# is exactly what it did when the render target started being sized after
+# ShowWindow rather than before (docs/occlusion.md). ISSUE_TOP_PAD is 26 and
+# a row is 18 high, so the middle of the first row is 35 design pixels
+# down -- and then times the scale, because the pane's own position is in
+# device pixels and the offset inside it has to be measured the same way.
+# Getting only half of that right lands the click on the pane's heading,
+# which reports no row at all.
+$out = Ask $broken 'lsp wait 25000;;views'
+$paneLine = @($out -split "`n" | Where-Object { $_ -match '^issues (\d+),(\d+) ' })
+$scale = if ($out -match '(?m)^scale ([\d.]+)') { [double]$matches[1] } else { 1.0 }
+if ($paneLine.Count -eq 0) {
+    Record 'lsp-click-issue' 'FAIL' 'the window did not report an issues pane'
 } else {
-    Record 'lsp-click-issue' 'FAIL' (($out -split "`n" | Where-Object { $_ -match 'caret' })[-1])
+    $m = [regex]::Match($paneLine[0], '^issues (\d+),(\d+) ')
+    $cx = [int]$m.Groups[1].Value + [int](40 * $scale)
+    $cy = [int]$m.Groups[2].Value + [int](35 * $scale)
+    $out = Ask $broken "lsp wait 25000;;click $cx $cy;;caret"
+    if ($out -match 'caret line=5 col=12') {
+        Record 'lsp-click-issue' 'PASS' "a click at $cx,$cy landed on the first issue"
+    } else {
+        $seen = @($out -split "`n" | Where-Object { $_ -match 'caret' })
+        Record 'lsp-click-issue' 'FAIL' (
+            "clicked $cx,$cy -> " + $(if ($seen.Count) { $seen[-1] } else { 'no caret line' }))
+    }
 }
 
 # 7. A mistake inside a `class` body lands on the user's own line.

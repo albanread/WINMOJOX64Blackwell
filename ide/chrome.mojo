@@ -38,7 +38,7 @@ from std.sys._winkb import (
 )
 from std.sys.com import Com
 
-from ide.win32 import RECT, win32
+from ide.win32 import RECT, dpi_scale, scaled, win32
 
 
 # ===----------------------------------------------------------------------===#
@@ -61,6 +61,17 @@ comptime SELECT = 0x2A3A55  # selected text, behind the glyphs
 comptime MATCH = 0x4A3D1E  # every other match of the current search
 comptime ERROR = 0xE05252  # a squiggle under something that is wrong
 comptime WARN = 0xD8A657  # and under something that is merely doubtful
+comptime POPUP = 0x22262E  # the completion list's own ground
+comptime POPUP_SEL = 0x2F3A4E  # and the row under the cursor
+
+# Syntax colours. Chosen so the most common thing on screen is the quietest:
+# most of a page of code is plain text, and a colour that shouts turns the
+# whole window that colour. Keywords, strings, numbers and comments are rare
+# enough each to carry a hue.
+comptime SYN_COMMENT = 0x6B7280
+comptime SYN_STRING = 0x8FBF7F
+comptime SYN_KEYWORD = 0xC08FD8
+comptime SYN_NUMBER = 0xE0A458
 
 
 @fieldwise_init
@@ -191,62 +202,74 @@ comptime PANE_H = 140
 
 @fieldwise_init
 struct Layout(ImplicitlyCopyable, Movable):
-    """Where every region sits, for a given client size."""
+    """Where every region sits, for a given client size.
+
+    The constants above are written at 96 DPI and multiplied by `scale` here,
+    so the arithmetic stays the readable kind while the rectangles come out in
+    the device pixels the display actually has. `scaled` rounds, which is what
+    keeps two regions meant to share an edge sharing it.
+    """
 
     var width: Int
     var height: Int
+    var scale: Float32
+
+    def rail_w(self) -> Float32:
+        """The rail's width in device pixels."""
+        return scaled(RAIL_W, self.scale)
+
+    def gutter_x(self) -> Float32:
+        """Where the editor field begins: past the rail and the sidebar."""
+        return scaled(RAIL_W + SIDEBAR_W, self.scale)
+
+    def _bar_top(self) -> Float32:
+        """The top of the status bar."""
+        return Float32(self.height) - scaled(STATUS_H, self.scale)
+
+    def _pane_top(self) -> Float32:
+        """The top of the bottom panes."""
+        return self._bar_top() - scaled(PANE_H, self.scale)
+
+    def _split(self) -> Float32:
+        """Where the issues pane ends and the output pane begins."""
+        var left = self.gutter_x()
+        return left + Float32(Int((Float32(self.width) - left) / 2))
 
     def rail(self) -> D2D_RECT_F:
         """The activity rail down the left edge."""
-        return D2D_RECT_F(
-            0, 0, Float32(RAIL_W), Float32(self.height - STATUS_H)
-        )
+        return D2D_RECT_F(0, 0, self.rail_w(), self._bar_top())
 
     def sidebar(self) -> D2D_RECT_F:
         """The file tree, beside the rail."""
         return D2D_RECT_F(
-            Float32(RAIL_W),
-            0,
-            Float32(RAIL_W + SIDEBAR_W),
-            Float32(self.height - STATUS_H),
+            self.rail_w(), 0, self.gutter_x(), self._bar_top()
         )
 
     def editor(self) -> D2D_RECT_F:
         """The text grid: everything the panes and bars do not take."""
         return D2D_RECT_F(
-            Float32(RAIL_W + SIDEBAR_W),
-            0,
-            Float32(self.width),
-            Float32(self.height - STATUS_H - PANE_H),
+            self.gutter_x(), 0, Float32(self.width), self._pane_top()
         )
 
     def issues(self) -> D2D_RECT_F:
         """The issues pane, bottom left of the editor field."""
-        var split = (self.width + RAIL_W + SIDEBAR_W) // 2
         return D2D_RECT_F(
-            Float32(RAIL_W + SIDEBAR_W),
-            Float32(self.height - STATUS_H - PANE_H),
-            Float32(split),
-            Float32(self.height - STATUS_H),
+            self.gutter_x(), self._pane_top(), self._split(), self._bar_top()
         )
 
     def output(self) -> D2D_RECT_F:
         """The build and run pane, beside the issues."""
-        var split = (self.width + RAIL_W + SIDEBAR_W) // 2
         return D2D_RECT_F(
-            Float32(split),
-            Float32(self.height - STATUS_H - PANE_H),
+            self._split(),
+            self._pane_top(),
             Float32(self.width),
-            Float32(self.height - STATUS_H),
+            self._bar_top(),
         )
 
     def status(self) -> D2D_RECT_F:
         """The status bar along the bottom."""
         return D2D_RECT_F(
-            0,
-            Float32(self.height - STATUS_H),
-            Float32(self.width),
-            Float32(self.height),
+            0, self._bar_top(), Float32(self.width), Float32(self.height)
         )
 
 
@@ -286,6 +309,21 @@ struct Chrome(ImplicitlyCopyable, Movable):
     # target is: the window procedure has one pointer to work with, and
     # everything the window owns has to be reachable from it.
     var tsf: Int
+    # Device pixels per design pixel, from the display this window is on.
+    # Everything drawn multiplies by it, including the font: the text format
+    # is made at this size, so a redraw at a new scale needs a new format --
+    # which is why a DPI change goes through the same rebuild a lost device
+    # does. The zoom control the View menu will grow folds into this number.
+    var scale: Float32
+    # The four syntax brushes, made once with the render target rather than
+    # per coloured run. A run is a word: making and dropping a Direct2D brush
+    # for each one, on every line, on every keystroke, is the shape that makes
+    # a coloured editor slower than a plain one. They belong to the target, so
+    # they are rebuilt whenever it is.
+    var brush_comment: Int
+    var brush_string: Int
+    var brush_keyword: Int
+    var brush_number: Int
 
     def __init__(out self):
         """Nothing brought up yet."""
@@ -297,6 +335,11 @@ struct Chrome(ImplicitlyCopyable, Movable):
         self.doc = 0
         self.immediate = False
         self.tsf = 0
+        self.scale = 1.0
+        self.brush_comment = 0
+        self.brush_string = 0
+        self.brush_keyword = 0
+        self.brush_number = 0
 
 
 def bring_up(
@@ -329,6 +372,10 @@ def bring_up(
     ), "D2D1_HWND_RENDER_TARGET_PROPERTIES does not match Windows"
 
     var chrome = Chrome()
+    # Read once, here, and carried on the chrome: every rectangle and the
+    # font size come from it, so a single reading keeps them consistent even
+    # if the window is moved mid-frame.
+    chrome.scale = dpi_scale(hwnd)
 
     # The two factories are plain exports; everything after them is COM.
     var D2D1CreateFactory = win32[
@@ -409,7 +456,7 @@ def bring_up(
         UInt32(400),  # DWRITE_FONT_WEIGHT_NORMAL
         UInt32(0),  # DWRITE_FONT_STYLE_NORMAL
         UInt32(5),  # DWRITE_FONT_STRETCH_NORMAL
-        Float32(12.0),
+        Float32(12.0) * chrome.scale,
         Int(locale.unsafe_ptr()),
         com_addr(chrome.text_format),
     )
@@ -418,7 +465,46 @@ def bring_up(
     if chrome.text_format == 0:
         raise Error("CreateTextFormat produced nothing")
 
+    # The syntax brushes, now that there is a target to make them on.
+    chrome.brush_comment = _solid(chrome.target, SYN_COMMENT)
+    chrome.brush_string = _solid(chrome.target, SYN_STRING)
+    chrome.brush_keyword = _solid(chrome.target, SYN_KEYWORD)
+    chrome.brush_number = _solid(chrome.target, SYN_NUMBER)
+
     return chrome
+
+
+def _solid(target: Int, colour: Int) raises -> Int:
+    """A solid colour brush on the render target.
+
+    The same call `gridview._brush` makes; here because the syntax brushes are
+    made once, with the target, and kept on the chrome beside it.
+
+    Args:
+        target: The render target.
+        colour: A 0xRRGGBB literal.
+
+    Returns:
+        The brush, or zero.
+
+    Raises:
+        If Direct2D refuses.
+    """
+    var this = OpaquePointer[MutUntrackedOrigin](unsafe_from_address=target)
+    var c = D2D_COLOR_F.rgb(colour)
+    var brush = Int(0)
+    _ = com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[D2D_COLOR_F, MutAnyOrigin],
+            Int,
+            Pointer[Int, MutAnyOrigin],
+        ) thin abi("C") -> Int32,
+        "ID2D1RenderTarget",
+        "CreateSolidColorBrush",
+    ](this)(this, com_addr(c), 0, com_addr(brush))
+    _ = c
+    return brush
 
 
 def draw(
@@ -447,7 +533,7 @@ def draw(
     Raises:
         If a Direct2D call fails.
     """
-    var layout = Layout(width, height)
+    var layout = Layout(width, height, chrome.scale)
     if chrome.target == 0:
         return layout
     var rt = Com[StaticString("ID2D1HwndRenderTarget")](borrowed=chrome.target)
@@ -666,6 +752,10 @@ def _label(chrome: Chrome, text: StringSlice,
 
 def release(chrome: Chrome) raises:
     """Drop every interface the chrome holds."""
+    _release(chrome.brush_comment)
+    _release(chrome.brush_string)
+    _release(chrome.brush_keyword)
+    _release(chrome.brush_number)
     _release(chrome.text_format)
     _release(chrome.dwrite)
     _release(chrome.target)

@@ -12,6 +12,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "MojoServer.h"
+#include "KGEN/Support/WinKB.h"
+#include "llvm/ADT/StringSet.h"
 #include "DocumentDebouncer.h"
 #include "KGEN/ToolCommon/InitAllDialects.h"
 #include "KGEN/tools/mojo-lsp-server/LSPTelemetryContext.h"
@@ -1237,6 +1239,218 @@ static ItemAccessKind getItemAccessKind(const lsp::CompletionItem &item) {
   return ItemAccessKind::kOther;
 }
 
+//===----------------------------------------------------------------------===//
+// Completing a COM class body
+//
+// Sprint 2.4, and the reason this fork has a language server of its own rather
+// than using one. Inside
+//
+//     class DropTarget(IDropTarget):
+//         def DragEnter(...)
+//
+// the useful completion is not "every name in scope". It is the methods of
+// IDropTarget that this body has not implemented yet -- and their parameter
+// types, from `windows_api.db`, because those are exactly the thing a person
+// cannot be expected to remember and exactly the thing that fails silently
+// when it is wrong. A method with a four-byte parameter declared one byte wide
+// compiles, fills its slot, and reads the wrong register bytes forever.
+//
+// The scan is textual, deliberately. By the time the parser has run, `class`
+// has been desugared into a struct and the interface list is gone; and a
+// completion is asked for while a person is mid-keystroke, when the document
+// very often does not parse at all. Reading the lines above the caret is what
+// survives both.
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+/// The leading whitespace of a line, as a count of characters.
+static size_t indentOf(StringRef line) {
+  return line.size() - line.ltrim(" \t").size();
+}
+
+/// What a `class` header says, if a line is one.
+struct ClassHeader {
+  StringRef name;
+  SmallVector<StringRef> interfaces;
+};
+
+/// Parse `class Name(IFace, IOther):`, allowing whatever spacing.
+static std::optional<ClassHeader> parseClassHeader(StringRef line) {
+  StringRef rest = line.ltrim(" \t");
+  if (!rest.consume_front("class"))
+    return std::nullopt;
+  if (rest.empty() || !(rest.front() == ' ' || rest.front() == '\t'))
+    return std::nullopt;
+  rest = rest.ltrim(" \t");
+
+  size_t paren = rest.find('(');
+  if (paren == StringRef::npos)
+    return std::nullopt;
+  ClassHeader header;
+  header.name = rest.take_front(paren).rtrim(" \t");
+  if (header.name.empty())
+    return std::nullopt;
+
+  size_t close = rest.find(')', paren);
+  if (close == StringRef::npos)
+    return std::nullopt;
+  StringRef list = rest.slice(paren + 1, close);
+  while (!list.empty()) {
+    auto [head, tail] = list.split(',');
+    StringRef iface = head.trim(" \t");
+    if (!iface.empty())
+      header.interfaces.push_back(iface);
+    list = tail;
+  }
+  if (header.interfaces.empty())
+    return std::nullopt;
+  return header;
+}
+
+/// The class body the caret is inside, and the methods already written in it.
+struct ClassContext {
+  ClassHeader header;
+  llvm::StringSet<> implemented;
+};
+
+/// Find the class body containing `offset`, and every method already in it.
+///
+/// Two passes, and the second one matters: the header is found by reading
+/// upwards, but the methods have to be collected from the WHOLE body. A first
+/// version collected only the `def`s above the caret, and so cheerfully
+/// offered to implement the three methods written below it -- which is worse
+/// than offering nothing, because it is confidently wrong.
+static std::optional<ClassContext> classContextAt(StringRef text,
+                                                  size_t offset) {
+  if (offset > text.size())
+    offset = text.size();
+
+  // Every line of the document, with where each begins.
+  SmallVector<StringRef> lines;
+  SmallVector<size_t> starts;
+  {
+    size_t at = 0;
+    while (at <= text.size()) {
+      size_t nl = text.find('\n', at);
+      if (nl == StringRef::npos) {
+        starts.push_back(at);
+        lines.push_back(text.substr(at));
+        break;
+      }
+      starts.push_back(at);
+      lines.push_back(text.slice(at, nl));
+      at = nl + 1;
+    }
+  }
+
+  // Which line the caret is on.
+  size_t caretLine = 0;
+  for (size_t i = 0; i < starts.size(); ++i) {
+    if (starts[i] <= offset)
+      caretLine = i;
+    else
+      break;
+  }
+
+  // Upwards for the header. A line at column zero that is not one ends the
+  // search: the caret is not inside a class body at all.
+  std::optional<ClassHeader> header;
+  size_t headerLine = 0;
+  for (size_t i = caretLine + 1; i-- > 0;) {
+    StringRef line = lines[i];
+    StringRef trimmed = line.trim(" \t\r");
+    if (trimmed.empty() || trimmed.starts_with("#"))
+      continue;
+    if (auto parsed = parseClassHeader(line)) {
+      header = *parsed;
+      headerLine = i;
+      break;
+    }
+    if (indentOf(line) == 0)
+      return std::nullopt;
+    if (i == 0)
+      return std::nullopt;
+  }
+  if (!header)
+    return std::nullopt;
+
+  // Downwards for the body's methods, to the first line that leaves it.
+  ClassContext ctx;
+  ctx.header = *header;
+  size_t classIndent = indentOf(lines[headerLine]);
+  for (size_t i = headerLine + 1; i < lines.size(); ++i) {
+    StringRef line = lines[i];
+    StringRef trimmed = line.trim(" \t\r");
+    if (trimmed.empty() || trimmed.starts_with("#"))
+      continue;
+    if (indentOf(line) <= classIndent)
+      break;
+    StringRef defLine = trimmed;
+    if (!defLine.consume_front("def "))
+      continue;
+    StringRef name = defLine.ltrim(" ").take_until(
+        [](char c) { return c == '(' || c == ' ' || c == ':'; });
+    // The half-typed name the caret is sitting in is not an implementation
+    // of anything -- it is the thing being completed. Counting it would hide
+    // the very method the person is reaching for.
+    if (!name.empty() && i != caretLine)
+      ctx.implemented.insert(name);
+  }
+  return ctx;
+}
+
+} // namespace
+
+/// Completions for the interface methods a class body has not filled in.
+///
+/// Returns nothing at all when the caret is not inside a class body, which is
+/// every other completion in the language and must stay untouched.
+static std::vector<lsp::CompletionItem>
+classSlotCompletions(StringRef documentText, size_t offset) {
+  std::vector<lsp::CompletionItem> items;
+  auto ctxOr = classContextAt(documentText, offset);
+  if (!ctxOr)
+    return items;
+
+  for (StringRef iface : ctxOr->header.interfaces) {
+    auto methodsOr = KGEN::winkbInterfaceMethods(iface);
+    if (!methodsOr) {
+      // An interface the database does not know is a typo or a name from
+      // another platform. Say nothing rather than guessing; the compiler will
+      // say something specific when the file is built.
+      llvm::consumeError(methodsOr.takeError());
+      continue;
+    }
+    for (const KGEN::WinKBMethod &method : *methodsOr) {
+      if (ctxOr->implemented.contains(method.name))
+        continue;
+      lsp::CompletionItem item;
+      item.label = method.name;
+      item.kind = lsp::CompletionItemKind::Method;
+      item.detail = KGEN::winkbMojoSignature(method) +
+                    "   (" + iface.str() + " slot " +
+                    std::to_string(method.slot) + ")";
+      // The whole declaration, so accepting the completion leaves a method
+      // that compiles rather than a name to look the rest of up.
+      item.insertText =
+          method.name + KGEN::winkbMojoSignature(method) + ":";
+      item.documentation = {
+          lsp::MarkupKind::Markdown,
+          "Unimplemented slot of `" + iface.str() +
+              "`.\n\nParameter types are from `windows_api.db`; the names are "
+              "readable versions of Windows' own and are yours to change. A "
+              "slot left unfilled makes `into_com()` refuse to build the "
+              "object, by name."};
+      // Sorted above everything the language offers: inside a class body,
+      // these are what the person is there to write.
+      item.sortText = "0-0-" + method.name;
+      items.push_back(std::move(item));
+    }
+  }
+  return items;
+}
+
 lsp::CompletionList MojoDocument::onCodeCompletionSync(SMLoc completeLoc) {
   if (!context)
     return lsp::CompletionList();
@@ -1282,6 +1496,21 @@ lsp::CompletionList MojoDocument::onCodeCompletionSync(SMLoc completeLoc) {
     if (!it.documentation.empty())
       item.documentation = {lsp::MarkupKind::Markdown, it.documentation};
     completionList.items.push_back(item);
+  }
+
+  // And the unfilled interface slots, if the caret is inside a class body.
+  // Appended rather than replacing: a person writing a method body inside a
+  // class still wants every ordinary name, and the slots sort above them.
+  {
+    const llvm::MemoryBuffer *mainBuffer =
+        getSourceMgr().getMemoryBuffer(getSourceMgr().getMainFileID());
+    if (mainBuffer && completeLoc.isValid()) {
+      StringRef text = mainBuffer->getBuffer();
+      const char *at = completeLoc.getPointer();
+      if (at >= text.begin() && at <= text.end())
+        for (auto &item : classSlotCompletions(text, at - text.begin()))
+          completionList.items.push_back(std::move(item));
+    }
   }
 
   llvm::sort(completionList.items,

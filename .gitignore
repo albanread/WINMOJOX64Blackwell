@@ -45,6 +45,11 @@ MANIFEST
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+# ...but Griddle's is source, not a build product: it is what declares
+# the process DPI-aware, and without it the editor renders blurry on
+# every display that is not 96 DPI. The rule above came from a Python
+# template and was never meant to reach here.
+!ide/griddle.manifest
 
 # Installer logs
 pip-log.txt

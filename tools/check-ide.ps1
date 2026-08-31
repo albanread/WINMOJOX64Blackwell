@@ -91,6 +91,12 @@ if ($out -match 'alive after resize: True') {
 # would pass on garbage, so decode it and check the dimensions are the
 # window's own. That is the difference between "a file appeared" and "the
 # window was photographed".
+#
+# And then check that the photograph has the WINDOW in it. Dimensions alone
+# are satisfied perfectly by a blank white client area, which is exactly what
+# a Direct2D target whose presents are being skipped produces -- silently, with
+# every HRESULT reading S_OK. That went unnoticed for an afternoon because this
+# check said PASS the whole time. See docs/occlusion.md.
 $shot = Join-Path $env:TEMP ("griddle-check-{0}.png" -f (Get-Random))
 Remove-Item $shot -ErrorAction SilentlyContinue
 $out = Ask "screenshot $shot"
@@ -112,6 +118,46 @@ if (-not (Test-Path $shot)) {
         } else {
             Record 'screenshot' 'FAIL' "decoded but implausible: ${w}x${h}"
         }
+    }
+}
+
+# ---- 6b. and the photograph is of a window that drew -----------------------
+# Sample a grid of pixels from the client area. A drawn frame has the ground,
+# the panels, the rail, the status bar and text in it, and it is a DARK theme;
+# a window Direct2D never presented to is one flat colour, and that colour is
+# the white of a surface nothing was drawn to. So: several distinct colours,
+# and mostly dark. Either alone is too easy to satisfy by accident.
+if (Test-Path $shot) {
+    Add-Type -AssemblyName System.Drawing
+    $img = [System.Drawing.Bitmap]::FromFile($shot)
+    try {
+        $seen = @{}
+        $dark = 0
+        $total = 0
+        # Skip the top 60 rows: caption and menu are drawn by Windows and are
+        # there whether or not the client area ever received a frame.
+        for ($y = 60; $y -lt $img.Height; $y += 17) {
+            for ($x = 4; $x -lt $img.Width; $x += 23) {
+                $c = $img.GetPixel($x, $y)
+                $seen['{0:x2}{1:x2}{2:x2}' -f $c.R, $c.G, $c.B] = $true
+                $total++
+                if (($c.R + $c.G + $c.B) -lt 240) { $dark++ }
+            }
+        }
+        $colours = $seen.Keys.Count
+        $pct = if ($total) { [int](100 * $dark / $total) } else { 0 }
+        if ($colours -lt 4) {
+            Record 'screenshot content' 'FAIL' `
+                "$colours distinct colours below the menu -- the window is blank (docs/occlusion.md)"
+        } elseif ($pct -lt 60) {
+            Record 'screenshot content' 'FAIL' `
+                "$colours colours but only $pct% dark -- not the editor's chrome"
+        } else {
+            Record 'screenshot content' 'PASS' `
+                "$colours distinct colours, $pct% dark"
+        }
+    } finally {
+        $img.Dispose()
     }
     Remove-Item $shot -ErrorAction SilentlyContinue
 }
@@ -291,21 +337,36 @@ if ($bad -gt 0) {
 # 16. And a click in real client coordinates lands there too -- the same
 # function the window procedure calls on WM_LBUTTONDOWN, so what a person
 # gets and what this gets cannot drift apart.
-$out = AskMixed 'views;;caret 1 15;;click 443 24'
+# Both coordinates come from what the window reports, never from a number
+# written here. The click has to land on the pixel the caret says it is on,
+# and on a 150% display that pixel is half again where a remembered constant
+# would put it -- a check with 443 in it stops testing the caret and starts
+# testing the DPI.
+$out = AskMixed 'views;;caret 1 15'
 $textX = if ($out -match '(?m)^text (\d+)') { [int]$matches[1] } else { 0 }
+$rowH = if ($out -match '(?m)^lineheight (\d+)') { [int]$matches[1] } else { 0 }
 $caretX = if ($out -match 'col=15 x=([\d.]+)') { [double]$matches[1] } else { -1 }
-# @() again: a MatchCollection does not take a negative index, and without
-# the wrap this line throws rather than failing the check -- which reads, in
-# the summary, as a check that was never there.
-$landed = @([regex]::Matches($out, 'caret line=(\d+) col=(\d+)'))[-1]
-if ($textX -eq 0 -or $caretX -lt 0) {
+if ($textX -eq 0 -or $caretX -lt 0 -or $rowH -eq 0) {
     Record 'caret-click' 'FAIL' 'the window did not report its text origin'
-} elseif ($landed.Groups[1].Value -eq '1' -and $landed.Groups[2].Value -eq '15') {
-    Record 'caret-click' 'PASS' `
-        "click at x=443 landed on line 1 col 15 (text starts at $textX, caret at $caretX)"
 } else {
-    Record 'caret-click' 'FAIL' `
-        "landed on line $($landed.Groups[1].Value) col $($landed.Groups[2].Value), wanted 1/15"
+    # Line 1 is the second row from the top, and the middle of it is the least
+    # ambiguous place in it to click.
+    $clickX = [int][math]::Round($textX + $caretX)
+    $clickY = [int]($rowH * 1 + $rowH / 2)
+    # The caret is put somewhere else first, so landing on 1/15 is the click's
+    # doing rather than where it already was.
+    $out = AskMixed "caret 4 0;;click $clickX $clickY"
+    # @() again: a MatchCollection does not take a negative index, and without
+    # the wrap this line throws rather than failing the check -- which reads,
+    # in the summary, as a check that was never there.
+    $landed = @([regex]::Matches($out, 'caret line=(\d+) col=(\d+)'))[-1]
+    if ($landed.Groups[1].Value -eq '1' -and $landed.Groups[2].Value -eq '15') {
+        Record 'caret-click' 'PASS' `
+            "click at $clickX,$clickY landed on line 1 col 15 (text at $textX, caret at $caretX, row $rowH)"
+    } else {
+        Record 'caret-click' 'FAIL' `
+            "clicked $clickX,$clickY -> line $($landed.Groups[1].Value) col $($landed.Groups[2].Value), wanted 1/15"
+    }
 }
 Remove-Item $mixed -ErrorAction SilentlyContinue
 

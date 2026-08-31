@@ -22,6 +22,15 @@ throughout is worth more than having a tidy one.
 from ide.rope import Rope
 
 
+comptime LINE_H = 16
+"""One text row, in design pixels at 96 DPI.
+
+Multiplied by the window's scale when the chrome comes up, and the result
+kept on the grid -- scrolling and hit testing both divide by it, so there
+has to be exactly one of it and it has to be the scaled one.
+"""
+
+
 @fieldwise_init
 struct Grid(Movable):
     """The editor's view onto a rope: what is visible, and what is cached."""
@@ -49,7 +58,7 @@ struct Grid(Movable):
                 screenful, so scrolling reuses rather than thrashes.
         """
         self.top_line = 0
-        self.line_height = 16.0
+        self.line_height = Float32(LINE_H)
         self.capacity = capacity
         self.cached_line = List[Int]()
         self.cached_rev = List[Int]()
@@ -142,6 +151,16 @@ struct Doc(Movable):
     # synthetic -- `--lines` -- in which case there is nothing to diagnose.
     var uri: String
     var sent_version: Int
+    # The completion popup: whether it is up, and which row is chosen.
+    # The items themselves live in the language server client, because
+    # they arrive asynchronously and belong to a request rather than to
+    # a document.
+    var popup: Bool
+    var popup_row: Int
+    # Where it was asked for, so the accepted text replaces the word
+    # being typed rather than being inserted after it.
+    var popup_line: Int
+    var popup_col: Int
     # The application half on its own: the keystroke to the last drawing
     # command, with the wait for the vertical blank left out. That wait is
     # real and a person experiences it, but it is the display's and not
@@ -170,6 +189,10 @@ struct Doc(Movable):
         self.lat_over = 0
         self.uri = String("")
         self.sent_version = 0
+        self.popup = False
+        self.popup_row = 0
+        self.popup_line = 0
+        self.popup_col = 0
         self.work_total = 0
         self.work_worst = 0
 

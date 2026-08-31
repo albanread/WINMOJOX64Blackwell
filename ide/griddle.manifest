@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Griddle's application manifest.
+
+  The DPI declaration is the reason this file exists. Without it Windows tells
+  the process the desktop is smaller than it is, lets it draw at that smaller
+  size, and stretches the result: an editor whose entire pitch is crisp text
+  renders blurry text on every modern display. On the machine this was written
+  on that is a 2560x1440 desktop reported as 1707x960, so everything Griddle
+  drew was being scaled up by half again.
+
+  A manifest is the right place for it rather than a call in `main`, because
+  awareness is a property of the process from its first instruction. The call
+  in `main` is kept as a fallback for a Griddle run without this file beside
+  it or embedded in it, and it fails harmlessly when the manifest won.
+
+  PerMonitorV2 is the mode that also scales the non-client area (the title bar
+  and the menu) and sends WM_DPICHANGED with a suggested window rect when the
+  window is dragged between displays of different densities. `PerMonitor`
+  follows it as the fallback for Windows 8.1, and `system` after that for
+  anything older still, which is how this element is read: the first one
+  understood wins.
+
+  longPathAware because this is a file editor and MAX_PATH is not a property
+  of the filesystem.
+
+  Note for the next person: a double hyphen is illegal inside an XML comment,
+  which mt.exe reports as "unable to parse the requested XML data" and nothing
+  more. The house style writes an em dash as two hyphens everywhere else; here
+  it cannot.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity
+      type="win32"
+      name="Griddle.Editor"
+      version="0.1.0.0"
+      processorArchitecture="amd64"/>
+  <description>Griddle, a Mojo IDE for Windows, written in Mojo.</description>
+
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor, system</dpiAwareness>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+
+  <!--
+    Declaring the versions of Windows this was tested against. Without it the
+    compatibility shims report Windows 8 to anything that asks, which is a lie
+    that only ever costs somebody an afternoon.
+  -->
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 and 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+      <!-- Windows 8.1 -->
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/>
+    </application>
+  </compatibility>
+</assembly>

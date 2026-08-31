@@ -32,11 +32,17 @@ from ide.window import (
     caret_click,
     caret_move,
     caret_report,
+    complete_at_caret,
     counters,
     edit_key,
     goto_issue,
     issues_report,
     lsp_wait,
+    popup_accept,
+    popup_close,
+    popup_move,
+    popup_report,
+    popup_wait,
     keystorm,
     latency_report,
     latency_reset,
@@ -45,6 +51,7 @@ from ide.window import (
     find_text,
     goto,
     hittest_report,
+    line_height_of,
     line_text,
     move_key,
     page_lines,
@@ -59,7 +66,14 @@ from ide.window import (
 from ide.menu import invoke as invoke_menu
 from ide.tsf import self_check as tsf_self_check
 from ide.screenshot import capture
-from ide.win32 import RECT, private_bytes, win32
+from ide.win32 import (
+    RECT,
+    dpi_of,
+    dpi_scale,
+    private_bytes,
+    scaled,
+    win32,
+)
 
 
 from std.ffi import c_int
@@ -163,7 +177,8 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             "storm [N]         N keystrokes through the real message path\n"
             "latency [reset]   keystroke to presented frame\n"
             "issues [N]        the language server's complaints, or jump to one\n"
-            "lsp wait [ms]     wait for the server to have something to say"
+            "lsp wait [ms]     wait for the server to have something to say\n"
+            "complete [wait|show|up|down|accept|close]   the completion popup"
         )
 
     if verb == "echo":
@@ -183,7 +198,7 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         )
         var w = Int(rc.right - rc.left)
         var h = Int(rc.bottom - rc.top)
-        var l = Layout(w, h)
+        var l = Layout(w, h, dpi_scale(hwnd))
         var out = String("client ") + String(w) + "x" + String(h) + "\n"
         out += _region("rail", l.rail())
         out += _region("sidebar", l.sidebar())
@@ -195,9 +210,19 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         # the gutter. Reported rather than left for a caller to know, because
         # a check that hardcodes the gutter width is a check that passes after
         # someone changes it.
-        out += "gutter " + String(GUTTER_W) + "\n"
-        out += "text " + String(Int(l.editor().left) + GUTTER_W) + "\n"
-        out += "lineheight 16\n"
+        var s = dpi_scale(hwnd)
+        var gutter = Int(scaled(GUTTER_W, s))
+        out += "gutter " + String(gutter) + "\n"
+        out += "text " + String(Int(l.editor().left) + gutter) + "\n"
+        # Measured, not remembered. Each of these used to be a number
+        # written here, which made a check that read them a check on the
+        # constant rather than on the editor -- and on a 150% display the
+        # editor and the constant disagree by half again.
+        out += "lineheight " + String(
+            Int(line_height_of(hwnd))
+        ) + "\n"
+        out += "dpi " + String(dpi_of(hwnd)) + "\n"
+        out += "scale " + String(s) + "\n"
         return out
 
     if verb == "paint":
@@ -441,6 +466,28 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
                 ms = Int(String(rest[byte=space2 + 1 :]).strip())
             return lsp_wait(hwnd, ms)
         return String("usage: lsp wait [milliseconds]")
+
+    if verb == "complete":
+        # `complete` asks; `complete show|up|down|accept|close` drives the
+        # popup the way the keyboard does, so a check and a person exercise
+        # one path.
+        if rest == "show":
+            return popup_report(hwnd)
+        if rest.startswith("wait"):
+            var ms = 8000
+            var sp = rest.find(" ")
+            if sp > 0:
+                ms = Int(String(rest[byte=sp + 1 :]).strip())
+            return popup_wait(hwnd, ms)
+        if rest == "up":
+            return popup_move(hwnd, -1)
+        if rest == "down":
+            return popup_move(hwnd, 1)
+        if rest == "accept":
+            return popup_accept(hwnd)
+        if rest == "close":
+            return popup_close(hwnd)
+        return complete_at_caret(hwnd)
 
     if verb == "issues":
         # The issues pane, as text. The same list the pane draws and the same

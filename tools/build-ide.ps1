@@ -41,7 +41,47 @@ foreach ($dll in @(
     'bazel-bin\KGEN\KGENCompilerRTShared.dll',
     'bazel-bin\AsyncRT\AsyncRTRuntimeGlobals.dll',
     'bazel-bin\Support\MSupportGlobals.dll')) {
-    if (Test-Path $dll) { Copy-Item $dll (Split-Path $Out) -Force }
+    if (Test-Path $dll) {
+        Copy-Item $dll (Split-Path $Out) -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# ---- the manifest --------------------------------------------------------
+# Griddle needs to be DPI-aware from its first instruction, and a manifest is
+# where a process says so. mojo has no way to hand a .res to the linker, so it
+# goes in afterwards with mt.exe, the tool that exists for exactly this.
+#
+# If mt.exe is not on the machine, the manifest is written beside the binary
+# as griddle.exe.manifest instead. Windows reads an external manifest when the
+# image has no embedded one, so the fallback is real rather than decorative --
+# it just has to travel with the executable. And if neither lands, main calls
+# SetProcessDpiAwarenessContext itself. Three ways, because a blurry editor is
+# a silent failure and this is the cheap end of finding out.
+$manifest = Join-Path $repo 'ide\griddle.manifest'
+if (Test-Path $manifest) {
+    $kits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+    $mt = @(Get-ChildItem (Join-Path $kits '*\x64\mt.exe') `
+            -ErrorAction SilentlyContinue | Sort-Object FullName)
+    $embedded = $false
+    if ($mt.Count -gt 0) {
+        $log = & $mt[-1].FullName -nologo -manifest $manifest `
+               "-outputresource:$((Resolve-Path $Out).Path);#1" 2>&1
+        # mt.exe reports success by saying nothing and returning 0.
+        if ($LASTEXITCODE -eq 0) {
+            $embedded = $true
+            Write-Host "  manifest embedded (DPI-aware, PerMonitorV2)"
+        } else {
+            Write-Host "  mt.exe declined: $log"
+        }
+    }
+    if (-not $embedded) {
+        Copy-Item $manifest "$Out.manifest" -Force
+        Write-Host "  manifest written beside the binary as $(Split-Path -Leaf $Out).manifest"
+    } elseif (Test-Path "$Out.manifest") {
+        # An external manifest is ignored once one is embedded, and a stale
+        # file that no longer matches is worse than no file.
+        Remove-Item "$Out.manifest" -Force
+    }
 }
 Write-Host "staged the runtime beside it; $Out runs on its own"
 

@@ -55,7 +55,7 @@ from ide.doc import Doc
 from ide.edit import apply, byte_at, caret_of_byte
 from ide.gridview import GUTTER_W
 from ide.rope import Rope
-from ide.win32 import POINT, RECT, win32
+from ide.win32 import POINT, RECT, dpi_scale, scaled, win32
 from ide.window import doc_of
 
 
@@ -622,7 +622,7 @@ class TextStore(ITextStoreACP):
             Float32(where[0] - doc[].grid.top_line) * doc[].grid.line_height
         )
         # The x of the range start, from the grid, offset by the gutter.
-        var x = box.left + Int32(GUTTER_W) + Int32(
+        var x = box.left + Int32(scaled(GUTTER_W, dpi_scale(self.hwnd))) + Int32(
             Float32(where[1]) * doc[].grid.advance
         )
         var out = RECT()
@@ -655,7 +655,9 @@ class TextStore(ITextStoreACP):
             line = last
         if line < 0:
             line = 0
-        var into = Float32(p[] - box.left - Int32(GUTTER_W))
+        var into = Float32(
+            p[] - box.left - Int32(scaled(GUTTER_W, dpi_scale(self.hwnd)))
+        )
         if into < 0:
             into = 0
         var col = 0
@@ -792,7 +794,9 @@ class TextStore(ITextStoreACP):
         var rc = RECT()
         _ = GetClientRect(self.hwnd, com_addr(rc))
         var editor = Layout(
-            Int(rc.right - rc.left), Int(rc.bottom - rc.top)
+            Int(rc.right - rc.left),
+            Int(rc.bottom - rc.top),
+            dpi_scale(self.hwnd),
         ).editor()
         # Two points converted rather than the rectangle, because
         # ClientToScreen takes a POINT and a RECT is two of them.
