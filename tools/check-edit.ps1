@@ -91,7 +91,12 @@ $cases = @(
     @{n='type-replaces-selection'; f='a'; c='move right select;;move right select;;type Z;;text 1'; w='(?m)^Zpha beta$'}
     @{n='backwards-selection'; f='a'; c='caret 0 5;;move left select;;move left select;;sel'; w='(?m)^ha$'}
     @{n='move-collapses'; f='a'; c='move right select;;move left;;sel'; w='no selection'}
-    @{n='click-collapses'; f='a'; c='move all;;click 400 8;;sel'; w='no selection'}
+    # y=100 rather than 8: the tab strip sits above the editor field and is
+    # TAB_H times the display scale tall, so a click near the top of the
+    # window switches documents instead of moving the caret. 100 is below it
+    # on any scale this runs at, and the check only cares that a click inside
+    # the text collapses the selection.
+    @{n='click-collapses'; f='a'; c='move all;;click 400 100;;sel'; w='no selection'}
 
     # ---- caret movement -------------------------------------------------
     @{n='left-wraps-up'; f='a'; c='caret 1 0;;move left;;caret'; w='line=0 col=10'}

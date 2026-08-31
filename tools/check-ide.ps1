@@ -410,9 +410,12 @@ if ($textX -eq 0 -or $caretX -lt 0 -or $rowH -eq 0) {
     Record 'caret-click' 'FAIL' 'the window did not report its text origin'
 } else {
     # Line 1 is the second row from the top, and the middle of it is the least
-    # ambiguous place in it to click.
+    # ambiguous place in it to click -- measured down from the editor's own
+    # top, not from the window's. The tab strip sits above the field, so a y
+    # counted from zero lands on a tab and switches documents.
+    $editorTop = if ($out -match '(?m)^editor \d+,(\d+) ') { [int]$matches[1] } else { 0 }
     $clickX = [int][math]::Round($textX + $caretX)
-    $clickY = [int]($rowH * 1 + $rowH / 2)
+    $clickY = [int]($editorTop + $rowH * 1 + $rowH / 2)
     # The caret is put somewhere else first, so landing on 1/15 is the click's
     # doing rather than where it already was.
     $out = AskMixed "caret 4 0;;click $clickX $clickY"

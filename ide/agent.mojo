@@ -61,6 +61,10 @@ from ide.window import (
     goto_reference,
     build_file,
     build_wait,
+    close_tab,
+    next_tab,
+    switch_tab,
+    tabs_report,
     is_dirty,
     output_report,
     run_file,
@@ -562,6 +566,19 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         if rest.byte_length() > 0:
             return goto_reference(hwnd, Int(rest))
         return references_at_caret(hwnd)
+
+    if verb == "tabs":
+        # `tabs` lists them, `tabs N` switches, `tabs close` closes the one
+        # showing -- the same shape as `issues` and `references`.
+        if rest == "close":
+            return close_tab(hwnd)
+        if rest == "next":
+            return next_tab(hwnd, 1)
+        if rest == "prev":
+            return next_tab(hwnd, -1)
+        if rest.byte_length() > 0:
+            return switch_tab(hwnd, Int(rest) - 1)
+        return tabs_report(hwnd)
 
     if verb == "run":
         # F5's verb. The document is saved first, because running the version

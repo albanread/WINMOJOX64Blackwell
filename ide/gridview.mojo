@@ -29,6 +29,7 @@ from std.sys._com import com_addr, com_method_of
 
 from ide.caret import cluster_at, is_simple, position_at
 from ide.chrome import (
+    PANEL,
     Chrome,
     D2D_COLOR_F,
     D2D_RECT_F,
@@ -72,6 +73,7 @@ from ide.lsp import (
     g_diag_sev,
 )
 from ide.build import is_building, output_count, output_line
+from std.sys._globals import named_global
 from ide.rope import Rope
 from ide.win32 import scaled
 from ide.syntax import (
@@ -1672,3 +1674,136 @@ def draw_output(
         "ID2D1RenderTarget",
         "PopAxisAlignedClip",
     ](this)(this)
+
+
+comptime TAB_W = 150
+comptime TAB_PAD = 10
+
+
+def tab_at(region: D2D_RECT_F, x: Float32, scale: Float32, count: Int) -> Int:
+    """Which tab a click at `x` is on, or -1.
+
+    Shared with the drawing so a click and a label cannot disagree about where
+    a tab is.
+
+    Args:
+        region: The tab strip.
+        x: A client x coordinate.
+        scale: Device pixels per design pixel.
+        count: How many tabs there are.
+
+    Returns:
+        The tab index, or -1.
+    """
+    var w = scaled(TAB_W, scale)
+    var into = x - region.left
+    if into < 0:
+        return -1
+    var i = Int(into / w)
+    return -1 if i >= count else i
+
+
+def draw_tabs(
+    chrome: Chrome, region: D2D_RECT_F, count: Int, current: Int
+) raises:
+    """The open documents, as a row of tabs across the top of the field.
+
+    Fixed width rather than measured: a strip whose tabs change width as their
+    names change moves every other tab sideways, and a person aiming at one
+    hits another. Long names are clipped, which is what a fixed tab does.
+
+    The labels come from the caller because this module draws and does not
+    know what a document is.
+
+    Args:
+        chrome: The render target and text format.
+        region: The strip.
+        count: How many tabs.
+        current: Which one is showing.
+
+    Raises:
+        If DirectWrite refuses.
+    """
+    if chrome.target == 0 or chrome.text_format == 0 or count == 0:
+        return
+    var this = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.target
+    )
+    var dwrite = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.dwrite
+    )
+    var ink = _brush(chrome.target, INK)
+    var dim = _brush(chrome.target, DIM)
+    if ink == 0:
+        return
+
+    var clip = region
+    com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[D2D_RECT_F, MutAnyOrigin],
+            UInt32,
+        ) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PushAxisAlignedClip",
+    ](this)(this, com_addr(clip), UInt32(0))
+    _ = clip
+
+    var w = scaled(TAB_W, chrome.scale)
+    var hair = scaled(1, chrome.scale)
+    for i in range(count):
+        var left = region.left + Float32(i) * w
+        if left > region.right:
+            break
+        var right = left + w
+        if i == current:
+            # The current tab is the colour of the field it belongs to, so it
+            # reads as the front of the document rather than as a button.
+            _fill_rect(this, chrome.target, left, region.top, right,
+                       region.bottom, PANEL)
+            _fill_rect(this, chrome.target, left, region.top, right,
+                       region.top + scaled(2, chrome.scale), EMBER)
+        _fill_rect(this, chrome.target, right - hair, region.top, right,
+                   region.bottom, LINE)
+        var label = _tab_label(i)
+        var layout = _make_layout(dwrite, chrome, label, w - scaled(TAB_PAD * 2, chrome.scale))
+        if layout != 0:
+            _draw_layout(
+                this, layout, ink if i == current else dim,
+                left + scaled(TAB_PAD, chrome.scale),
+                region.top + scaled(6, chrome.scale),
+            )
+            _release(layout)
+    _release(ink)
+    if dim != 0:
+        _release(dim)
+
+    com_method_of[
+        def (OpaquePointer[MutUntrackedOrigin]) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PopAxisAlignedClip",
+    ](this)(this)
+
+
+comptime _g_tab_labels = named_global["gridview.tablabels", List[String]]
+
+
+def _tab_label(i: Int) -> String:
+    """One label the strip draws, set by the caller before each frame."""
+    var labels = _g_tab_labels()
+    if i < 0 or i >= len(labels[]):
+        return String("")
+    return labels[][i]
+
+
+def set_tab_labels(var labels: List[String]):
+    """Hand the strip the names to draw.
+
+    The window procedure knows what a document is called; this module knows
+    how to draw a row of tabs. Passing the labels rather than the documents is
+    what keeps gridview from needing to know what a Doc is.
+
+    Args:
+        labels: One per tab, in order.
+    """
+    _g_tab_labels()[] = labels^

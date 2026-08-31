@@ -44,6 +44,8 @@ from ide.gridview import (
     draw_hover,
     draw_issues,
     draw_output,
+    draw_tabs,
+    set_tab_labels,
     draw_popup,
     draw_references,
     draw_text,
@@ -51,8 +53,15 @@ from ide.gridview import (
     status_line,
 )
 from ide.window import (
+    adopt_tab,
     build_file,
+    close_tab,
     confirm_close,
+    confirm_close_all,
+    current_tab,
+    next_tab,
+    tab_count,
+    tab_name,
     set_unattended,
     build_poll,
     caret_click,
@@ -310,6 +319,13 @@ def griddle_wndproc(
                                 unsafe_from_address=chrome[].doc
                             )[]
                         )
+                    # The strip's labels are gathered here because this
+                    # is where a document's name is known; gridview draws a
+                    # row of tabs and does not know what a Doc is.
+                    var labels = List[String]()
+                    for t in range(tab_count()):
+                        labels.append(tab_name(t))
+                    set_tab_labels(labels^)
                     var layout = draw(chrome[], width, height, status)
                     # The text goes inside the batch the chrome opened, so
                     # both halves of the frame are presented at once and the
@@ -344,6 +360,9 @@ def griddle_wndproc(
                             )
                         draw_output(
                             doc[].grid, chrome[], layout.output()
+                        )
+                        draw_tabs(
+                            chrome[], layout.tabs(), tab_count(), current_tab()
                         )
                         # Last, and over everything: a popup that the text
                         # can draw on top of is not a popup. The hover box
@@ -540,6 +559,12 @@ def griddle_wndproc(
                     print("griddle:", open_dialog(hwnd))
                 elif wparam == ord("B"):
                     print("griddle:", build_file(hwnd))
+                elif wparam == ord("W"):
+                    print("griddle:", close_tab(hwnd))
+                elif wparam == winkb_constant["VK_TAB"]():
+                    # Ctrl+Tab forward, Ctrl+Shift+Tab back, the way every
+                    # tabbed thing on this platform spells it.
+                    _ = next_tab(hwnd, -1 if shift else 1)
                 return 0
 
             # F5 runs what is open, Shift+F5 stops it. The document is
@@ -641,7 +666,7 @@ def griddle_wndproc(
         # the window is already going.
         if message == UInt32(winkb_constant["WM_CLOSE"]()):
             try:
-                if not confirm_close(hwnd):
+                if not confirm_close_all(hwnd):
                     return 0
             except:
                 # A window with no document has nothing to lose; a raise here
@@ -1051,6 +1076,7 @@ def main() raises:
     if open_path.byte_length() > 0:
         doc_store[].uri = file_uri(absolute(open_path))
     chrome_store[].doc = Int(doc_store)
+    _ = adopt_tab(hwnd, Int(doc_store))
     # One row, at this display's density. The grid holds it because scrolling
     # and hit testing divide by it; the chrome holds the scale because the
     # font was made at it. They have to agree, so it is set from the chrome.

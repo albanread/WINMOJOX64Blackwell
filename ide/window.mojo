@@ -19,7 +19,7 @@ Windows keeps for the window: the `Chrome`, and through it the `Doc`.
 """
 
 from std.ffi import c_int
-from std.memory import OpaquePointer, Pointer
+from std.memory import OpaquePointer, Pointer, alloc
 from std.sys._com import com_addr, com_method_of
 from std.sys.com import co_create
 from std.sys._globals import named_global
@@ -28,7 +28,7 @@ from std.time import perf_counter_ns
 
 from ide.caret import is_simple
 from ide.chrome import Chrome, Layout
-from ide.doc import Doc, Grid, Snapshot
+from ide.doc import Doc, Grid, LINE_H, Snapshot
 from ide.edit import (
     apply,
     backspace,
@@ -87,6 +87,7 @@ from ide.lsp import (
 from ide.gridview import (
     GUTTER_W,
     output_row_at,
+    tab_at,
     release_cache,
     issue_row_at,
     advance_of,
@@ -307,6 +308,15 @@ def caret_click(hwnd: Int, x: Int, y: Int) raises -> String:
     var full = Layout(
         Int(rc.right - rc.left), Int(rc.bottom - rc.top), scale
     )
+    # A click on a tab switches to it. Checked before the editor because the
+    # strip sits inside the editor field's column and above its text.
+    var strip = full.tabs()
+    if Float32(y) <= strip.bottom and Float32(x) >= strip.left:
+        var which = tab_at(strip, Float32(x), scale, tab_count())
+        if which < 0:
+            return String("the tab strip")
+        return switch_tab(hwnd, which)
+
     # A diagnostic in the output pane is a place, and clicking a place
     # should go there. This is the edit-build-fix loop closing: the compiler
     # says where, and the editor takes you.
@@ -1345,7 +1355,16 @@ def open_path(hwnd: Int, path: String) raises -> String:
     Raises:
         If the window has no document.
     """
-    var doc = _doc_at(hwnd)
+    var full = absolute(path)
+    var uri = file_uri(full)
+
+    # Already open? Then this is a switch, not a load. Opening a second copy
+    # of a file is how an editor lets somebody edit one of them and save the
+    # other over it.
+    var existing = tab_for_uri(uri)
+    if existing >= 0:
+        return switch_tab(hwnd, existing)
+
     var text = String("")
     try:
         with open(path, "r") as f:
@@ -1353,18 +1372,16 @@ def open_path(hwnd: Int, path: String) raises -> String:
     except err:
         return String("cannot open ") + path + ": " + String(err)
 
-    doc[].rope = Rope(text^)
-    doc[].revision += 1
-    doc[].caret_line = 0
-    doc[].caret_col = 0
-    doc[].anchor_line = -1
-    doc[].anchor_col = 0
-    doc[].dirty = False
-    doc[].past = List[Snapshot]()
-    doc[].future = List[Snapshot]()
-    doc[].grid.top_line = 0
-    release_cache(doc[].grid)
-    doc[].uri = file_uri(absolute(path))
+    var store = alloc[Doc](1, alignment=8)
+    # Emplaced, not assigned: `store[] = value` destroys what was there
+    # first, and what is there is whatever the allocator last had.
+    store.unsafe_write(Doc(Rope(text^)))
+    store[].uri = uri
+    var bits = _bits(hwnd)
+    var chrome = Pointer[Chrome, MutAnyOrigin](unsafe_from_address=bits[1])
+    store[].grid.line_height = scaled(LINE_H, chrome[].scale)
+    _ = adopt_tab(hwnd, Int(store))
+    var doc = _doc_at(hwnd)
     # Zero means "the server has not been told about this document", which is
     # what `announce` waits for.
     doc[].sent_version = 0
@@ -1803,9 +1820,9 @@ def save_as(hwnd: Int, path: String) raises -> String:
     var was = doc[].uri
     doc[].uri = file_uri(full)
     if doc[].uri != was:
-        # A document that moved is a different document as far as the server
-        # is concerned: the old URI's diagnostics are about a file this window
-        # is no longer showing.
+        # Saved somewhere else: as far as the server is concerned that is a
+        # different document, and the old URI's diagnostics are about a file
+        # this window is no longer showing.
         #
         # No didSave for the unmoved case, deliberately. The server is already
         # told about every edit by didChange, so a save changes nothing it
@@ -2297,6 +2314,37 @@ def is_unattended() -> Bool:
     return g_unattended()[] != 0
 
 
+def confirm_close_all(hwnd: Int) raises -> Bool:
+    """Whether it is all right to close the window, asking about every tab.
+
+    Each dirty document is brought to the front before it is asked about, so
+    the question is never about a file the person cannot see. Cancel on any
+    one of them calls off the whole close and leaves that document showing,
+    which is where they will want to be.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        True to go ahead and close.
+
+    Raises:
+        If the window has no chrome.
+    """
+    if tab_count() <= 1:
+        return confirm_close(hwnd)
+    var i = 0
+    while i < tab_count():
+        var address = tab_doc(i)
+        var doc = Pointer[Doc, MutAnyOrigin](unsafe_from_address=address)
+        if doc[].dirty:
+            _ = switch_tab(hwnd, i)
+            if not confirm_close(hwnd):
+                return False
+        i += 1
+    return True
+
+
 def confirm_close(hwnd: Int) raises -> Bool:
     """Whether it is all right to close, asking if there is unsaved work.
 
@@ -2362,3 +2410,229 @@ def confirm_close(hwnd: Int) raises -> Bool:
     # expect is that the work should be kept.
     var wrote = save_dialog(hwnd) if path.byte_length() == 0 else save(hwnd)
     return wrote.startswith("saved")
+
+
+# ===----------------------------------------------------------------------===#
+# Tabs
+#
+# A tab is a `Doc`, and the window shows whichever one `chrome.doc` points at.
+# That is the whole mechanism: every function in this module already reaches
+# its document through `_doc_at`, so switching tabs is one assignment and
+# nothing else had to learn about tabs at all. The single-document design
+# turned out to be the tabbed one with a list of length one.
+#
+# Documents are never freed. A person opens tens of files in a session, not
+# millions, and a Doc holds a rope whose nodes are shared with its own undo
+# history -- freeing one correctly means proving nothing else holds a node,
+# which is work with no benefit at this size. Closing a tab forgets it.
+# ===----------------------------------------------------------------------===#
+
+comptime g_tabs = named_global["ide.tabs", List[Int]]
+comptime g_tab = named_global["ide.tab", Int]
+
+
+def tab_count() -> Int:
+    """How many documents are open.
+
+    Returns:
+        The count.
+    """
+    return len(g_tabs()[])
+
+
+def current_tab() -> Int:
+    """Which tab is showing.
+
+    Returns:
+        Its index, or -1 when none are open.
+    """
+    var n = len(g_tabs()[])
+    if n == 0:
+        return -1
+    var i = g_tab()[]
+    return 0 if i < 0 or i >= n else i
+
+
+def tab_doc(i: Int) -> Int:
+    """The document address behind a tab.
+
+    Args:
+        i: Its index.
+
+    Returns:
+        The address, or zero.
+    """
+    var tabs = g_tabs()
+    if i < 0 or i >= len(tabs[]):
+        return 0
+    return tabs[][i]
+
+
+def tab_name(i: Int) raises -> String:
+    """The file name a tab shows, with a bullet when it has unsaved work.
+
+    Args:
+        i: Its index.
+
+    Returns:
+        The label.
+
+    Raises:
+        Never in practice.
+    """
+    var address = tab_doc(i)
+    if address == 0:
+        return String("")
+    var doc = Pointer[Doc, MutAnyOrigin](unsafe_from_address=address)
+    var name = String("untitled")
+    if doc[].uri.byte_length() > 0:
+        var path = path_of_uri(doc[].uri)
+        var cut = path.rfind(chr(0x5C))
+        name = String(path[byte=cut + 1 :]) if cut >= 0 else path
+    return (chr(0x2022) + " " + name) if doc[].dirty else name
+
+
+def adopt_tab(hwnd: Int, address: Int) raises -> Int:
+    """Take an already-built document as a new tab, and show it.
+
+    Used at startup for the document `main` built, so the first tab and every
+    later one are the same kind of thing.
+
+    Args:
+        hwnd: The window.
+        address: The document.
+
+    Returns:
+        The new tab's index.
+
+    Raises:
+        If the window has no chrome.
+    """
+    var tabs = g_tabs()
+    tabs[].append(address)
+    var index = len(tabs[]) - 1
+    _ = switch_tab(hwnd, index)
+    return index
+
+
+def switch_tab(hwnd: Int, i: Int) raises -> String:
+    """Show a different tab.
+
+    Args:
+        hwnd: The window.
+        i: Which one.
+
+    Returns:
+        What is showing now.
+
+    Raises:
+        If the window has no chrome.
+    """
+    var address = tab_doc(i)
+    if address == 0:
+        return String("no such tab")
+    var bits = _bits(hwnd)
+    var chrome = Pointer[Chrome, MutAnyOrigin](unsafe_from_address=bits[1])
+    chrome[].doc = address
+    g_tab()[] = i
+    # The layout cache belongs to the document, so nothing has to be dropped;
+    # the new document's own cache is either warm or will be after one frame.
+    try:
+        retitle(hwnd)
+    except:
+        pass
+    _touch(hwnd)
+    return String("tab ") + String(i + 1) + " of " + String(
+        tab_count()
+    ) + ": " + tab_name(i)
+
+
+def tab_for_uri(uri: String) raises -> Int:
+    """Which tab is showing a URI, or -1.
+
+    Args:
+        uri: The document's URI.
+
+    Returns:
+        The index, or -1.
+
+    Raises:
+        Never in practice.
+    """
+    var tabs = g_tabs()
+    for i in range(len(tabs[])):
+        var doc = Pointer[Doc, MutAnyOrigin](unsafe_from_address=tabs[][i])
+        if doc[].uri == uri:
+            return i
+    return -1
+
+
+def next_tab(hwnd: Int, by: Int) raises -> String:
+    """Move to the next or previous tab, wrapping.
+
+    Args:
+        hwnd: The window.
+        by: 1 for the next, -1 for the one before.
+
+    Returns:
+        What is showing now.
+
+    Raises:
+        If the window has no chrome.
+    """
+    var n = tab_count()
+    if n < 2:
+        return String("only one document is open")
+    return switch_tab(hwnd, (current_tab() + by + n) % n)
+
+
+def close_tab(hwnd: Int) raises -> String:
+    """Close the tab that is showing, if its work is safe.
+
+    The last tab is not closed: an editor with no document has nothing to
+    draw and no way back. Closing it means closing the window, which is a
+    different decision and belongs to the person, not to Ctrl+W.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What happened.
+
+    Raises:
+        If the window has no chrome.
+    """
+    var n = tab_count()
+    if n <= 1:
+        return String("this is the only document; close the window instead")
+    if not confirm_close(hwnd):
+        return String("not closed")
+    var i = current_tab()
+    var tabs = g_tabs()
+    _ = tabs[].pop(i)
+    var next = i
+    if next >= len(tabs[]):
+        next = len(tabs[]) - 1
+    return switch_tab(hwnd, next)
+
+
+def tabs_report(hwnd: Int) raises -> String:
+    """Every tab, in order, with the current one marked.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        `tabs N` and a line each.
+
+    Raises:
+        Never in practice.
+    """
+    _ = hwnd
+    var out = String("tabs ") + String(tab_count()) + "\n"
+    for i in range(tab_count()):
+        out += (
+            ("*" if i == current_tab() else " ") + " " + String(i + 1) + ". "
+            + tab_name(i) + "\n"
+        )
+    return out^

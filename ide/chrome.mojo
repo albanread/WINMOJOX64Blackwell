@@ -198,6 +198,10 @@ comptime RAIL_W = 52
 comptime SIDEBAR_W = 208
 comptime STATUS_H = 28
 comptime PANE_H = 140
+comptime TAB_H = 30
+"""The tab strip, above the editor field. One row, always present: a strip
+that appears when a second file opens moves every line of the first one down
+by thirty pixels while somebody is reading it."""
 
 
 @fieldwise_init
@@ -217,6 +221,13 @@ struct Layout(ImplicitlyCopyable, Movable):
     def rail_w(self) -> Float32:
         """The rail's width in device pixels."""
         return scaled(RAIL_W, self.scale)
+
+    def tabs(self) -> D2D_RECT_F:
+        """The tab strip, across the top of the editor field."""
+        return D2D_RECT_F(
+            self.gutter_x(), 0, Float32(self.width),
+            scaled(TAB_H, self.scale),
+        )
 
     def gutter_x(self) -> Float32:
         """Where the editor field begins: past the rail and the sidebar."""
@@ -246,9 +257,12 @@ struct Layout(ImplicitlyCopyable, Movable):
         )
 
     def editor(self) -> D2D_RECT_F:
-        """The text grid: everything the panes and bars do not take."""
+        """The text grid: everything the tabs, panes and bars do not take."""
         return D2D_RECT_F(
-            self.gutter_x(), 0, Float32(self.width), self._pane_top()
+            self.gutter_x(),
+            scaled(TAB_H, self.scale),
+            Float32(self.width),
+            self._pane_top(),
         )
 
     def issues(self) -> D2D_RECT_F:
@@ -564,6 +578,7 @@ def draw(
     ](this)(this, com_addr(ground))
     _ = ground
 
+    _fill(chrome.target, layout.tabs(), RAIL)
     _fill(chrome.target, layout.editor(), PANEL)
     _fill(chrome.target, layout.rail(), RAIL)
     _fill(chrome.target, layout.sidebar(), SIDEBAR)
