@@ -63,6 +63,7 @@ comptime ERROR = 0xE05252  # a squiggle under something that is wrong
 comptime WARN = 0xD8A657  # and under something that is merely doubtful
 comptime POPUP = 0x22262E  # the completion list's own ground
 comptime POPUP_SEL = 0x2F3A4E  # and the row under the cursor
+comptime STOPPED = 0x4A3A16  # the line a debugger is halted on
 
 # Syntax colours. Chosen so the most common thing on screen is the quietest:
 # most of a page of code is plain text, and a colour that shouts turns the

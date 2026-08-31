@@ -42,6 +42,7 @@ from ide.drop import register as register_drop, revoke as revoke_drop
 from ide.doc import Doc, LINE_H, PANE_REFERENCES, PANE_VARIABLES
 from ide.gridview import (
     draw_hover,
+    draw_variables,
     set_breakpoint_lines,
     draw_issues,
     draw_output,
@@ -338,7 +339,9 @@ def griddle_wndproc(
                         # One pane, two lists. References take it while
                         # they are up because a person who just asked who
                         # calls this is not reading the problem list.
-                        if doc[].pane_mode == PANE_REFERENCES:
+                        if doc[].pane_mode == PANE_VARIABLES:
+                            draw_variables(chrome[], layout.issues())
+                        elif doc[].pane_mode == PANE_REFERENCES:
                             draw_references(
                                 doc[].grid, chrome[], layout.issues()
                             )

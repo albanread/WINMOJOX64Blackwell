@@ -30,6 +30,7 @@ from std.sys._com import com_addr, com_method_of
 from ide.caret import cluster_at, is_simple, position_at
 from ide.chrome import (
     PANEL,
+    STOPPED,
     Chrome,
     D2D_COLOR_F,
     D2D_RECT_F,
@@ -266,6 +267,21 @@ def draw_text(
                     y + grid.line_height,
                     SELECT,
                 )
+
+        # Where execution is halted, as a band across the line. Drawn before
+        # the text so the glyphs sit on it, and in the accent rather than a
+        # selection colour because it is not a selection -- a person who
+        # cannot tell the two apart will try to type over it.
+        if line == stop_line_shown():
+            _fill_rect(
+                this,
+                chrome.target,
+                region.left,
+                y,
+                region.right,
+                y + grid.line_height,
+                STOPPED,
+            )
 
         var layout = _layout_for(
             grid, dwrite, chrome, rope, line, revision, in_triple
@@ -1966,3 +1982,136 @@ def has_breakpoint(line: Int) -> Bool:
             return True
     return False
 
+
+
+# ===----------------------------------------------------------------------===#
+# The debugger's two marks on the editor
+#
+# Both are fed in before a frame rather than read from the debugger, for the
+# reason the tab labels and the breakpoint lines are: this module draws, and a
+# module that draws should not have to know what a debug session is.
+# ===----------------------------------------------------------------------===#
+
+comptime _g_var_rows = named_global["gridview.varrows", List[String]]
+comptime _g_stop_line = named_global["gridview.stopline", Int]
+comptime _g_stop_live = named_global["gridview.stoplive", Int]
+
+
+def set_variable_rows(var rows: List[String]):
+    """Hand the pane the variables to show, already formatted.
+
+    Formatted by the caller because "name = value  (type)" is a decision about
+    what a person wants to read, and this module's decision is only where the
+    text goes.
+
+    Args:
+        rows: One per variable.
+    """
+    _g_var_rows()[] = rows^
+
+
+def variable_rows() -> Int:
+    """How many variable rows the pane has been given.
+
+    Returns:
+        The count.
+    """
+    return len(_g_var_rows()[])
+
+
+def set_stop_line(line: Int, live: Bool):
+    """Say which line execution is halted on, if any.
+
+    Args:
+        line: Zero-based, or -1 for none.
+        live: Whether a debug session is running at all.
+    """
+    _g_stop_line()[] = line
+    _g_stop_live()[] = 1 if live else 0
+
+
+def stop_line_shown() -> Int:
+    """The line execution is halted on, or -1.
+
+    Returns:
+        Zero-based line, or -1.
+    """
+    return _g_stop_line()[] if _g_stop_live()[] != 0 else -1
+
+
+def draw_variables(chrome: Chrome, region: D2D_RECT_F) raises:
+    """The debugger's variables, in the bottom-left pane.
+
+    Args:
+        chrome: The render target and text format.
+        region: The pane.
+
+    Raises:
+        If DirectWrite refuses.
+    """
+    if chrome.target == 0 or chrome.text_format == 0:
+        return
+    var total = variable_rows()
+
+    var this = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.target
+    )
+    var dwrite = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.dwrite
+    )
+    var ink = _brush(chrome.target, INK)
+    var dim = _brush(chrome.target, DIM)
+    if ink == 0:
+        return
+
+    var clip = region
+    com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[D2D_RECT_F, MutAnyOrigin],
+            UInt32,
+        ) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PushAxisAlignedClip",
+    ](this)(this, com_addr(clip), UInt32(0))
+    _ = clip
+
+    var heading = String("VARIABLES  ") + String(total)
+    if total == 0:
+        heading = String("VARIABLES  none in scope")
+    var head_layout = _make_layout(dwrite, chrome, heading, 100000.0)
+    if head_layout != 0:
+        _draw_layout(
+            this, head_layout, dim if dim != 0 else ink,
+            region.left + scaled(12, chrome.scale),
+            region.top + scaled(6, chrome.scale),
+        )
+        _release(head_layout)
+
+    var rows = Int(
+        (region.bottom - region.top - scaled(ISSUE_TOP_PAD, chrome.scale))
+        / scaled(ISSUE_ROW_H, chrome.scale)
+    )
+    var n = 0
+    while n < total and n < rows:
+        var y = (
+            region.top
+            + scaled(ISSUE_TOP_PAD, chrome.scale)
+            + Float32(n) * scaled(ISSUE_ROW_H, chrome.scale)
+        )
+        var layout = _make_layout(dwrite, chrome, _g_var_rows()[][n], 100000.0)
+        if layout != 0:
+            _draw_layout(
+                this, layout, ink, region.left + scaled(26, chrome.scale), y
+            )
+            _release(layout)
+        n += 1
+    _release(ink)
+    if dim != 0:
+        _release(dim)
+
+    com_method_of[
+        def (OpaquePointer[MutUntrackedOrigin]) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PopAxisAlignedClip",
+    ](this)(this)
