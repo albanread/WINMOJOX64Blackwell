@@ -52,6 +52,11 @@ from ide.gridview import (
 from ide.window import (
     caret_click,
     complete_at_caret,
+    document_path,
+    open_dialog,
+    retitle,
+    save,
+    save_dialog,
     definition_at_caret,
     hover_at_caret,
     hover_close,
@@ -512,6 +517,16 @@ def griddle_wndproc(
                     _ = edit_key(hwnd, "redo")
                 elif wparam == ord("A"):
                     _ = move_key(hwnd, "all", False)
+                elif wparam == ord("S"):
+                    # Ctrl+S saves; Ctrl+Shift+S asks where. A document that
+                    # has never been on disk turns the first into the second,
+                    # because "saved" with nowhere to save to is a lie.
+                    if shift or document_path(hwnd).byte_length() == 0:
+                        print("griddle:", save_dialog(hwnd))
+                    else:
+                        print("griddle:", save(hwnd))
+                elif wparam == ord("O"):
+                    print("griddle:", open_dialog(hwnd))
                 return 0
 
             # F3 repeats the search; shift reverses it. The needle lives on
@@ -557,6 +572,16 @@ def griddle_wndproc(
         # A menu item was chosen -- by a person or by the agent, which sends
         # the same command the menu does.
         if message == UInt32(winkb_constant["WM_COMMAND"]()):
+            var which = wparam & 0xFFFF
+            if which == 1004:  # File > Save
+                print("griddle:", save(hwnd))
+                return 0
+            if which == 1005:  # File > Save As
+                print("griddle:", save_dialog(hwnd))
+                return 0
+            if which == 1003:  # File > Open
+                print("griddle:", open_dialog(hwnd))
+                return 0
             if (wparam & 0xFFFF) == 1001:  # File > Exit
                 var DestroyWindow = win32[
                     def (Int) thin abi("C") -> c_int, "DestroyWindow"
@@ -1013,6 +1038,7 @@ def main() raises:
     var UpdateWindow = win32[
         def (Int) thin abi("C") -> c_int, "UpdateWindow"
     ]()
+    retitle(hwnd)
     _ = InvalidateRect0(hwnd, 0, c_int(0))
     _ = UpdateWindow(hwnd)
     print(

@@ -59,6 +59,9 @@ from ide.window import (
     hover_wait,
     jump_back,
     goto_reference,
+    is_dirty,
+    save,
+    save_as,
     line_height_of,
     line_text,
     open_path,
@@ -554,6 +557,23 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         if rest.byte_length() > 0:
             return goto_reference(hwnd, Int(rest))
         return references_at_caret(hwnd)
+
+    if verb == "save":
+        # `save` writes where it came from; `save as <path>` writes elsewhere
+        # and makes that the document's home.
+        if rest.startswith("as"):
+            var sp = rest.find(" ")
+            if sp < 0:
+                return String("usage: save as <path>")
+            return save_as(hwnd, String(String(rest[byte=sp + 1 :]).strip()))
+        if rest.byte_length() > 0:
+            return String("usage: save | save as <path>")
+        return save(hwnd)
+
+    if verb == "dirty":
+        # Whether there is unsaved work, which is the one thing a person must
+        # be able to find out without guessing.
+        return String("dirty ") + ("yes" if is_dirty(hwnd) else "no")
 
     if verb == "back":
         # Where the caret was before the last jump. The stack is what makes

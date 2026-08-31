@@ -20,6 +20,8 @@ Windows keeps for the window: the `Chrome`, and through it the `Doc`.
 
 from std.ffi import c_int
 from std.memory import OpaquePointer, Pointer
+from std.sys._com import com_addr, com_method_of
+from std.sys.com import co_create
 from std.sys._winkb import winkb_constant
 from std.time import perf_counter_ns
 
@@ -396,7 +398,12 @@ def _touch(hwnd: Int) raises:
         def (Int, Int, c_int) thin abi("C") -> c_int, "InvalidateRect"
     ]()
     _ = InvalidateRect(hwnd, 0, c_int(0))
-
+    # The title carries the dirty mark, so it is refreshed wherever the
+    # document changes rather than at the handful of places that remember to.
+    try:
+        retitle(hwnd)
+    except:
+        pass
 
 def _doc_at(hwnd: Int) raises -> Pointer[Doc, MutAnyOrigin]:
     """The window's document, or a raise if it has none."""
@@ -1705,3 +1712,368 @@ def pane_problems(hwnd: Int) raises -> String:
     doc[].pane_refs = False
     _touch(hwnd)
     return String("pane showing problems")
+
+
+# ===----------------------------------------------------------------------===#
+# Saving
+#
+# Milestone 3. An editor that cannot write a file is a viewer, and every
+# sprint up to here has built a very good viewer.
+#
+# Written whole rather than incrementally: the rope knows its text and a file
+# is small next to the machinery that would track which bytes changed. A
+# 104 MB document takes as long to write as the disk takes, which is the right
+# answer and the only honest one -- an editor that streams a partial file to
+# disk to save a few milliseconds has invented a new way to lose work.
+# ===----------------------------------------------------------------------===#
+
+
+def document_path(hwnd: Int) raises -> String:
+    """The file this window's document came from, or an empty string.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        The path, or empty if this document has never been on disk.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    if doc[].uri.byte_length() == 0:
+        return String("")
+    return path_of_uri(doc[].uri)
+
+
+def save_as(hwnd: Int, path: String) raises -> String:
+    """Write the document to `path` and make that its home.
+
+    Args:
+        hwnd: The window.
+        path: Where to write.
+
+    Returns:
+        What happened.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    var text = doc[].rope.to_string()
+    try:
+        with open(path, "w") as f:
+            f.write(text)
+    except err:
+        return String("cannot write ") + path + ": " + String(err)
+
+    doc[].dirty = False
+    var full = absolute(path)
+    var was = doc[].uri
+    doc[].uri = file_uri(full)
+    if doc[].uri != was:
+        # A document that moved is a different document as far as the server
+        # is concerned: the old URI's diagnostics are about a file this window
+        # is no longer showing.
+        #
+        # No didSave for the unmoved case, deliberately. The server is already
+        # told about every edit by didChange, so a save changes nothing it
+        # knows; sending didSave would be protocol for its own sake.
+        doc[].sent_version = 0
+        try:
+            announce(hwnd)
+        except:
+            pass
+    retitle(hwnd)
+    _touch(hwnd)
+    return (
+        String("saved ") + full + " (" + String(text.byte_length())
+        + " bytes)"
+    )
+
+
+def save(hwnd: Int) raises -> String:
+    """Write the document back where it came from.
+
+    A document with no path has nowhere to go; the caller asks for one. That
+    is the difference between Save and Save As, and it belongs at the point
+    where a person can be asked rather than buried here.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What happened, or that there is nowhere to save to.
+
+    Raises:
+        If the window has no document.
+    """
+    var path = document_path(hwnd)
+    if path.byte_length() == 0:
+        return String("this document has no file; use save as <path>")
+    return save_as(hwnd, path)
+
+
+def is_dirty(hwnd: Int) raises -> Bool:
+    """Whether the document has unsaved changes.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        True when there is work not on disk.
+
+    Raises:
+        If the window has no document.
+    """
+    return _doc_at(hwnd)[].dirty
+
+
+def retitle(hwnd: Int) raises:
+    """Put the file's name and its dirty mark in the title bar.
+
+    The one place a person looks to find out whether their work is safe, and
+    the convention every editor shares: a leading bullet means unsaved. It is
+    updated on every edit, which costs a SetWindowTextW on a string that is
+    usually the same -- Windows compares and does nothing when it matches.
+
+    Args:
+        hwnd: The window.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    var path = document_path(hwnd)
+    var name = String("untitled")
+    if path.byte_length() > 0:
+        var cut = path.rfind(chr(0x5C))
+        name = String(path[byte=cut + 1 :]) if cut >= 0 else path
+    var title = String("")
+    if doc[].dirty:
+        title += chr(0x2022) + " "  # bullet
+    title += name + "  --  Griddle"
+
+    var SetWindowTextW = win32[
+        def (Int, Pointer[UInt16, MutAnyOrigin]) thin abi("C") -> c_int,
+        "SetWindowTextW",
+    ]()
+    var units = List[UInt16]()
+    for ch in title.codepoints():
+        var v = Int(ch)
+        if v >= 0x10000:
+            var u = v - 0x10000
+            units.append(UInt16(0xD800 + (u >> 10)))
+            units.append(UInt16(0xDC00 + (u & 0x3FF)))
+        else:
+            units.append(UInt16(v))
+    units.append(0)
+    _ = SetWindowTextW(
+        hwnd, units.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin]()
+    )
+    _ = units
+
+
+# ===----------------------------------------------------------------------===#
+# The file dialogs
+#
+# `IFileOpenDialog` and `IFileSaveDialog`, which is the modern pair -- the
+# `GetOpenFileNameW` a lot of code still reaches for has been the compatibility
+# path since Vista and does not get the places bar, the search box or the
+# breadcrumb.
+#
+# Both classes implement `IFileDialog`, so Show, SetFileName and GetResult are
+# one code path and only the class ID differs. Every slot comes from
+# windows_api.db; nothing here counts vtable entries. spikes/com's
+# s06_apartment_activation proved the activation before any of this was built.
+# ===----------------------------------------------------------------------===#
+
+# The metadata carries the interfaces but not the class IDs -- its guid-kind
+# constants are present and valueless, a recorded gap -- so these two are
+# written once, here, beside their names.
+comptime CLSID_FileOpenDialog = "dc1c5a9c-e88a-4dde-a5a1-60f82a20aef7"
+comptime CLSID_FileSaveDialog = "c0b4e2f3-ba21-4773-8dba-335ec946eb8b"
+
+# SIGDN_FILESYSPATH, an enumerator whose value the database does not carry.
+comptime SIGDN_FILESYSPATH = 0x80058000
+
+
+def _utf16z(s: String) -> List[UInt16]:
+    """A NUL-terminated UTF-16 copy of a string, for a PCWSTR parameter."""
+    var units = List[UInt16]()
+    for ch in s.codepoints():
+        var v = Int(ch)
+        if v >= 0x10000:
+            var u = v - 0x10000
+            units.append(UInt16(0xD800 + (u >> 10)))
+            units.append(UInt16(0xDC00 + (u & 0x3FF)))
+        else:
+            units.append(UInt16(v))
+    units.append(0)
+    return units^
+
+
+def _shell_item_path(item: Int) raises -> String:
+    """The filesystem path of an IShellItem, or an empty string.
+
+    Args:
+        item: The shell item the dialog returned.
+
+    Returns:
+        The path.
+
+    Raises:
+        If the call cannot be made.
+    """
+    if item == 0:
+        return String("")
+    var this = OpaquePointer[MutUntrackedOrigin](unsafe_from_address=item)
+    var wide_path = Int(0)
+    var hr = com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            UInt32,
+            Pointer[Int, MutAnyOrigin],
+        ) thin abi("C") -> Int32,
+        "IShellItem",
+        "GetDisplayName",
+    ](this)(this, UInt32(SIGDN_FILESYSPATH), com_addr(wide_path))
+    if hr != 0 or wide_path == 0:
+        return String("")
+
+    var out = String("")
+    var p = Pointer[UInt16, MutAnyOrigin](unsafe_from_address=wide_path)
+    var i = 0
+    while True:
+        var unit = Int(p[i])
+        if unit == 0:
+            break
+        # A path outside the basic plane is legal and vanishingly rare; the
+        # surrogate pair is reassembled rather than dropped, because a path
+        # that is nearly right is worse than one that is obviously wrong.
+        if unit >= 0xD800 and unit <= 0xDBFF:
+            var lo = Int(p[i + 1])
+            if lo >= 0xDC00 and lo <= 0xDFFF:
+                out += chr(0x10000 + ((unit - 0xD800) << 10) + (lo - 0xDC00))
+                i += 2
+                continue
+        out += chr(unit)
+        i += 1
+
+    # The dialog allocated this with the task allocator; it is ours to free.
+    var CoTaskMemFree = win32[
+        def (Int) thin abi("C") -> NoneType, "CoTaskMemFree"
+    ]()
+    CoTaskMemFree(wide_path)
+    return out^
+
+
+def _ask(dialog: Int, hwnd: Int, suggested: String) raises -> String:
+    """Show a file dialog and return the chosen path, or an empty string.
+
+    Args:
+        dialog: An IFileDialog, from either class.
+        hwnd: The owner, so the dialog is modal to the editor rather than
+            free-floating -- an editor whose Save dialog can be lost behind it
+            is one that loses work.
+        suggested: A name to start with, or empty.
+
+    Returns:
+        The chosen path, or empty when cancelled.
+
+    Raises:
+        If a call cannot be made.
+    """
+    if dialog == 0:
+        return String("")
+    var this = OpaquePointer[MutUntrackedOrigin](unsafe_from_address=dialog)
+
+    if suggested.byte_length() > 0:
+        var name = _utf16z(suggested)
+        _ = com_method_of[
+            def (
+                OpaquePointer[MutUntrackedOrigin],
+                Pointer[UInt16, MutAnyOrigin],
+            ) thin abi("C") -> Int32,
+            "IFileDialog",
+            "SetFileName",
+        ](this)(
+            this, name.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin]()
+        )
+        _ = name
+
+    # Show returns S_OK when something was chosen and
+    # HRESULT_FROM_WIN32(ERROR_CANCELLED) -- 0x800704C7 -- when the person
+    # said no. Cancelling is not an error and must not read as one.
+    var shown = com_method_of[
+        def (OpaquePointer[MutUntrackedOrigin], Int) thin abi("C") -> Int32,
+        "IFileDialog",
+        "Show",
+    ](this)(this, hwnd)
+    if shown != 0:
+        return String("")
+
+    var item = Int(0)
+    var got = com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin], Pointer[Int, MutAnyOrigin]
+        ) thin abi("C") -> Int32,
+        "IFileDialog",
+        "GetResult",
+    ](this)(this, com_addr(item))
+    if got != 0 or item == 0:
+        return String("")
+
+    var path = _shell_item_path(item)
+    # GetResult handed us a reference; the dialog's own is not ours.
+    _ = com_method_of[
+        def (OpaquePointer[MutUntrackedOrigin]) thin abi("C") -> UInt32,
+        "IUnknown",
+        "Release",
+    ](OpaquePointer[MutUntrackedOrigin](unsafe_from_address=item))(
+        OpaquePointer[MutUntrackedOrigin](unsafe_from_address=item)
+    )
+    return path^
+
+
+def open_dialog(hwnd: Int) raises -> String:
+    """Ask for a file and open it.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What happened, or that nothing was chosen.
+
+    Raises:
+        If the dialog cannot be created.
+    """
+    var dialog = co_create[CLSID_FileOpenDialog, "IFileDialog"]()
+    var path = _ask(dialog.address(), hwnd, String(""))
+    if path.byte_length() == 0:
+        return String("nothing opened")
+    return open_path(hwnd, path)
+
+
+def save_dialog(hwnd: Int) raises -> String:
+    """Ask where to write, and write there.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What happened, or that nothing was chosen.
+
+    Raises:
+        If the dialog cannot be created.
+    """
+    var current = document_path(hwnd)
+    var name = String("untitled.mojo")
+    if current.byte_length() > 0:
+        var cut = current.rfind(chr(0x5C))
+        name = String(current[byte=cut + 1 :]) if cut >= 0 else current
+    var dialog = co_create[CLSID_FileSaveDialog, "IFileDialog"]()
+    var path = _ask(dialog.address(), hwnd, name)
+    if path.byte_length() == 0:
+        return String("not saved")
+    return save_as(hwnd, path)

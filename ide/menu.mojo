@@ -22,6 +22,9 @@ from ide.win32 import win32
 
 # Command ids. Small and explicit: the agent never uses them -- it uses the
 # visible names -- but WM_COMMAND arrives carrying one.
+comptime ID_FILE_OPEN = 1003
+comptime ID_FILE_SAVE = 1004
+comptime ID_FILE_SAVE_AS = 1005
 comptime ID_FILE_EXIT = 1001
 
 
@@ -51,6 +54,16 @@ def build(hwnd: Int) raises:
         raise Error("CreateMenu failed")
 
     var file = CreatePopupMenu()
+    # The accelerators are in the labels because they are what a person looks
+    # for; the keys themselves are handled in the window procedure, which is
+    # where they work whether or not the menu is open.
+    _append(AppendMenuW, file, winkb_constant["MF_STRING"](), ID_FILE_OPEN,
+            "Open...\tCtrl+O")
+    _append(AppendMenuW, file, winkb_constant["MF_STRING"](), ID_FILE_SAVE,
+            "Save\tCtrl+S")
+    _append(AppendMenuW, file, winkb_constant["MF_STRING"](), ID_FILE_SAVE_AS,
+            "Save As...\tCtrl+Shift+S")
+    _append(AppendMenuW, file, winkb_constant["MF_SEPARATOR"](), 0, "")
     _append(AppendMenuW, file, winkb_constant["MF_STRING"](), ID_FILE_EXIT,
             "Exit")
     _append(AppendMenuW, bar, winkb_constant["MF_POPUP"](), file, "File")
