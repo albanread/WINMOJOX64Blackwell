@@ -574,7 +574,7 @@ def _clear_pending_requests():
 def _clear_stop():
     """Drop everything that described where the debuggee was standing.
 
-    The three in-flight slots go with it, and that is not housekeeping. A stop
+    The in-flight slots go with it, and that is not housekeeping. A stop
     starts a chain -- stack, then scope, then variables -- and a person who
     presses step the instant the editor stops leaves that chain halfway done.
     Left live, its answers arrive after the program has resumed and paint the
@@ -589,6 +589,11 @@ def _clear_stop():
     g_seq_stack()[] = 0
     g_seq_scopes()[] = 0
     g_seq_variables()[] = 0
+    # Evaluate goes with them, and for the same reason: an answer about a
+    # frame that has moved is a value from a moment that has passed, and
+    # showing it beside a name in the current file would be a lie with a
+    # number in it.
+    g_seq_evaluate()[] = 0
     _clear_frames()
     _clear_variables()
 
@@ -1068,6 +1073,11 @@ def _handle_response(msg: JSON) raises:
         _take_variables(body)
         return
 
+    if command == "evaluate" and seq == g_seq_evaluate()[]:
+        g_seq_evaluate()[] = 0
+        _take_evaluate(body)
+        return
+
     if command == "disconnect" and seq == g_seq_disconnect()[]:
         g_seq_disconnect()[] = 0
         return
@@ -1272,3 +1282,83 @@ def _wait_for_slot(which: Int, seconds: Float64) raises -> Bool:
         _ = poll_debug()
         sleep(POLL_INTERVAL_SECONDS)
     return True
+
+
+# ===----------------------------------------------------------------------===#
+# Evaluating an expression in a stopped frame
+#
+# The one request that answers a question a person asked rather than one the
+# editor asked on their behalf, so unlike everything else here it has a value
+# a caller waits for. It waits the way `set_breakpoints` does: through the
+# same drain and dispatch `poll_debug` uses, so events arriving meanwhile are
+# handled rather than dropped, and with a deadline so a wedged adapter cannot
+# take the editor with it.
+# ===----------------------------------------------------------------------===#
+
+comptime g_seq_evaluate = named_global["dap.seq.evaluate", Int]
+comptime g_evaluated = named_global["dap.evaluated", String]
+comptime g_evaluated_type = named_global["dap.evaluated.type", String]
+
+
+def evaluate(expression: String, frame: Int = 0) raises -> String:
+    """Ask the debugger what an expression is worth, in a stopped frame.
+
+    Args:
+        expression: What to evaluate, as a person would type it.
+        frame: Which frame to evaluate it in, zero being the innermost.
+
+    Returns:
+        The value, or an empty string when there is no answer. A failing
+        expression is not an error here: asking about a name that is not in
+        scope is a perfectly ordinary thing to do with a mouse.
+
+    Raises:
+        If a pipe read fails in a way `pipes` does not swallow.
+    """
+    g_evaluated()[] = String("")
+    g_evaluated_type()[] = String("")
+    if not debugging() or not stopped():
+        return String("")
+    if expression.byte_length() == 0:
+        return String("")
+
+    var args = JSON.object()
+    args.set(String("expression"), JSON(expression))
+    # The context tells the adapter what the answer is for. "hover" asks it to
+    # be side-effect free, which matters: an editor that runs a function every
+    # time a pointer crosses its name is an editor that changes the program it
+    # is showing you.
+    args.set(String("context"), JSON(String("hover")))
+    var ids = g_frame_id()
+    if frame >= 0 and frame < len(ids[]):
+        args.set(String("frameId"), JSON(ids[][frame]))
+    g_seq_evaluate()[] = _request(String("evaluate"), args^)
+
+    var deadline = perf_counter_ns() + 5_000_000_000
+    while perf_counter_ns() < deadline and g_seq_evaluate()[] != 0:
+        _ = poll_debug()
+    if g_seq_evaluate()[] != 0:
+        # Gave up. Leaving the slot set would make the next evaluation's
+        # answer match this one's request.
+        g_seq_evaluate()[] = 0
+        return String("")
+    return g_evaluated()[]
+
+
+def evaluated_type() -> String:
+    """The type of the last thing evaluated, if the adapter said.
+
+    Returns:
+        The type name, or empty.
+    """
+    return g_evaluated_type()[]
+
+
+def _take_evaluate(body: JSON):
+    """Keep an `evaluate` answer.
+
+    Args:
+        body: The response body.
+    """
+    g_evaluated()[] = sanitized(body.get("result")[].as_string())
+    g_evaluated_type()[] = sanitized(body.get("type")[].as_string())

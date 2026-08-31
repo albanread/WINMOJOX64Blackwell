@@ -60,6 +60,8 @@ from ide.window import (
     remember_session,
     restore_session,
     breakpoint_lines,
+    debug_evaluate,
+    run_to_caret,
     debug_after_build,
     debug_file,
     debug_poll,
@@ -539,7 +541,15 @@ def griddle_wndproc(
                 # Ctrl+I: what is this. VS Code spells it Ctrl+K Ctrl+I; a
                 # chord is a lot of machinery for one box, and Ctrl+I is free.
                 if wparam == ord("I"):
-                    _ = hover_at_caret(hwnd)
+                    # The same question -- "what is this" -- answered by
+                    # whichever of the two actually knows right now. While a
+                    # program is stopped the live value beats a type, because
+                    # it is a fact about this run rather than a fact about
+                    # the language.
+                    if debugging():
+                        print("griddle:", debug_evaluate(hwnd, String("")))
+                    else:
+                        _ = hover_at_caret(hwnd)
                     return 0
                 # Z, Y and A are virtual key codes, which are the ASCII
                 # capitals for letters -- one of Win32's few kindnesses.
@@ -621,7 +631,10 @@ def griddle_wndproc(
                 return 0
 
             if wparam == winkb_constant["VK_F10"]():
-                print("griddle:", debug_step(hwnd, "over"))
+                if ctrl:
+                    print("griddle:", run_to_caret(hwnd))
+                else:
+                    print("griddle:", debug_step(hwnd, "over"))
                 return 0
             if wparam == winkb_constant["VK_F11"]():
                 print("griddle:", debug_step(hwnd, "out" if shift else "in"))

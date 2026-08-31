@@ -127,6 +127,8 @@ from ide.build import (
 )
 from ide.dap import (
     configuration_done,
+    evaluate,
+    evaluated_type,
     debug_serial,
     debugging,
     frame_count,
@@ -3528,6 +3530,10 @@ def debug_poll(hwnd: Int) raises -> Bool:
             )
         set_variable_rows(rows^, frames)
         set_stop_line(stop_line(), True)
+        try:
+            clear_temporary_breakpoint(hwnd)
+        except:
+            pass
         _doc_at(hwnd)[].pane_mode = PANE_VARIABLES
     else:
         set_stop_line(-1, debugging())
@@ -3869,3 +3875,161 @@ def restore_session(hwnd: Int) raises -> String:
         out += ", " + String(dropped_count()) + " gone from disk"
     _touch(hwnd)
     return out^
+
+
+def word_at_caret(hwnd: Int) raises -> String:
+    """The identifier the caret is sitting in or beside.
+
+    What a person means by "this one" when they are pointing at a name. The
+    caret counts in UTF-16 units and the line is bytes, so the walk is over
+    bytes and the caret's column is converted first -- an identifier is ASCII
+    here, but the text before it on the line need not be.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        The identifier, or an empty string if the caret is not in one.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    var line = doc[].rope.line(doc[].caret_line)
+    var bytes = line.as_bytes()
+    var at = byte_at(doc[].rope, doc[].caret_line, doc[].caret_col) - byte_at(
+        doc[].rope, doc[].caret_line, 0
+    )
+    if at > len(bytes):
+        at = len(bytes)
+
+    fn is_word(c: Int) -> Bool:
+        return (
+            (c >= 0x41 and c <= 0x5A)
+            or (c >= 0x61 and c <= 0x7A)
+            or (c >= 0x30 and c <= 0x39)
+            or c == 0x5F
+        )
+
+    # A caret just past the end of a word is still in that word as far as a
+    # person is concerned: they have typed the name and want to know about it.
+    var start = at
+    if start > 0 and start <= len(bytes) and (
+        start == len(bytes) or not is_word(Int(bytes[start]))
+    ):
+        if is_word(Int(bytes[start - 1])):
+            start -= 1
+    if start >= len(bytes) or not is_word(Int(bytes[start])):
+        return String("")
+    var finish = start
+    while start > 0 and is_word(Int(bytes[start - 1])):
+        start -= 1
+    while finish < len(bytes) and is_word(Int(bytes[finish])):
+        finish += 1
+    return String(line[byte=start:finish])
+
+
+def debug_evaluate(hwnd: Int, expression: String) raises -> String:
+    """What an expression is worth where the debuggee is standing.
+
+    Args:
+        hwnd: The window.
+        expression: What to ask about; empty means the word at the caret.
+
+    Returns:
+        The answer, or why there is none.
+
+    Raises:
+        If the window has no document.
+    """
+    if not debugging():
+        return String("nothing is being debugged")
+    if not stopped():
+        return String("the debuggee is running")
+    var want = expression
+    if want.byte_length() == 0:
+        want = word_at_caret(hwnd)
+    if want.byte_length() == 0:
+        return String("the caret is not on a name")
+    var value = evaluate(want)
+    if value.byte_length() == 0:
+        return want + " is not in scope here"
+    var out = want + " = " + value
+    if evaluated_type().byte_length() > 0:
+        out += "   (" + evaluated_type() + ")"
+    return out^
+
+
+def run_to_caret(hwnd: Int) raises -> String:
+    """Carry on until execution reaches the caret's line.
+
+    A breakpoint that exists for one stop. It is added to the document, sent
+    with all the others, and taken off again when it is hit -- rather than
+    kept, because a person who asked to run somewhere once did not ask for a
+    breakpoint there forever, and an editor that leaves one behind teaches
+    them to stop using this.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What happened.
+
+    Raises:
+        If the window has no document.
+    """
+    if not debugging():
+        return String("nothing is being debugged; press F5 first")
+    var doc = _doc_at(hwnd)
+    var path = document_path(hwnd)
+    if path.byte_length() == 0:
+        return String("this document has no file")
+
+    var target = doc[].caret_line
+    var already = False
+    for at in doc[].breakpoints:
+        if at == target:
+            already = True
+    if not already:
+        _ = toggle_breakpoint(hwnd, target)
+        g_temporary_line()[] = target
+        g_temporary_path()[] = path
+    var lines = List[Int]()
+    for at in doc[].breakpoints:
+        lines.append(at)
+    _ = set_breakpoints(path, lines)
+    resume()
+    return String("running to line ") + String(target + 1)
+
+
+comptime g_temporary_line = named_global["ide.tempbreak.line", Int]
+comptime g_temporary_path = named_global["ide.tempbreak.path", String]
+
+
+def clear_temporary_breakpoint(hwnd: Int) raises:
+    """Take away the breakpoint run-to-cursor put down, once it has served.
+
+    Args:
+        hwnd: The window.
+
+    Raises:
+        Never in practice.
+    """
+    if g_temporary_path()[].byte_length() == 0:
+        return
+    var path = document_path(hwnd)
+    if path != g_temporary_path()[]:
+        # The stop was somewhere else, so this one has not been reached and
+        # is still wanted. Leaving it is right; a person who ran to a line and
+        # stopped short of it still means to get there.
+        return
+    var line = g_temporary_line()[]
+    if line != stop_line():
+        return
+    g_temporary_path()[] = String("")
+    _ = toggle_breakpoint(hwnd, line)
+    var doc = _doc_at(hwnd)
+    var lines = List[Int]()
+    for at in doc[].breakpoints:
+        lines.append(at)
+    _ = set_breakpoints(path, lines)

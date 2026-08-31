@@ -69,8 +69,10 @@ from ide.window import (
     clear_breakpoints,
     debug_file,
     debug_launch,
+    debug_evaluate,
     debug_report,
     debug_step,
+    run_to_caret,
     debug_stop,
     debug_wait,
     replace_every,
@@ -616,6 +618,14 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             return debug_stop(hwnd)
         if rest == "over" or rest == "in" or rest == "out":
             return debug_step(hwnd, rest)
+        if rest.startswith("eval"):
+            var sp = rest.find(" ")
+            var what = String("")
+            if sp > 0:
+                what = String(String(rest[byte=sp + 1 :]).strip())
+            return debug_evaluate(hwnd, what)
+        if rest == "here":
+            return run_to_caret(hwnd)
         if rest == "continue":
             if not debugging():
                 return String("nothing is being debugged")
