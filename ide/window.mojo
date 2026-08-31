@@ -174,8 +174,23 @@ from ide.watch import (
     watch_directory,
     watching,
 )
+from ide.session import (
+    OpenFile,
+    dropped_count,
+    expanded_count,
+    expanded_path,
+    load_session,
+    save_session,
+    session_current,
+    session_file,
+    session_file_count,
+    session_path,
+    forget_session,
+)
 from ide.tree import (
     entry_at,
+    expand_path,
+    expanded_paths,
     project_root,
     refresh,
     entry_count,
@@ -3714,4 +3729,143 @@ def replace_preview(hwnd: Int, needle: String, replacement: String) raises -> St
     var out = String("replace ") + String(total) + " matches\n"
     for line in preview_replacements(doc[].rope, needle, replacement):
         out += line + "\n"
+    return out^
+
+
+# ===----------------------------------------------------------------------===#
+# Remembering where you were
+# ===----------------------------------------------------------------------===#
+
+
+def session_report(hwnd: Int) raises -> String:
+    """What is open now, and where it would be written down.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        The session file and the tabs it would record.
+
+    Raises:
+        Never in practice.
+    """
+    _ = hwnd
+    var root = project_root()
+    if root.byte_length() == 0:
+        return String("no project")
+    var out = String("session ") + session_path(root) + "\n"
+    for i in range(tab_count()):
+        out += "  " + tab_name(i) + "\n"
+    return out^
+
+
+def remember_session(hwnd: Int) raises -> String:
+    """Write down what is open, so the next run can put it back.
+
+    Called on the way out. Failing to save a session may never be the reason
+    an editor will not close, so everything here is best-effort and the
+    module it calls reports rather than raises.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What happened.
+
+    Raises:
+        Never in practice.
+    """
+    var root = project_root()
+    if root.byte_length() == 0:
+        return String("no project; nothing to remember")
+
+    var files = List[OpenFile]()
+    for i in range(tab_count()):
+        var address = tab_doc(i)
+        if address == 0:
+            continue
+        var doc = Pointer[Doc, MutAnyOrigin](unsafe_from_address=address)
+        var path = path_of_uri(doc[].uri)
+        # A document that has never been on disk has nothing to reopen. It is
+        # skipped rather than saved with an empty path, which would come back
+        # next time as a tab pointing at nothing.
+        if path.byte_length() == 0:
+            continue
+        var marks = List[Int]()
+        for at in doc[].breakpoints:
+            marks.append(at)
+        files.append(
+            OpenFile(
+                path,
+                doc[].caret_line,
+                doc[].caret_col,
+                doc[].grid.top_line,
+                marks^,
+            )
+        )
+
+    var expanded = List[String]()
+    try:
+        expanded = expanded_paths()
+    except:
+        pass
+    return save_session(root, files, current_tab(), expanded^)
+
+
+def restore_session(hwnd: Int) raises -> String:
+    """Put back what was open the last time this project was closed.
+
+    Order matters. The files are opened first, because opening one switches to
+    its tab and the front tab has to be chosen after they all exist. The tree
+    is expanded second, because a directory can only be opened once its parent
+    is showing and the saved list is already in that order.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What happened.
+
+    Raises:
+        Never in practice; a session that cannot be read is simply not used.
+    """
+    var root = project_root()
+    if root.byte_length() == 0:
+        return String("no project")
+    if not load_session(root):
+        return String("no previous session")
+
+    var opened = 0
+    for i in range(session_file_count()):
+        var one = session_file(i)
+        # The file the editor was started with is already open; opening it
+        # again just switches to its tab, which is harmless and keeps this
+        # loop from needing to know about it.
+        var said = open_path(hwnd, one.path)
+        if said.startswith("cannot open"):
+            continue
+        opened += 1
+        var doc = _doc_at(hwnd)
+        doc[].breakpoints = List[Int]()
+        for at in one.breakpoints:
+            doc[].breakpoints.append(at)
+        doc[].grid.top_line = one.top_line
+        _ = caret_move(hwnd, one.caret_line, one.caret_col)
+
+    for i in range(expanded_count()):
+        try:
+            _ = expand_path(expanded_path(i))
+        except:
+            pass
+
+    if session_current() >= 0 and session_current() < tab_count():
+        _ = switch_tab(hwnd, session_current())
+
+    var out = String("restored ") + String(opened) + " files"
+    if dropped_count() > 0:
+        # Said out loud rather than swallowed: a person who left four files
+        # open and gets three back should be told which way that went, not
+        # left wondering whether they imagined the fourth.
+        out += ", " + String(dropped_count()) + " gone from disk"
+    _touch(hwnd)
     return out^

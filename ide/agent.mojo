@@ -81,6 +81,10 @@ from ide.window import (
     toggle_breakpoint,
     reload_document,
     search_in_project,
+    remember_session,
+    restore_session,
+    session_report,
+    project_root,
     tree_report,
     watch_project,
     zoom_report,
@@ -113,6 +117,7 @@ from ide.menu import invoke as invoke_menu
 from ide.tsf import self_check as tsf_self_check
 from ide.screenshot import capture
 from ide.dap import debug_log, debugging, resume
+from ide.session import forget_session
 from ide.watch import stop_watching
 from ide.win32 import (
     RECT,
@@ -684,6 +689,19 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         # live in the window procedure because changing it rebuilds the
         # chrome.
         return zoom_report(hwnd)
+
+    if verb == "session":
+        # `session` says what is remembered, `session save` writes it,
+        # `session restore` puts it back, `session forget` removes it. An
+        # unattended run never restores on its own, so a check that wants to
+        # exercise this asks.
+        if rest == "save":
+            return remember_session(hwnd)
+        if rest == "restore":
+            return restore_session(hwnd)
+        if rest == "forget":
+            return forget_session(project_root())
+        return session_report(hwnd)
 
     if verb == "tree":
         # `tree` lists it, `tree N` expands or collapses row N, `tree root

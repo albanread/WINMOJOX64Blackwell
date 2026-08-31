@@ -57,6 +57,8 @@ from ide.gridview import (
 )
 from ide.window import (
     adopt_tab,
+    remember_session,
+    restore_session,
     breakpoint_lines,
     debug_after_build,
     debug_file,
@@ -749,6 +751,13 @@ def griddle_wndproc(
             try:
                 if not confirm_close_all(hwnd):
                     return 0
+                # After the question, not before: a close that gets cancelled
+                # must not have already written down a session for a window
+                # that is staying open.
+                try:
+                    print("griddle:", remember_session(hwnd))
+                except:
+                    pass
             except:
                 # A window with no document has nothing to lose; a raise here
                 # must not be able to trap someone in the editor.
@@ -928,6 +937,10 @@ def main() raises:
     # The checks that measure drawing do not want a language server
     # parsing in the background while they time a frame.
     var no_lsp = False
+    # Sessions are a convenience for a person and a source of surprise for a
+    # check: a suite that opens one file and expects one tab should not
+    # inherit whatever was open when somebody last used the editor here.
+    var no_session = False
     var args = argv()
     for i in range(len(args)):
         if args[i] == "--ms" and i + 1 < len(args):
@@ -946,6 +959,8 @@ def main() raises:
             no_vsync = True
         if args[i] == "--no-lsp":
             no_lsp = True
+        if args[i] == "--no-session":
+            no_session = True
 
     var GetModuleHandleW = win32[
         def (Int) thin abi("C") -> Int, "GetModuleHandleW"
@@ -1029,6 +1044,14 @@ def main() raises:
     var handle_path = String(env_or("TEMP", ".")) + "\\griddle.hwnd"
     with open(handle_path, "w") as f:
         f.write(String(hwnd))
+
+    # An unattended run never inherits a session. A check that opens one
+    # file and expects one tab would otherwise get whatever somebody had open
+    # the last time they used the editor in this directory, and fail for a
+    # reason that has nothing to do with what it is checking. `session
+    # restore` asks for it explicitly when a check wants to exercise it.
+    if command.byte_length() > 0:
+        no_session = True
 
     # The menu first: it takes height from the client area, and the chrome's
     # layout is arithmetic on whatever is left.
@@ -1180,6 +1203,11 @@ def main() raises:
                 root = folder^
         print("griddle:", set_root(root))
         print("griddle:", watch_project(hwnd))
+        # And what was open last time. After the tree, because restoring it
+        # expands directories, and after the first tab, because the front tab
+        # is chosen from among all of them.
+        if not no_session:
+            print("griddle:", restore_session(hwnd))
     except err:
         print("griddle: no project tree (", String(err), ")")
 

@@ -363,6 +363,47 @@ def refresh() raises -> String:
     return String("refreshed ") + String(entry_count()) + " entries"
 
 
+def expanded_paths() raises -> List[String]:
+    """Every directory currently open, outermost first.
+
+    Outermost first because that is the order they have to be re-expanded in:
+    expanding a child needs its parent's rows present, and the list is already
+    in display order, which is depth order.
+
+    Returns:
+        Their full paths.
+
+    Raises:
+        Never in practice.
+    """
+    var out = List[String]()
+    var entries = g_entries()
+    for i in range(len(entries[])):
+        if entries[][i].is_dir and entries[][i].expanded:
+            out.append(entries[][i].path)
+    return out^
+
+
+def expand_path(want: String) raises -> Bool:
+    """Open one directory by path, if it is showing and closed.
+
+    Args:
+        want: Its full path.
+
+    Returns:
+        True if it was expanded.
+
+    Raises:
+        If the directory cannot be read.
+    """
+    var entries = g_entries()
+    for i in range(len(entries[])):
+        if entries[][i].path == want and not entries[][i].expanded:
+            _ = toggle(i)
+            return True
+    return False
+
+
 def tree_report() raises -> String:
     """The tree as text, indented the way it is drawn.
 
