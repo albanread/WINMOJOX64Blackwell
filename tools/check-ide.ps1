@@ -773,6 +773,43 @@ if ($undocumented.Count -eq 0) {
     Record 'help-complete' 'FAIL' "undocumented: $($undocumented -join ', ')"
 }
 
+# 36. A settings file that cannot be read is not a settings file that is empty.
+# The two used to be the same answer, and set_setting is read-modify-write:
+# handed an empty document it added one key and renamed it over a complete
+# preferences file, returning True. It needed no unusual permissions, because
+# the store's own rename makes the destination briefly unopenable -- two
+# Griddles saving at the same moment was enough. Held open with no sharing
+# here, which is exactly what that rename does.
+$cfgDir = Join-Path ([System.IO.Path]::GetTempPath()) ("griddle-settings-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null
+$cfg = Join-Path $cfgDir 'settings.json'
+$saved = $env:GRIDDLE_SETTINGS
+$env:GRIDDLE_SETTINGS = $cfg
+try {
+    Ask 'setting a one;;setting b two;;setting c three' | Out-Null
+    $before = (Get-Content $cfg -Raw)
+    $hold = [System.IO.File]::Open($cfg, 'Open', 'Read', 'None')
+    try {
+        $said = (Ask 'setting d four')
+    } finally {
+        $hold.Close()
+    }
+    $after = (Get-Content $cfg -Raw)
+    if ($before -notmatch '"a"' -or $before -notmatch '"c"') {
+        Record 'settings-durable' 'FAIL' 'the three settings were never written'
+    } elseif ($after -ne $before) {
+        Record 'settings-durable' 'FAIL' 'a locked file was overwritten'
+    } elseif ($said -match 'could not save') {
+        Record 'settings-durable' 'PASS' 'refused, and the file is byte-identical'
+    } else {
+        Record 'settings-durable' 'FAIL' "claimed success while unreadable: $($said.Trim())"
+    }
+} finally {
+    if ($null -eq $saved) { Remove-Item Env:\GRIDDLE_SETTINGS -ErrorAction SilentlyContinue }
+    else { $env:GRIDDLE_SETTINGS = $saved }
+    Remove-Item -Recurse -Force $cfgDir -ErrorAction SilentlyContinue
+}
+
 # ---- summary ---------------------------------------------------------------
 $bad = @($results | Where-Object Verdict -eq 'FAIL').Count
 Write-Host ""

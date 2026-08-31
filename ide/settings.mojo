@@ -50,6 +50,8 @@ settings are corrupt" is always "then use the defaults".
 """
 
 from std.ffi import c_int
+from std.sys._globals import named_global
+from std.time import sleep
 from std.memory import Pointer
 from std.sys._winkb import winkb_constant
 
@@ -217,6 +219,10 @@ def set_setting(key: String, value: String) raises -> Bool:
     if key.byte_length() == 0:
         return False
     var root = _load()
+    if settings_unreadable():
+        # There are settings on disk that could not be read. Writing one key
+        # now would replace all of them with it.
+        return False
     root.set(String(key), JSON(String(value)))
     return _store(root^)
 
@@ -235,6 +241,8 @@ def forget_setting(key: String) raises -> Bool:
         If the path cannot be resolved.
     """
     var root = _load()
+    if settings_unreadable():
+        return False
     if not root.has(key):
         # Distinguished from a failed write on purpose: "there was nothing to
         # forget" and "I could not forget it" are different answers, and only
@@ -262,27 +270,76 @@ def forget_setting(key: String) raises -> Bool:
 # ===----------------------------------------------------------------------===#
 
 
+# Whether the last `_load` failed to read a file that is really there. The
+# distinction is the whole of this module's durability: a file that is absent
+# and a file that is present but unreadable both yield an empty document, and
+# only one of them may be written over.
+comptime g_unread = named_global["settings.unread", Int]
+
+
+def settings_unreadable() -> Bool:
+    """Whether the last read failed on a file that exists.
+
+    Returns:
+        True when there are settings on disk that could not be read.
+    """
+    return g_unread()[] != 0
+
+
 def _load() raises -> JSON:
     """The settings file as an object, and an empty object for anything else.
 
-    Every way this can fail -- no file, no read permission, a truncated write,
-    somebody's unrelated JSON that landed on the name, a hand edit that lost a
-    brace -- arrives here as the same answer, and it is the right one. The
-    editor starts with its defaults and the next `set_setting` writes a whole
-    valid file over the wreckage.
+    Most ways this can fail -- no file, a truncated write, somebody's
+    unrelated JSON that landed on the name, a hand edit that lost a brace --
+    arrive here as the same answer, and it is the right one: the editor starts
+    with its defaults and the next `set_setting` writes a whole valid file
+    over the wreckage.
+
+    One way is different, and it used to arrive here as the same answer too.
+    A file that exists and cannot be opened *this instant* is not an empty
+    file, and the callers that write are read-modify-write: handed an empty
+    document they add one key and rename it over a complete one. Every other
+    preference is gone and the call returns True. It needs no unusual
+    permissions to happen, because `_store`'s own rename makes the
+    destination briefly unopenable -- so two Griddles saving at the same
+    moment is the trigger, and this module already knows two can be running,
+    which is why the pid is in the temporary name.
+
+    So the open is retried, and if it still fails on a file that is there,
+    `settings_unreadable` says so and the writers refuse.
     """
+    g_unread()[] = 0
     var path = settings_path()
     if path == "":
         return JSON.object()
 
-    var text: String
-    try:
-        # A plain `with` is correct for a read. The handle outliving the block
-        # only matters where the file is about to be renamed over, which is
-        # `_store`'s problem and is solved there by closing explicitly.
-        with open(path, "r") as f:
-            text = f.read()
-    except:
+    var text = String("")
+    var read = False
+    # Six attempts over about a hundred milliseconds. The window this closes
+    # is one rename wide -- microseconds -- so a retry that reaches the second
+    # attempt has almost certainly hit something else, and one that reaches
+    # the sixth has hit a real problem worth reporting rather than papering
+    # over.
+    var tries = 0
+    while tries < 6:
+        try:
+            # A plain `with` is correct for a read. The handle outliving the
+            # block only matters where the file is about to be renamed over,
+            # which is `_store`'s problem and is solved there by closing
+            # explicitly.
+            with open(path, "r") as f:
+                text = f.read()
+            read = True
+            break
+        except:
+            tries += 1
+            if tries < 6:
+                sleep(0.02)
+    if not read:
+        # Absent is fine and means what it says. Present-but-unreadable is
+        # not, and saying so is the difference between starting with defaults
+        # and destroying somebody's preferences.
+        g_unread()[] = 1 if _exists(path) else 0
         return JSON.object()
 
     # A UTF-8 byte order mark, if somebody has had this file open in Notepad,

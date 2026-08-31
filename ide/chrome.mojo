@@ -636,17 +636,18 @@ def draw(
     # SIDEBAR_W + 12`, `height - STATUS_H - PANE_H + 8` -- which was the same
     # arithmetic the layout does and stopped being so the moment the layout
     # started scaling: the panes moved and their headings stayed at 96 DPI.
-    # The bottom-left pane has no fixed heading: it shows problems,
-    # references or variables, and each of those draws its own name. A label
-    # here would sit under all three of them.
-    var output = layout.output()
+    # Neither bottom pane has a fixed heading, and both for the same reason:
+    # what they are showing changes, so the thing that draws the contents is
+    # the only thing that knows what to call them. The left one shows
+    # problems, references, variables, the outline, the toolchain or Python.
+    # The right one was labelled here, from when OUTPUT was all it could ever
+    # say -- and then `draw_output` grew a heading of its own that also
+    # reports "running" or a line count. Both were being drawn, two design
+    # pixels apart, and the word looked blurred rather than doubled, which is
+    # why it survived this long.
     _label(
         chrome, "GRIDDLE", layout.rail_w() + scaled(14, chrome.scale),
         scaled(10, chrome.scale), DIM,
-    )
-    _label(
-        chrome, "OUTPUT", output.left + scaled(12, chrome.scale),
-        output.top + scaled(8, chrome.scale), DIM,
     )
     _label(
         chrome, status, scaled(12, chrome.scale),
