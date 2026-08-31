@@ -616,6 +616,71 @@ if ($offenders.Count -eq 0) {
     Record 'no-int-addresses' 'FAIL' "use com_addr instead: $where"
 }
 
+# 29. The toolchain view names a toolchain that is really there.
+# Every row was stat'd when the lookup ran, so `--` on a row means Griddle
+# would fail to start that binary. The version is matched against the shape
+# the compiler prints rather than a literal, because a literal here would be
+# a second place to update on every bump and would go stale silently.
+$out = Ask 'toolchain'
+$missing = @([regex]::Matches($out, '(?m)^\s+--\s')).Count
+$mCount = [regex]::Match($out, '(?m)^toolchain (\d+)')
+$mVer = [regex]::Match($out, '(?m)^\s+mojo (.+)$')
+if (-not $mCount.Success) {
+    Record 'toolchain' 'FAIL' 'no toolchain report came back'
+} elseif ($missing -gt 0) {
+    Record 'toolchain' 'FAIL' "$missing components missing"
+} elseif (-not ($mVer.Success -and $mVer.Groups[1].Value -match '^Mojo \d')) {
+    Record 'toolchain' 'FAIL' 'the compiler did not report a version'
+} else {
+    Record 'toolchain' 'PASS' `
+        "$($mCount.Groups[1].Value) components, none missing, $($mVer.Groups[1].Value.Trim())"
+}
+
+# 30. The compiler a build would run is the one the view names.
+# The point of the toolchain module is that there is one answer to "which
+# toolchain". Two places spelling the same path is two places to be wrong in,
+# and the failure mode is the confusing kind: a view that says everything is
+# fine beside a build that cannot start.
+# The answer is the last line: Ask returns everything the process printed,
+# and Griddle announces its project, its watcher and its window first.
+$compiler = @((Ask 'toolchain compiler') -split "`r?`n" |
+    Where-Object { $_.Trim() -ne '' })[-1].Trim()
+if ($compiler -and (Test-Path $compiler) -and $compiler -match 'mojo\.exe$') {
+    Record 'toolchain-compiler' 'PASS' "the view names a real compiler on disk"
+} else {
+    Record 'toolchain-compiler' 'FAIL' "not a compiler on disk: '$compiler'"
+}
+
+# 31. The Python view says what Run will inject, rather than keeping it.
+# MOJO_PYTHON_LIBRARY is the load-bearing one: measured on this machine, a
+# Mojo program that touches Python aborts without it and works with it,
+# because the compiler runtime cannot discover the library on Windows.
+$out = Ask 'python'
+if ($out -match 'MOJO_PYTHON_LIBRARY = (\S.*)') {
+    $lib = $matches[1].Trim()
+    if (Test-Path $lib) {
+        Record 'python-view' 'PASS' "names a python DLL that exists"
+    } else {
+        Record 'python-view' 'FAIL' "names a library that is not there: $lib"
+    }
+} else {
+    Record 'python-view' 'FAIL' 'the view does not say what Run injects'
+}
+
+# 32. The bottom pane's other faces are reachable from the menu.
+# They are menu items and not only keys because they are the answer to
+# "where has my problem list gone". Naming them by their visible label also
+# proves the accelerator hint is not part of the name.
+$reached = 0
+foreach ($item in @('View > Toolchain', 'View > Python', 'View > Outline')) {
+    if ((Ask "menu $item") -match 'invoked') { $reached++ }
+}
+if ($reached -eq 3) {
+    Record 'view-menu' 'PASS' 'Toolchain, Python and Outline all reached by name'
+} else {
+    Record 'view-menu' 'FAIL' "$reached of 3 view items reachable"
+}
+
 # ---- summary ---------------------------------------------------------------
 $bad = @($results | Where-Object Verdict -eq 'FAIL').Count
 Write-Host ""

@@ -46,6 +46,8 @@ from std.sys._globals import named_global
 from std.time import perf_counter_ns, sleep
 
 from ide.json import JSON, parse
+from ide.python_env import apply_variables, project_location
+from ide.tree import project_root
 from ide.pipes import Child, kill, read_some, spawn, waiting, write_all
 from ide.pipeutf8 import sanitized, take_chunk
 
@@ -463,6 +465,14 @@ def start_debug(
     g_bp_verified()[] = 0
     _clear_pending_requests()
 
+    # The adapter inherits this process's environment and the debuggee
+    # inherits the adapter's, so setting the Python values here reaches both.
+    # A program debugged with a different interpreter from the one it was
+    # built and run with is a program being debugged in a different world.
+    try:
+        _ = apply_variables(project_location(project_root(), program))
+    except:
+        pass
     var child = spawn(_quoted(adapter))
     if not child.running():
         return String("could not start the debug adapter: ") + adapter

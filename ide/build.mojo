@@ -21,6 +21,8 @@ from std.memory import Pointer, alloc
 from std.sys._globals import named_global
 from std.time import perf_counter_ns
 
+from ide.python_env import apply_variables, project_location
+from ide.tree import project_root
 from ide.pipes import Child, kill, read_some, set_env, spawn, utf16z, waiting
 from ide.win32 import absolute, env_or, win32
 
@@ -256,6 +258,15 @@ def start(command: String, working_dir: String = String("")) raises -> String:
     # compiler it runs will ask for `link`.
     try:
         _ = ensure_linker()
+    except:
+        pass
+    # After `ensure_linker`, never before it, and the order is load-bearing:
+    # `ensure_linker` rebuilds PATH from the C runtime's startup snapshot every
+    # time it runs, so anything written before it is discarded. This puts
+    # nothing on PATH -- it sets the four values that tell a Mojo program which
+    # Python to load -- so following it is safe and preceding it is not.
+    try:
+        _ = apply_variables(project_location(project_root(), String()))
     except:
         pass
     clear_output()

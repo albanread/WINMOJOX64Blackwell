@@ -59,6 +59,8 @@ from ide.diagnostics import (
 )
 from ide.find import matches_in_line
 from ide.symbols import symbol_at, symbol_count, symbol_kind_name
+from ide.toolchain import toolchain_report
+from ide.python_env import python_report
 from ide.lsp import (
     hover_text,
     reference_character,
@@ -2285,3 +2287,115 @@ def outline_row_at(region: D2D_RECT_F, y: Float32, scale: Float32) -> Int:
         return -1
     var row = Int(into / scaled(ISSUE_ROW_H, scale))
     return -1 if row >= symbol_count() else row
+
+
+def _draw_lines(chrome: Chrome, region: D2D_RECT_F, text: String) raises:
+    """Draw an already-formatted report into the bottom pane, a line per row.
+
+    The two milestone-6 views are reports before they are views: the text a
+    check reads is the text the pane shows, so there is one description of
+    what Griddle thinks its toolchain is rather than two that can drift. A
+    heading is not drawn here because the report's own first line is one.
+
+    Args:
+        chrome: The render target and text format.
+        region: The pane.
+        text: The report, newline-separated.
+
+    Raises:
+        If DirectWrite refuses.
+    """
+    if chrome.target == 0 or chrome.text_format == 0:
+        return
+    var this = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.target
+    )
+    var dwrite = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.dwrite
+    )
+    var ink = _brush(chrome.target, INK)
+    if ink == 0:
+        return
+
+    var clip = region
+    com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[D2D_RECT_F, MutAnyOrigin],
+            UInt32,
+        ) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PushAxisAlignedClip",
+    ](this)(this, com_addr(clip), UInt32(0))
+    _ = clip
+
+    var rows = Int(
+        (region.bottom - region.top - scaled(6, chrome.scale))
+        / scaled(ISSUE_ROW_H, chrome.scale)
+    )
+    var n = 0
+    var start = 0
+    var bytes = text.as_bytes()
+    var i = 0
+    while i <= len(bytes) and n < rows:
+        if i == len(bytes) or bytes[i] == UInt8(ord("\n")):
+            if i > start:
+                var y = (
+                    region.top
+                    + scaled(6, chrome.scale)
+                    + Float32(n) * scaled(ISSUE_ROW_H, chrome.scale)
+                )
+                var layout = _make_layout(
+                    dwrite, chrome, String(text[byte=start:i]), 100000.0
+                )
+                if layout != 0:
+                    _draw_layout(
+                        this,
+                        layout,
+                        ink,
+                        region.left + scaled(12, chrome.scale),
+                        y,
+                    )
+                    _release(layout)
+                n += 1
+            start = i + 1
+        i += 1
+    _release(ink)
+
+    com_method_of[
+        def (OpaquePointer[MutUntrackedOrigin]) thin abi("C") -> NoneType,
+        "ID2D1RenderTarget",
+        "PopAxisAlignedClip",
+    ](this)(this)
+
+
+def draw_toolchain(chrome: Chrome, region: D2D_RECT_F) raises:
+    """The Toolchain view: which toolchain, its components, versions and GPU.
+
+    Args:
+        chrome: The render target and text format.
+        region: The issues pane.
+
+    Raises:
+        If DirectWrite refuses.
+    """
+    _draw_lines(chrome, region, toolchain_report())
+
+
+def draw_python(chrome: Chrome, region: D2D_RECT_F, project: String) raises:
+    """The Python view: the interpreter, the environment, and what Run injects.
+
+    Shown rather than hidden, which is the whole point of the view: the four
+    values a built program will actually see are the ones a person needs when
+    an import fails, and an editor that keeps them to itself makes that
+    failure unexplainable.
+
+    Args:
+        chrome: The render target and text format.
+        region: The issues pane.
+        project: The project whose environment to describe.
+
+    Raises:
+        If DirectWrite refuses.
+    """
+    _draw_lines(chrome, region, python_report(project))

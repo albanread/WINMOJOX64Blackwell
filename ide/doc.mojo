@@ -26,6 +26,8 @@ comptime PANE_ISSUES = 0
 comptime PANE_REFERENCES = 1
 comptime PANE_VARIABLES = 2
 comptime PANE_OUTLINE = 3
+comptime PANE_TOOLCHAIN = 4
+comptime PANE_PYTHON = 5
 """What the bottom-left pane is showing.
 
 One pane and three lists rather than three panes: the bottom of the window is

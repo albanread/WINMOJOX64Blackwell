@@ -22,6 +22,10 @@ from ide.win32 import win32
 
 # Command ids. Small and explicit: the agent never uses them -- it uses the
 # visible names -- but WM_COMMAND arrives carrying one.
+comptime ID_VIEW_OUTLINE = 1023
+comptime ID_VIEW_TOOLCHAIN = 1024
+comptime ID_VIEW_PYTHON = 1025
+comptime ID_VIEW_PROBLEMS = 1026
 comptime ID_VIEW_ZOOM_IN = 1020
 comptime ID_VIEW_ZOOM_OUT = 1021
 comptime ID_VIEW_ZOOM_RESET = 1022
@@ -85,6 +89,19 @@ def build(hwnd: Int) raises:
             ID_VIEW_ZOOM_OUT, "Zoom Out\tCtrl+-")
     _append(AppendMenuW, view, winkb_constant["MF_STRING"](),
             ID_VIEW_ZOOM_RESET, "Reset Zoom\tCtrl+0")
+    # The bottom pane's four other faces. They are menu items and not only
+    # keys because they are the answer to "where has my problem list gone" --
+    # a pane that changes what it shows needs somewhere that lists what it
+    # can show.
+    _append(AppendMenuW, view, winkb_constant["MF_SEPARATOR"](), 0, "")
+    _append(AppendMenuW, view, winkb_constant["MF_STRING"](),
+            ID_VIEW_OUTLINE, "Outline	Ctrl+Shift+O")
+    _append(AppendMenuW, view, winkb_constant["MF_STRING"](),
+            ID_VIEW_PROBLEMS, "Problems")
+    _append(AppendMenuW, view, winkb_constant["MF_STRING"](),
+            ID_VIEW_TOOLCHAIN, "Toolchain")
+    _append(AppendMenuW, view, winkb_constant["MF_STRING"](),
+            ID_VIEW_PYTHON, "Python")
     _append(AppendMenuW, bar, winkb_constant["MF_POPUP"](), view, "View")
 
     var build = CreatePopupMenu()
@@ -213,7 +230,16 @@ def _item_text(
     menu: Int,
     index: Int,
 ) -> String:
-    """The visible label of one menu item, by position."""
+    """The name of one menu item, by position, without its accelerator.
+
+    Windows keeps the shortcut hint in the same string as the name, after a
+    tab, so `GetMenuStringW` hands back `Save<tab>Ctrl+S`. That is one string
+    to Windows and two things to a person: the item is called Save, and Ctrl+S
+    is another way to reach it. Matching the whole string would mean no item
+    with a shortcut could be named -- which was true until this stopped at the
+    tab, and left every accelerated item unreachable to `menu` and therefore
+    uncheckable.
+    """
     var buffer = List[UInt16]()
     for _ in range(128):
         buffer.append(0)
@@ -226,7 +252,10 @@ def _item_text(
     )
     var out = String("")
     for k in range(Int(n)):
-        out += chr(Int(buffer[k]))
+        var c = Int(buffer[k])
+        if c == 9:
+            break
+        out += chr(c)
     return out
 
 

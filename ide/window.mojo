@@ -34,7 +34,9 @@ from ide.doc import (
     LINE_H,
     PANE_ISSUES,
     PANE_OUTLINE,
+    PANE_PYTHON,
     PANE_REFERENCES,
+    PANE_TOOLCHAIN,
     PANE_VARIABLES,
     Snapshot,
 )
@@ -59,6 +61,12 @@ from ide.edit import (
 )
 from ide.diagnostics import count_for_shown, nth_visible, summary
 from ide.find import find_next, find_prev, select_match
+from ide.toolchain import component_path
+from ide.python_env import (
+    project_location,
+    python_report,
+)
+from ide.python_env import variables as python_variables
 from ide.symbols import (
     clear_symbols,
     matching_symbols,
@@ -69,6 +77,7 @@ from ide.symbols import (
     symbols_serial,
 )
 from ide.lsp import (
+    start_with_environment,
     parse_serial,
     parsed_uri,
     did_change,
@@ -1138,7 +1147,25 @@ def start_server(hwnd: Int, exe: String, stdlib: String) raises -> String:
     # A fresh String rather than assigning a slice of `root` back over it:
     # the slice borrows the storage it would be overwriting.
     var root = String(full[byte=:slash]) if slash > 0 else full
-    if not start(exe, root, stdlib):
+    # With the project's Python environment, through the parameter the client
+    # has always had and nobody has ever filled. The server resolves
+    # `from python import ...` the same way a build does, so a server started
+    # in a different environment from the compiler disagrees with it about
+    # what exists -- and the disagreement shows up as a squiggle under working
+    # code, which is the most expensive kind of wrong an editor can be.
+    # The environment is keyed by the project's PATH, not by `root`, which is
+    # a file:/// uri: hashing that would key a second environment for the same
+    # project and hand the server a different set of packages from the one the
+    # build uses. The server and the compiler have to be in the same world or
+    # the disagreement shows up as a squiggle under working code.
+    if not start_with_environment(
+        exe,
+        root,
+        stdlib,
+        python_variables(
+            project_location(project_root(), document_path(hwnd))
+        ),
+    ):
         return String("could not start ") + exe
     return String("starting ") + exe
 
@@ -2326,8 +2353,19 @@ def _toolchain() raises -> Tuple[String, String]:
     """
     var exe = String(env_or("WINMOJO_MOJO", ""))
     if exe.byte_length() == 0:
-        exe = String("bazel-bin/KGEN/tools/mojo/mojo.exe")
-    var stdlib = String(env_or("WINMOJO_STDLIB", "mojo/stdlib"))
+        # From the toolchain module rather than spelled here, so that the
+        # compiler a build runs is by construction the one the Toolchain view
+        # names. Two places spelling the same path is two places to be wrong
+        # in, and the failure is the confusing kind: a view that says the
+        # toolchain is fine beside a build that cannot find it.
+        exe = component_path(String("compiler"))
+        if exe.byte_length() == 0:
+            exe = String("bazel-bin/KGEN/tools/mojo/mojo.exe")
+    var stdlib = String(env_or("WINMOJO_STDLIB", ""))
+    if stdlib.byte_length() == 0:
+        stdlib = component_path(String("stdlib"))
+        if stdlib.byte_length() == 0:
+            stdlib = String("mojo/stdlib")
     return (absolute(exe), absolute(stdlib))
 
 
@@ -4253,3 +4291,37 @@ def goto_symbol(hwnd: Int, query: String) raises -> String:
         # editor cannot find theirs.
         out += "  (" + String(len(hits)) + " matched)"
     return out^
+
+
+def pane_toolchain(hwnd: Int) raises -> String:
+    """Show the Toolchain view in the bottom pane.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What is now showing.
+
+    Raises:
+        If the window has no document.
+    """
+    _doc_at(hwnd)[].pane_mode = PANE_TOOLCHAIN
+    _touch(hwnd)
+    return String("pane showing the toolchain")
+
+
+def pane_python(hwnd: Int) raises -> String:
+    """Show the Python view in the bottom pane.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What is now showing.
+
+    Raises:
+        If the window has no document.
+    """
+    _doc_at(hwnd)[].pane_mode = PANE_PYTHON
+    _touch(hwnd)
+    return String("pane showing python")

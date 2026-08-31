@@ -39,11 +39,15 @@ from std.memory import alloc
 from ide.agent import agent_command
 from ide.chrome import Chrome, bring_up, draw, finish, release
 from ide.drop import register as register_drop, revoke as revoke_drop
+from ide.python_env import project_location
+from ide.tree import project_root
 from ide.doc import (
     Doc,
     LINE_H,
     PANE_OUTLINE,
+    PANE_PYTHON,
     PANE_REFERENCES,
+    PANE_TOOLCHAIN,
     PANE_VARIABLES,
 )
 from ide.gridview import (
@@ -57,6 +61,8 @@ from ide.gridview import (
     set_tab_labels,
     draw_popup,
     draw_outline,
+    draw_python,
+    draw_toolchain,
     draw_references,
     draw_text,
     release_cache,
@@ -110,6 +116,9 @@ from ide.window import (
     definition_at_caret,
     hover_at_caret,
     outline,
+    pane_problems,
+    pane_python,
+    pane_toolchain,
     hover_close,
     hover_is_open,
     jump_back,
@@ -363,6 +372,16 @@ def griddle_wndproc(
                             draw_variables(chrome[], layout.issues())
                         elif doc[].pane_mode == PANE_OUTLINE:
                             draw_outline(chrome[], layout.issues())
+                        elif doc[].pane_mode == PANE_TOOLCHAIN:
+                            draw_toolchain(chrome[], layout.issues())
+                        elif doc[].pane_mode == PANE_PYTHON:
+                            draw_python(
+                                chrome[],
+                                layout.issues(),
+                                project_location(
+                                    project_root(), document_path(hwnd)
+                                ),
+                            )
                         elif doc[].pane_mode == PANE_REFERENCES:
                             draw_references(
                                 doc[].grid, chrome[], layout.issues()
@@ -729,6 +748,18 @@ def griddle_wndproc(
                 return 0
             if which == 1022:  # View > Reset Zoom
                 print("griddle:", zoom_reset(hwnd))
+                return 0
+            if which == 1023:  # View > Outline
+                print("griddle:", outline(hwnd))
+                return 0
+            if which == 1024:  # View > Toolchain
+                print("griddle:", pane_toolchain(hwnd))
+                return 0
+            if which == 1025:  # View > Python
+                print("griddle:", pane_python(hwnd))
+                return 0
+            if which == 1026:  # View > Problems
+                print("griddle:", pane_problems(hwnd))
                 return 0
             if which == 1013:  # Build > Debug
                 print("griddle:", debug_file(hwnd))

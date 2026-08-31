@@ -28,7 +28,24 @@ from ide.gridview import (
     GUTTER_W,
 )
 from ide.symbols import symbols_report
+from ide.toolchain import (
+    component_path,
+    refresh_toolchain,
+    toolchain_gaps,
+    toolchain_report,
+)
+from ide.python_env import (
+    clear_variables,
+    create_environment,
+    install_packages,
+    project_location,
+    python_report,
+)
+from ide.tree import project_root
 from ide.window import (
+    document_path,
+    pane_python,
+    pane_toolchain,
     all_text,
     caret_click,
     caret_move,
@@ -742,6 +759,52 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         if rest == "forget":
             return forget_session(project_root())
         return session_report(hwnd)
+
+    # ---- milestone 6: the toolchain and Python ------------------------
+    # One verb each, because every question here has one subject: which
+    # toolchain, and which interpreter. Neither has a `wait` form -- nothing
+    # in the toolchain report is asynchronous -- and `python create` is the
+    # one slow operation, so it says how long it took rather than returning
+    # before it has happened.
+    if verb == "toolchain":
+        if rest == "view":
+            return pane_toolchain(hwnd)
+        if rest == "" or rest == "show":
+            return toolchain_report()
+        if rest == "refresh":
+            _ = refresh_toolchain()
+            return toolchain_report()
+        if rest == "gaps":
+            var gaps = toolchain_gaps()
+            if len(gaps) == 0:
+                return String("no gaps: every fact in the report was measured")
+            var out = String("gaps ") + String(len(gaps)) + "\n"
+            for one in gaps:
+                out += "  " + one + "\n"
+            return out^
+        var found = component_path(String(String(rest).strip()))
+        if found == "":
+            return String("no such component ") + repr(String(rest).strip())
+        return found^
+
+    if verb == "python":
+        var project = project_location(project_root(), document_path(hwnd))
+        if rest == "view":
+            return pane_python(hwnd)
+        if rest == "" or rest == "show":
+            return python_report(project)
+        if rest == "create" or rest == "repair":
+            return create_environment(project)
+        if rest == "clear":
+            clear_variables()
+            return String("python environment cleared from this process")
+        if rest == "install":
+            return install_packages(String(), project)
+        if rest.startswith("install "):
+            return install_packages(
+                String(String(rest[byte=8:]).strip()), project
+            )
+        return String("usage: python [show|create|install [what]|clear]")
 
     if verb == "tree":
         # `tree` lists it, `tree N` expands or collapses row N, `tree root
