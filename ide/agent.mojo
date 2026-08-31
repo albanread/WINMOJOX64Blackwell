@@ -27,6 +27,9 @@ from ide.drop import last as last_drop, simulate
 from ide.gridview import (
     GUTTER_W,
 )
+from ide.pipeutf8 import without_bom
+from ide.settings import set_setting, setting, settings_report
+from ide.build import append_output
 from ide.symbols import symbols_report
 from ide.toolchain import (
     component_path,
@@ -47,6 +50,7 @@ from ide.window import (
     copy,
     cut,
     document_path,
+    start_build,
     paste,
     pane_python,
     pane_toolchain,
@@ -260,7 +264,37 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             "latency [reset]   keystroke to presented frame\n"
             "issues [N]        the language server's complaints, or jump to one\n"
             "lsp wait [ms]     wait for the server to have something to say\n"
-            "complete [wait|show|up|down|accept|close]   the completion popup"
+            "complete [wait|show|up|down|accept|close]   the completion popup\n"
+            "definition [wait ms]             where the thing under the caret is defined\n"
+            "hover [wait ms|show|close]       what the thing under the caret is\n"
+            "references [wait ms|N]           who uses it, and jump to one\n"
+            "outline [wait ms|<name>]         the file's symbols, or go to one\n"
+            "tree [N|root <path>]             the project tree; expand a row or move it\n"
+            "search <text>                    every match in the project\n"
+            "open <path>                      open a file, or switch to it if it is open\n"
+            "save                             write the document to its file\n"
+            "back                             where the caret was before the last jump\n"
+            "dirty                            whether there is unsaved work\n"
+            "output                           what the output pane holds\n"
+            "file                             the path of what is on screen\n"
+            "tabs [N|next|prev|close]         the open documents\n"
+            "tab <n>                          switch to one\n"
+            "watch | reload                   notice the disk changing, and take the change\n"
+            "session [save|restore]           where you were last time\n"
+            "setting <key> [value]            read or write a preference\n"
+            "zoom [in|out|reset]              make the text bigger\n"
+            "copy | cut | paste               the Windows clipboard\n"
+            "replace <a> -> <b>               replace one match, or every one\n"
+            "build [wait ms]                  compile the document\n"
+            "run [wait ms]                    compile it and run it\n"
+            "stop                             kill what is running\n"
+            "console [<command>]              the output pane, or run a command in it\n"
+            "debug [launch|wait|step|stop]    the debugger\n"
+            "break [N|list|clear]             breakpoints\n"
+            "toolchain [refresh|gaps|<part>]  which compiler this is\n"
+            "python [create|install|clear]    this project's Python environment\n"
+            "about                            which build this is, and what it runs on\n"
+            "run-script <path>                replay a file of these commands"
         )
 
     if verb == "echo":
@@ -954,6 +988,58 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
     # keys because the clipboard is the one editor feature whose correctness
     # can only be shown against another program, and a check needs to drive
     # both ends.
+    # ---- milestone 7.1: the rest of the verb set ----------------------
+    # Four small verbs that the sprint's list named and this dispatcher did
+    # not have. Each is small because the work already existed somewhere and
+    # only the name was missing, which is the point of finishing a verb set:
+    # the gaps are not features, they are places a caller has to know an
+    # internal spelling instead of the obvious one.
+    if verb == "file":
+        # What is on screen, as a path. `(untitled)` rather than empty,
+        # because a caller reading an empty reply cannot tell it from a
+        # failure to answer.
+        var where = document_path(hwnd)
+        return where^ if where.byte_length() > 0 else String("(untitled)")
+
+    if verb == "tab":
+        # `tab 2`. The plural verb lists and switches; the singular one only
+        # switches, which is what a script written by hand reaches for.
+        if rest.byte_length() == 0:
+            return String("usage: tab <n>")
+        return switch_tab(hwnd, Int(rest) - 1)
+
+    if verb == "setting":
+        # `setting <key>` reads, `setting <key> <value>` writes. Settings are
+        # strings: one that looks like a number is a string that looks like a
+        # number, and the caller converts.
+        var spec = String(rest).strip()
+        if spec.byte_length() == 0:
+            return settings_report()
+        var space = spec.find(" ")
+        if space < 0:
+            var value = setting(String(spec))
+            return value^ if value.byte_length() > 0 else String("(unset)")
+        var key = String(spec[byte=:space])
+        var what = String(String(spec[byte=space + 1 :]).strip())
+        if not set_setting(key, what):
+            return String("could not save the setting")
+        return String("set ") + key + " = " + what
+
+    if verb == "console":
+        # `console` shows what the output pane holds; `console <command>`
+        # runs one. It goes through the same runner Build uses, so a command
+        # typed here gets the project's Python environment and the staged
+        # linker exactly as a build would -- which is the whole reason pip
+        # belongs here rather than in a shell the editor knows nothing about.
+        if rest.byte_length() == 0:
+            return output_report(hwnd)
+        return start_build(String(String(rest).strip()))
+
+    if verb == "run-script" or verb == "run_script":
+        if rest.byte_length() == 0:
+            return String("usage: run-script <path>")
+        return run_script(hwnd, String(String(rest).strip()))
+
     if verb == "about":
         return about(hwnd)
 
@@ -982,3 +1068,76 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         return String("wrote ") + where + " (" + String(size) + " bytes)"
 
     return String("error: unknown verb '") + verb + "' (try 'help')"
+
+
+def run_script(hwnd: Int, path: String) raises -> String:
+    """Replay a file of commands, one per line, into this session.
+
+    What makes a session someone drove by hand repeatable: the reply stream
+    already is the record, so a script is just that record read back. One
+    command per line, `#` for a comment, blank lines ignored -- deliberately
+    not a language, because a script language inside an editor is a second
+    thing to learn and this one is already described by `help`.
+
+    Every line and its reply are echoed into the output pane, so a person
+    watching sees the same thing a CI log will show, and the count of errors
+    comes back rather than a bare success -- a script that ran ten commands
+    and failed on three did not succeed.
+
+    Args:
+        hwnd: The window to run against.
+        path: The script file.
+
+    Returns:
+        How many commands ran and how many answered with an error.
+
+    Raises:
+        Never for a missing or unreadable file; that is a reply.
+    """
+    var text = String("")
+    try:
+        var handle = open(path, "r")
+        text = handle.read()
+        # Closed explicitly. `with open(...)` does not release the handle at
+        # the end of its block here -- see docs/mojo-traps.md -- and a script
+        # that leaves the file open cannot be one that edits itself.
+        handle.close()
+    except:
+        return String("no script at ") + path
+
+    # A script written by Notepad or by PowerShell begins with a mark, and
+    # `build` behind one is not the verb `build`.
+    text = without_bom(text^)[0]
+    append_output(String("--- script ") + path + "\n")
+    var ran = 0
+    var failed = 0
+    var start = 0
+    var bytes = text.as_bytes()
+    var i = 0
+    while i <= len(bytes):
+        if i == len(bytes) or bytes[i] == UInt8(ord("\n")):
+            var line = String(String(text[byte=start:i]).strip())
+            start = i + 1
+            i += 1
+            if line.byte_length() == 0 or line.startswith("#"):
+                continue
+            ran += 1
+            append_output(String("> ") + line + "\n")
+            var reply = agent_command(hwnd, line)
+            append_output(String("  ") + reply + "\n")
+            # A reply is an error when it says so. The dispatcher has one
+            # stream for both, which is right for a caller reading it and
+            # means this has to recognise the shape rather than a status.
+            if (
+                reply.startswith("error")
+                or reply.startswith("unknown verb")
+                or reply.startswith("usage:")
+            ):
+                failed += 1
+            continue
+        i += 1
+    return (
+        String("script ") + String(ran) + " command"
+        + ("" if ran == 1 else "s") + ", " + String(failed) + " error"
+        + ("" if failed == 1 else "s")
+    )

@@ -41,6 +41,7 @@ from ide.chrome import Chrome, bring_up, draw, finish, release
 from ide.drop import register as register_drop, revoke as revoke_drop
 from ide.python_env import project_location
 from ide.tree import project_root
+from ide.pipeutf8 import file_starts_with_bom, without_bom
 from ide.doc import (
     Doc,
     LINE_H,
@@ -1015,7 +1016,12 @@ def load_document(path: String, lines: Int) raises -> Rope:
     if path.byte_length() > 0:
         try:
             with open(path, "r") as f:
-                return Rope(f.read())
+                # Without the byte-order mark, and this is the second place
+                # that has to say so: a file opened from the command line is
+                # loaded here rather than through `open_path`, so a fix in
+                # one of them is a fix in half the cases. `had_bom` is set by
+                # the caller, which is the one that holds the document.
+                return Rope(without_bom(f.read())[0])
         except err:
             return Rope(
                 String("Could not open ") + path + "\n\n" + String(err) + "\n"
@@ -1342,6 +1348,7 @@ def main() raises:
     doc_store.unsafe_write(Doc(load_document(open_path, synth_lines)))
     if open_path.byte_length() > 0:
         doc_store[].uri = file_uri(absolute(open_path))
+        doc_store[].had_bom = file_starts_with_bom(absolute(open_path))
         # The baseline for noticing that something else rewrote this file.
         try:
             doc_store[].disk_stamp = file_stamp(absolute(open_path))

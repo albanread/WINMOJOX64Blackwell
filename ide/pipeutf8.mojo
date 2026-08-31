@@ -137,3 +137,58 @@ def sanitized(text: String) -> String:
             out.append(raw[i + j])
         i += need
     return String(StringSlice(unsafe_from_utf8=Span(out)[0 : len(out)]))
+
+
+def without_bom(var text: String) -> Tuple[String, Bool]:
+    """The text with any leading byte-order mark removed, and whether one was.
+
+    A UTF-8 BOM is EF BB BF. It carries no information here -- the file is
+    UTF-8 either way -- but Windows writes one from Notepad and from
+    PowerShell's `Set-Content -Encoding utf8`, so a good half of the files a
+    person opens on this platform begin with three bytes that are not text.
+    Shown as content they put every column on the first line out by three,
+    and they made the first line of a script file unrunnable: `build` with a
+    BOM in front of it is not the verb `build`.
+
+    Whether there was one is returned rather than discarded so a save can put
+    it back. An editor that quietly strips a BOM has rewritten a file the
+    person only meant to read.
+
+    Args:
+        text: The file's contents, as read.
+
+    Returns:
+        The text without the mark, and True when one was removed.
+    """
+    var bytes = text.as_bytes()
+    if (
+        len(bytes) >= 3
+        and bytes[0] == UInt8(0xEF)
+        and bytes[1] == UInt8(0xBB)
+        and bytes[2] == UInt8(0xBF)
+    ):
+        return (String(text[byte=3:]), True)
+    return (text^, False)
+
+
+def file_starts_with_bom(path: String) -> Bool:
+    """Whether a file on disk begins with a byte-order mark.
+
+    Asked of the file rather than carried out of the read, because the two
+    places that load a document return different things -- one a `Rope`, one a
+    `Doc` -- and threading a second value out of both is more machinery than
+    reading three bytes again.
+
+    Args:
+        path: The file.
+
+    Returns:
+        True when the first three bytes are EF BB BF.
+    """
+    try:
+        var handle = open(path, "r")
+        var head = handle.read(3)
+        handle.close()
+        return without_bom(head^)[1]
+    except:
+        return False

@@ -86,3 +86,39 @@ Writing Mojo source through `cat <<'EOF'` turns `"\n"` into a real newline and
 characters in them — `Windows Kits\10\bin` arrived as `Windows Kits` plus two
 backspace characters. Use the Write tool for source, or build the escape from
 `chr(92)` in a Python script.
+
+## `mojo.exe` refuses a source file with a byte-order mark
+
+    subject.mojo:1:1: error: unexpected character
+    def main():
+
+with nothing visibly wrong on line 1. The three bytes are there and the
+compiler will not have them.
+
+This matters on Windows more than it sounds, because the obvious way to write
+a file from PowerShell produces one:
+
+```bash
+'def main(): pass' | Set-Content -Path x.mojo -Encoding utf8
+```
+
+Windows PowerShell's `utf8` means UTF-8 *with* a BOM. Notepad's "UTF-8" did
+too until recently. So a Mojo file created by the most natural command on the
+platform does not compile, and the error names a character it does not print.
+
+For a generated file, write it without one:
+
+```bash
+[System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding $false))
+```
+
+Griddle hides a BOM rather than deleting it — `pipeutf8.without_bom` strips it
+on the way in and `save` writes it back — so a `.txt` a person opened keeps
+its mark. That is right for a text file and unhelpful for a `.mojo` one, which
+will still not compile until the mark is gone. Worth knowing rather than
+worth guessing at: an editor that silently rewrote the file would be worse.
+
+One more, because it is the same mistake one level down: the BOM is *one*
+codepoint, U+FEFF, whose UTF-8 encoding is EF BB BF. Writing `chr(0xEF)`,
+`chr(0xBB)` and `chr(0xBF)` produces three codepoints and six bytes of
+mojibake — `c3 af c2 bb c2 bf`. It cost a build to notice.

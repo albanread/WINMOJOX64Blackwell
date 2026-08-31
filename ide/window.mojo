@@ -74,7 +74,12 @@ from ide.python_env import (
     python_report,
 )
 from ide.python_env import variables as python_variables
-from ide.clipboard import clipboard_text, set_clipboard_text
+from ide.pipeutf8 import without_bom
+from ide.clipboard import (
+    clipboard_text,
+    clipboard_was_busy,
+    set_clipboard_text,
+)
 from ide.symbols import (
     clear_symbols,
     matching_symbols,
@@ -1576,10 +1581,12 @@ def open_path(hwnd: Int, path: String) raises -> String:
     except err:
         return String("cannot open ") + path + ": " + String(err)
 
+    var stripped = without_bom(text^)
     var store = alloc[Doc](1, alignment=8)
     # Emplaced, not assigned: `store[] = value` destroys what was there
     # first, and what is there is whatever the allocator last had.
-    store.unsafe_write(Doc(Rope(text^)))
+    store.unsafe_write(Doc(Rope(stripped[0])))
+    store[].had_bom = stripped[1]
     store[].uri = uri
     # From the moment it is open, not from the first change noticed. Recording
     # it lazily meant the first external write was spent establishing the
@@ -2019,6 +2026,14 @@ def save_as(hwnd: Int, path: String) raises -> String:
     var text = doc[].rope.to_string()
     try:
         with open(path, "w") as f:
+            # The mark goes back if it was there. Three bytes nobody looks at,
+            # and a diff nobody wanted if they vanish.
+            if _doc_at(hwnd)[].had_bom:
+                # One codepoint, not three bytes spelled as codepoints:
+                # U+FEFF is what EF BB BF encodes, and writing 0xEF, 0xBB and
+                # 0xBF as characters produces their own UTF-8 encodings --
+                # six bytes of mojibake at the head of the file.
+                f.write(String(chr(0xFEFF)))
             f.write(text)
     except err:
         return String("cannot write ") + path + ": " + String(err)
@@ -4447,6 +4462,11 @@ def paste(hwnd: Int) raises -> String:
     """
     var text = clipboard_text()
     if text.byte_length() == 0:
+        # Two different facts, and the advice that follows from each is
+        # different: one means copy something first, the other means try
+        # again in a moment.
+        if clipboard_was_busy():
+            return String("another program is holding the clipboard")
         return String("the clipboard has no text")
     var doc = _doc_at(hwnd)
     remember(doc[])

@@ -732,6 +732,47 @@ if ($out -notmatch 'pasted \d+ bytes') {
     Record 'clipboard' 'FAIL' 'copy did not reach the Windows clipboard'
 }
 
+# 35. `help` names every verb the dispatcher answers.
+# help calls itself the command language's documentation, and it had drifted
+# by twenty-seven verbs before this check existed -- every navigation, debug,
+# build and clipboard command Griddle grew after sprint 2.5 worked and was
+# undiscoverable. The dispatcher is the authority: what it will answer is
+# read out of its source, and help is asked to admit to all of it. Aliases
+# are listed beside the name they alias, so both spellings count as covered.
+$agent = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'ide\agent.mojo') -Raw
+$verbs = @([regex]::Matches($agent, 'verb == "([a-z_-]+)"') |
+    ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+$help = Ask 'help'
+# Verbs that answer to a second name, and internal ones a person never types.
+$aliases = @{
+    'def' = 'definition'; 'refs' = 'references'; 'symbols' = 'outline'
+    'run_script' = 'run-script'
+}
+# The names help offers are the left column of each line -- everything before
+# the gap that separates a command from its description -- split on the bars
+# that let one line name three commands ("copy | cut | paste"). Reading the
+# column rather than the whole line matters: a verb named only inside another
+# command's description is not documented, it is mentioned.
+$named = @{}
+foreach ($line in ($help -split "`r?`n")) {
+    $col = ($line -split '\s{2,}')[0].Trim()
+    if (-not $col) { continue }
+    foreach ($piece in ($col -split '\|')) {
+        $word = ($piece.Trim() -split '\s+')[0]
+        if ($word) { $named[$word] = $true }
+    }
+}
+$undocumented = @()
+foreach ($v in $verbs) {
+    $look = if ($aliases.ContainsKey($v)) { $aliases[$v] } else { $v }
+    if (-not $named.ContainsKey($look)) { $undocumented += $v }
+}
+if ($undocumented.Count -eq 0) {
+    Record 'help-complete' 'PASS' "all $($verbs.Count) verbs documented"
+} else {
+    Record 'help-complete' 'FAIL' "undocumented: $($undocumented -join ', ')"
+}
+
 # ---- summary ---------------------------------------------------------------
 $bad = @($results | Where-Object Verdict -eq 'FAIL').Count
 Write-Host ""

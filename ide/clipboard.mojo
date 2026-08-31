@@ -44,6 +44,7 @@ that survives a review because the test string was ASCII.
 
 from std.ffi import c_int
 from std.memory import Pointer
+from std.sys._globals import named_global
 from std.sys._winkb import winkb_constant
 
 from ide.win32 import win32
@@ -64,6 +65,21 @@ comptime MAX_UNITS = 50_000_000
 
 
 # ── The primitives ──────────────────────────────────────────────────────────
+
+
+comptime g_busy = named_global["clipboard.busy", Int]
+
+
+def clipboard_was_busy() -> Bool:
+    """Whether the last read failed because somebody else held the clipboard.
+
+    Only meaningful straight after `clipboard_text` answered empty, which is
+    the one moment the difference matters.
+
+    Returns:
+        True when the last read could not take the lock.
+    """
+    return g_busy()[] != 0
 
 
 def set_clipboard_text(text: String, owner: Int = 0) raises -> Bool:
@@ -109,6 +125,16 @@ def set_clipboard_text(text: String, owner: Int = 0) raises -> Bool:
     # Converted before the clipboard is opened. Everything between the open
     # and the close is a lock held against the whole desktop, so the only work
     # that belongs in there is the work that has to be.
+    # CF_UNICODETEXT ends at the first NUL, so text containing one cannot go
+    # on the clipboard -- only its first part can. Every Windows program
+    # truncates here identically, but this one says True to mean "the text is
+    # now on the clipboard", and for that input it would not be. Refusing is
+    # the only answer that keeps the contract; a caller that gets False has
+    # lost nothing, because what it would have gained was a silent truncation.
+    for byte in text.as_bytes():
+        if byte == UInt8(0):
+            return False
+
     var units = _utf16_crlf(text)
 
     if not _open(OpenClipboard, owner):
@@ -180,6 +206,9 @@ def clipboard_text(owner: Int = 0) raises -> String:
         editor that raises at them for it is broken in a way the ordinary case
         will hit constantly.
 
+        An empty answer has two causes and `clipboard_was_busy` tells them
+        apart: nothing to paste, or another program holding the lock.
+
     Raises:
         If an entry point cannot be resolved.
     """
@@ -205,10 +234,18 @@ def clipboard_text(owner: Int = 0) raises -> String:
     # screenshot is the common case for "paste did nothing", and answering it
     # without taking the desktop-wide lock away from whoever else wants it is
     # simply better manners.
+    g_busy()[] = 0
     if IsClipboardFormatAvailable(format) == 0:
         return String("")
 
     if not _open(OpenClipboard, owner):
+        # Empty, but not the ordinary empty. The clipboard is one lock for
+        # the whole desktop and another program can be holding it; answering
+        # that with the same value as "no text was copied" leaves the caller
+        # telling somebody their clipboard is empty when it is merely busy,
+        # and the advice that follows from the two is different -- one is
+        # "copy something first", the other is "try that again".
+        g_busy()[] = 1
         return String("")
 
     # The format can have gone away between the question and the lock; and a

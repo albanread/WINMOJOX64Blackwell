@@ -209,6 +209,10 @@ struct Doc(Movable):
     # Whether the issues pane is showing references instead of problems.
     # One pane, two lists -- a second pane costs vertical space that a file
     # wants more than a list does.
+    # Whether the file began with a byte-order mark, so saving can put it
+    # back. See `pipeutf8.without_bom`: the mark is not text, but it is not
+    # ours to remove either.
+    var had_bom: Bool
     var pane_mode: Int
     # The application half on its own: the keystroke to the last drawing
     # command, with the wait for the vertical blank left out. That wait is
@@ -250,6 +254,7 @@ struct Doc(Movable):
         self.jump_line = List[Int]()
         self.jump_col = List[Int]()
         self.hover = False
+        self.had_bom = False
         self.pane_mode = PANE_ISSUES
         self.work_total = 0
         self.work_worst = 0
