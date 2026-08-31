@@ -99,6 +99,21 @@ def clear_output():
     g_serial()[] += 1
 
 
+def append_output(var text: String):
+    """Put text into the output pane, splitting it into lines.
+
+    Public because a build is not the only thing with something to say. The
+    project search writes its results here rather than growing a pane of its
+    own: a result is `path:line:col: text`, which is exactly the shape the
+    pane's click handler already parses and jumps to, so search results are
+    clickable without one line of new interface.
+
+    Args:
+        text: What to add. Need not end at a line boundary.
+    """
+    _append(text^)
+
+
 def _append(var text: String):
     """Split what arrived on newlines and keep the tail for next time.
 

@@ -127,6 +127,10 @@ struct Doc(Movable):
     # the way back has been lost -- see `remember`, which drops the oldest
     # snapshot once the history is full.
     var saved_depth: Int
+    # The file's last-write time when this document last agreed with it.
+    # Compared against the file's current stamp to notice that something
+    # else rewrote it; zero means we have never looked.
+    var disk_stamp: Int
     # Where the document has been, and where it was going before someone
     # changed their mind. A new edit clears the redo stack, because a history
     # that forks is a history nobody can reason about.
@@ -199,6 +203,7 @@ struct Doc(Movable):
         self.anchor_col = 0
         self.dirty = False
         self.saved_depth = 0
+        self.disk_stamp = 0
         self.past = List[Snapshot]()
         self.future = List[Snapshot]()
         self.pending = 0

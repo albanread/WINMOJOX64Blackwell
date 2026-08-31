@@ -80,6 +80,15 @@ def entry_at(i: Int) raises -> Entry:
     return entries[][i]
 
 
+def project_root() -> String:
+    """The directory the tree is showing.
+
+    Returns:
+        The path, or empty when no project is open.
+    """
+    return g_root()[]
+
+
 def root_name() -> String:
     """The project root's own name, for the sidebar's heading.
 
@@ -296,6 +305,62 @@ def toggle(i: Int) raises -> String:
         String("expanded ") + entries[][i].name + " ("
         + String(len(children)) + " entries)"
     )
+
+
+def refresh() raises -> String:
+    """Rebuild the tree from disk, keeping the directories that were open.
+
+    A refresh that collapsed everything would be worse than not refreshing: a
+    person who expanded four levels to find something does not want to do it
+    again because a build touched a file. The expanded paths are remembered,
+    the tree is rebuilt from the root, and every one of them that still exists
+    is expanded again -- outermost first, because expanding a child requires
+    its parent to be present.
+
+    Returns:
+        What happened.
+
+    Raises:
+        If the root cannot be read.
+    """
+    var root = g_root()[]
+    if root.byte_length() == 0:
+        return String("no project to refresh")
+
+    var open_paths = List[String]()
+    var entries = g_entries()
+    for i in range(len(entries[])):
+        if entries[][i].is_dir and entries[][i].expanded:
+            open_paths.append(entries[][i].path)
+
+    var was_top = g_top()[]
+    _ = set_root(root)
+
+    # Shallowest first. Expanding a path only works once its parent is in the
+    # list, and a shorter path is always the shallower one here because these
+    # are all prefixes of one another or unrelated.
+    var remaining = len(open_paths)
+    var guard = 0
+    while remaining > 0 and guard < 4096:
+        guard += 1
+        var did_one = False
+        for want in open_paths:
+            var rows = g_entries()
+            for i in range(len(rows[])):
+                if rows[][i].path == want and not rows[][i].expanded:
+                    _ = toggle(i)
+                    did_one = True
+                    break
+            if did_one:
+                break
+        if not did_one:
+            break
+        remaining -= 1
+
+    # Put the scroll back where it was, clamped: rows may have gone.
+    g_top()[] = 0
+    scroll_tree(was_top)
+    return String("refreshed ") + String(entry_count()) + " entries"
 
 
 def tree_report() raises -> String:

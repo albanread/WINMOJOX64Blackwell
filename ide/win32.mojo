@@ -17,6 +17,8 @@ carry anything resolved in advance. The tree's established answer -- an
 """
 
 from std.ffi import c_int
+from std.os import getenv
+from std.sys._globals import named_global
 from std.memory import Pointer
 from std.sys.info import size_of
 from std.sys._com import com_addr
@@ -319,10 +321,51 @@ def dpi_of(hwnd: Int) -> Int:
     return 96
 
 
+comptime g_zoom = named_global["ide.zoom", Float32]
+
+comptime ZOOM_MIN = 0.5
+comptime ZOOM_MAX = 4.0
+comptime ZOOM_STEP = 0.1
+
+
+def zoom() -> Float32:
+    """How much bigger than the display's own scale the editor is drawn.
+
+    Returns:
+        1.0 unless somebody has zoomed.
+    """
+    var z = g_zoom()[]
+    # A zero here is an uninitialised global rather than somebody asking for a
+    # zero-sized editor, and treating it literally means an invisible window.
+    return 1.0 if z <= 0.0 else z
+
+
+def set_zoom(factor: Float32) -> Float32:
+    """Set the zoom, clamped to something a person can still read.
+
+    Args:
+        factor: The new factor.
+
+    Returns:
+        What it ended up as.
+    """
+    var z = factor
+    if z < ZOOM_MIN:
+        z = ZOOM_MIN
+    if z > ZOOM_MAX:
+        z = ZOOM_MAX
+    g_zoom()[] = z
+    return z
+
+
 def dpi_scale(hwnd: Int) -> Float32:
     """Device pixels per design pixel for this window.
 
-    1.0 on a 96 DPI display, 1.5 at 150%, 2.0 at 200%.
+    1.0 on a 96 DPI display, 1.5 at 150%, 2.0 at 200%, and multiplied again
+    by the zoom. One number, because a person zooming in and a person dragging
+    the window to a denser display want the same thing -- everything bigger by
+    the same factor -- and giving them two scales to compose is how a layout
+    ends up right on one display and wrong on the other.
 
     Args:
         hwnd: The window.
@@ -333,7 +376,7 @@ def dpi_scale(hwnd: Int) -> Float32:
     Raises:
         Never in practice.
     """
-    return Float32(dpi_of(hwnd)) / 96.0
+    return Float32(dpi_of(hwnd)) / 96.0 * zoom()
 
 
 def scaled(v: Int, scale: Float32) -> Float32:
@@ -523,3 +566,14 @@ def settle(hwnd: Int, milliseconds: Int) raises -> Int:
         UInt32(QS_ALLINPUT),
     )
     return drain(hwnd)
+
+
+def env_or(name: StringSlice, fallback: StringSlice) -> String:
+    """An environment variable, or a fallback when it is unset."""
+    try:
+        var value = getenv(String(name))
+        if value.byte_length() > 0:
+            return value
+    except:
+        pass
+    return String(fallback)

@@ -55,7 +55,17 @@ from ide.gridview import (
 )
 from ide.window import (
     adopt_tab,
+    find_needle,
+    poll_disk,
+    recreate,
+    search_in_project,
+    watch_project,
+    rescale,
     set_root,
+    zoom_in,
+    zoom_out,
+    zoom_report,
+    zoom_reset,
     build_file,
     close_tab,
     confirm_close,
@@ -106,6 +116,7 @@ from ide.menu import build as build_menu
 from ide.lsp import is_running as lsp_running
 from ide.rope import Rope
 from ide.tsf import Tsf, activate, deactivate
+from ide.watch import file_stamp
 from ide.win32 import (
     COPYDATASTRUCT,
     absolute,
@@ -127,36 +138,6 @@ from ide.win32 import (
 # EndDraw rather than from the call that failed, and the answer is to build a
 # new render target, not to give up.
 comptime D2DERR_RECREATE_TARGET = 0x8899000C
-
-
-def recreate(chrome: Pointer[Chrome, MutAnyOrigin], hwnd: Int, width: Int,
-             height: Int) raises:
-    """Build a new render target after the device was lost.
-
-    The window's own state -- the document, the drop target -- survives; only
-    Direct2D's objects are rebuilt. Cached text layouts go too: they were made
-    by the old DirectWrite factory, and outliving it is not a risk worth
-    taking for one frame's worth of work.
-
-    Args:
-        chrome: The window's chrome, replaced in place.
-        hwnd: The window to make a target for.
-        width: Client width.
-        height: Client height.
-
-    Raises:
-        If Direct2D cannot be brought up again.
-    """
-    print("griddle: device lost, rebuilding the render target")
-    var doc = chrome[].doc
-    var drop = chrome[].drop_target
-    if doc != 0:
-        release_cache(Pointer[Doc, MutAnyOrigin](unsafe_from_address=doc)[].grid)
-    var immediate = chrome[].immediate
-    release(chrome[])
-    chrome[] = bring_up(hwnd, width, height, immediate)
-    chrome[].doc = doc
-    chrome[].drop_target = drop
 
 
 # ===----------------------------------------------------------------------===#
@@ -558,12 +539,28 @@ def griddle_wndproc(
                         print("griddle:", save_dialog(hwnd))
                     else:
                         print("griddle:", save(hwnd))
+                elif wparam == ord("F") and shift:
+                    # Ctrl+Shift+F, the search-everywhere chord every editor
+                    # shares. Plain Ctrl+F stays with the document.
+                    print("griddle:", search_in_project(hwnd, find_needle(hwnd)))
                 elif wparam == ord("O"):
                     print("griddle:", open_dialog(hwnd))
                 elif wparam == ord("B"):
                     print("griddle:", build_file(hwnd))
                 elif wparam == ord("W"):
                     print("griddle:", close_tab(hwnd))
+                elif (
+                    wparam == winkb_constant["VK_OEM_PLUS"]()
+                    or wparam == winkb_constant["VK_ADD"]()
+                ):
+                    print("griddle:", zoom_in(hwnd))
+                elif (
+                    wparam == winkb_constant["VK_OEM_MINUS"]()
+                    or wparam == winkb_constant["VK_SUBTRACT"]()
+                ):
+                    print("griddle:", zoom_out(hwnd))
+                elif wparam == ord("0"):
+                    print("griddle:", zoom_reset(hwnd))
                 elif wparam == winkb_constant["VK_TAB"]():
                     # Ctrl+Tab forward, Ctrl+Shift+Tab back, the way every
                     # tabbed thing on this platform spells it.
@@ -621,6 +618,13 @@ def griddle_wndproc(
                 _ = build_poll(hwnd)
             except:
                 pass
+            # And anything that changed on disk. Same tick, because both are
+            # "the world moved while you were typing" and both want the same
+            # answer: notice, and redraw.
+            try:
+                _ = poll_disk(hwnd)
+            except:
+                pass
             if wparam == LSP_TIMER_ID:
                 try:
                     _ = lsp_pump(hwnd)
@@ -632,6 +636,15 @@ def griddle_wndproc(
         # the same command the menu does.
         if message == UInt32(winkb_constant["WM_COMMAND"]()):
             var which = wparam & 0xFFFF
+            if which == 1020:  # View > Zoom In
+                print("griddle:", zoom_in(hwnd))
+                return 0
+            if which == 1021:  # View > Zoom Out
+                print("griddle:", zoom_out(hwnd))
+                return 0
+            if which == 1022:  # View > Reset Zoom
+                print("griddle:", zoom_reset(hwnd))
+                return 0
             if which == 1010:  # Build > Run
                 print("griddle:", run_file(hwnd))
                 return 0
@@ -1078,6 +1091,11 @@ def main() raises:
     doc_store.unsafe_write(Doc(load_document(open_path, synth_lines)))
     if open_path.byte_length() > 0:
         doc_store[].uri = file_uri(absolute(open_path))
+        # The baseline for noticing that something else rewrote this file.
+        try:
+            doc_store[].disk_stamp = file_stamp(absolute(open_path))
+        except:
+            pass
     chrome_store[].doc = Int(doc_store)
     _ = adopt_tab(hwnd, Int(doc_store))
     # The project is the open file's directory. No configuration, no guessing
@@ -1087,8 +1105,20 @@ def main() raises:
         var here = absolute(open_path) if open_path.byte_length() > 0 else absolute(".")
         var cut = here.rfind(chr(0x5C))
         print("griddle:", set_root(String(here[byte=0:cut]) if cut > 0 else here))
+        print("griddle:", watch_project(hwnd))
     except err:
         print("griddle: no project tree (", String(err), ")")
+
+    # The editor's heartbeat, and it is not the language server's. It used to
+    # be: the timer was created only when a server started, so a text file
+    # opened with --no-lsp had no timer at all and nothing polled the disk,
+    # the build or anything else. Everything that has to notice the world
+    # moving hangs off this tick, and it exists whether or not a server does.
+    var SetTimer = win32[
+        def (Int, Int, UInt32, Int) thin abi("C") -> Int, "SetTimer"
+    ]()
+    _ = SetTimer(hwnd, LSP_TIMER_ID, UInt32(LSP_POLL_MS), 0)
+
     # One row, at this display's density. The grid holds it because scrolling
     # and hit testing divide by it; the chrome holds the scale because the
     # font was made at it. They have to agree, so it is set from the chrome.
@@ -1159,10 +1189,6 @@ def main() raises:
             "griddle:",
             start_server(hwnd, absolute(server), absolute(stdlib)),
         )
-        var SetTimer = win32[
-            def (Int, Int, UInt32, Int) thin abi("C") -> Int, "SetTimer"
-        ]()
-        _ = SetTimer(hwnd, LSP_TIMER_ID, UInt32(LSP_POLL_MS), 0)
 
     if command.byte_length() > 0:
         # Nobody is watching this run, so nothing in it may stop to ask.

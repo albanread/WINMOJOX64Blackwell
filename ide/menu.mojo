@@ -22,6 +22,9 @@ from ide.win32 import win32
 
 # Command ids. Small and explicit: the agent never uses them -- it uses the
 # visible names -- but WM_COMMAND arrives carrying one.
+comptime ID_VIEW_ZOOM_IN = 1020
+comptime ID_VIEW_ZOOM_OUT = 1021
+comptime ID_VIEW_ZOOM_RESET = 1022
 comptime ID_BUILD_RUN = 1010
 comptime ID_BUILD_BUILD = 1011
 comptime ID_BUILD_STOP = 1012
@@ -70,6 +73,15 @@ def build(hwnd: Int) raises:
     _append(AppendMenuW, file, winkb_constant["MF_STRING"](), ID_FILE_EXIT,
             "Exit")
     _append(AppendMenuW, bar, winkb_constant["MF_POPUP"](), file, "File")
+
+    var view = CreatePopupMenu()
+    _append(AppendMenuW, view, winkb_constant["MF_STRING"](),
+            ID_VIEW_ZOOM_IN, "Zoom In\tCtrl++")
+    _append(AppendMenuW, view, winkb_constant["MF_STRING"](),
+            ID_VIEW_ZOOM_OUT, "Zoom Out\tCtrl+-")
+    _append(AppendMenuW, view, winkb_constant["MF_STRING"](),
+            ID_VIEW_ZOOM_RESET, "Reset Zoom\tCtrl+0")
+    _append(AppendMenuW, bar, winkb_constant["MF_POPUP"](), view, "View")
 
     var build = CreatePopupMenu()
     _append(AppendMenuW, build, winkb_constant["MF_STRING"](), ID_BUILD_RUN,

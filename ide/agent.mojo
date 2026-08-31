@@ -65,7 +65,13 @@ from ide.window import (
     next_tab,
     set_root,
     toggle,
+    poll_disk,
+    stamp_report,
+    reload_document,
+    search_in_project,
     tree_report,
+    watch_project,
+    zoom_report,
     switch_tab,
     tabs_report,
     is_dirty,
@@ -94,6 +100,7 @@ from ide.window import (
 from ide.menu import invoke as invoke_menu
 from ide.tsf import self_check as tsf_self_check
 from ide.screenshot import capture
+from ide.watch import stop_watching
 from ide.win32 import (
     RECT,
     dpi_of,
@@ -569,6 +576,37 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         if rest.byte_length() > 0:
             return goto_reference(hwnd, Int(rest))
         return references_at_caret(hwnd)
+
+    if verb == "search":
+        # Results land in the output pane, written the way a compiler writes a
+        # location, so clicking one jumps there through the handler that
+        # already exists.
+        if rest.byte_length() == 0:
+            return String("usage: search <text>")
+        return search_in_project(hwnd, rest)
+
+    if verb == "watch":
+        if rest == "stamp":
+            # What the document thinks its file was, against what it is now.
+            # The two disagreeing is the whole trigger for a reload, so being
+            # able to read both is how a reload that does not happen gets
+            # explained rather than guessed at.
+            return stamp_report(hwnd)
+        if rest == "poll":
+            return String("changed ") + ("yes" if poll_disk(hwnd) else "no")
+        if rest == "stop":
+            stop_watching()
+            return String("stopped watching")
+        return watch_project(hwnd)
+
+    if verb == "reload":
+        return reload_document(hwnd)
+
+    if verb == "zoom":
+        # `zoom` says what it is; the menu and the keys change it, and they
+        # live in the window procedure because changing it rebuilds the
+        # chrome.
+        return zoom_report(hwnd)
 
     if verb == "tree":
         # `tree` lists it, `tree N` expands or collapses row N, `tree root

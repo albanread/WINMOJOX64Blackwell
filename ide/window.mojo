@@ -27,7 +27,7 @@ from std.sys._winkb import winkb_constant
 from std.time import perf_counter_ns
 
 from ide.caret import is_simple
-from ide.chrome import Chrome, Layout
+from ide.chrome import Chrome, Layout, bring_up, release
 from ide.doc import Doc, Grid, LINE_H, Snapshot
 from ide.edit import (
     restate_dirty,
@@ -99,6 +99,8 @@ from ide.gridview import (
     status_line,
 )
 from ide.build import (
+    append_output,
+    clear_output,
     is_building,
     locate,
     output_count,
@@ -110,8 +112,26 @@ from ide.build import (
     what_ran,
 )
 from ide.rope import Rope
+from ide.search import (
+    hit_column,
+    hit_count,
+    hit_line,
+    hit_path,
+    hit_text,
+    hit_truncated,
+    search_project,
+    searched_files,
+)
+from ide.watch import (
+    file_stamp,
+    poll_changes,
+    watch_directory,
+    watching,
+)
 from ide.tree import (
     entry_at,
+    project_root,
+    refresh,
     entry_count,
     scroll_tree,
     set_root,
@@ -124,6 +144,9 @@ from ide.win32 import (
     env_or,
     dpi_scale,
     drain,
+    set_zoom,
+    zoom,
+    ZOOM_STEP,
     scaled,
     settle,
     win32,
@@ -1402,6 +1425,10 @@ def open_path(hwnd: Int, path: String) raises -> String:
     # first, and what is there is whatever the allocator last had.
     store.unsafe_write(Doc(Rope(text^)))
     store[].uri = uri
+    # From the moment it is open, not from the first change noticed. Recording
+    # it lazily meant the first external write was spent establishing the
+    # baseline and the reload it should have triggered never happened.
+    store[].disk_stamp = file_stamp(full)
     var bits = _bits(hwnd)
     var chrome = Pointer[Chrome, MutAnyOrigin](unsafe_from_address=bits[1])
     store[].grid.line_height = scaled(LINE_H, chrome[].scale)
@@ -1841,6 +1868,7 @@ def save_as(hwnd: Int, path: String) raises -> String:
         return String("cannot write ") + path + ": " + String(err)
 
     doc[].saved_depth = len(doc[].past)
+    doc[].disk_stamp = file_stamp(path)
     restate_dirty(doc[])
     var full = absolute(path)
     var was = doc[].uri
@@ -2662,3 +2690,370 @@ def tabs_report(hwnd: Int) raises -> String:
             + tab_name(i) + "\n"
         )
     return out^
+
+
+# ===----------------------------------------------------------------------===#
+# Zoom
+#
+# Three functions that set one number. Everything that follows -- the font, the
+# gutter, the rail, the row height, the panes -- follows because it is all
+# multiplied by that number in `scaled`. The rebuild is the caller's, because
+# only griddle.mojo can reach the chrome to rebuild it.
+# ===----------------------------------------------------------------------===#
+
+
+def zoom_report(hwnd: Int) raises -> String:
+    """What the zoom is, as a percentage a person recognises.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        The zoom, and the scale it combines with.
+
+    Raises:
+        Never in practice.
+    """
+    return (
+        String("zoom ") + String(Int(zoom() * 100.0 + 0.5)) + "%  scale "
+        + String(dpi_scale(hwnd))
+    )
+
+
+def zoom_in(hwnd: Int) raises -> String:
+    """Draw everything a step bigger.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        The new zoom.
+
+    Raises:
+        If Direct2D cannot be brought up at the new scale.
+    """
+    _ = set_zoom(zoom() + ZOOM_STEP)
+    rescale(hwnd)
+    return zoom_report(hwnd)
+
+
+def zoom_out(hwnd: Int) raises -> String:
+    """Draw everything a step smaller.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        The new zoom.
+
+    Raises:
+        If Direct2D cannot be brought up at the new scale.
+    """
+    _ = set_zoom(zoom() - ZOOM_STEP)
+    rescale(hwnd)
+    return zoom_report(hwnd)
+
+
+def zoom_reset(hwnd: Int) raises -> String:
+    """Back to the display's own scale.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        The new zoom.
+
+    Raises:
+        If Direct2D cannot be brought up at the new scale.
+    """
+    _ = set_zoom(1.0)
+    rescale(hwnd)
+    return zoom_report(hwnd)
+
+
+def rescale(hwnd: Int) raises:
+    """Rebuild everything the display scale is baked into.
+
+    The font size is inside the text format and every cached line layout was
+    made with that format, so a scale that changes cannot be applied to what
+    is already there -- it has to be built again. That is the same work a lost
+    device needs, so it goes through the same function, and the DPI change and
+    the zoom keys share one path instead of each having a version of it.
+
+    Args:
+        hwnd: The window.
+
+    Raises:
+        If Direct2D cannot be brought up at the new scale.
+    """
+    var GetWindowLongPtrW = win32[
+        def (Int, c_int) thin abi("C") -> Int, "GetWindowLongPtrW"
+    ]()
+    var stored = GetWindowLongPtrW(
+        hwnd, c_int(winkb_constant["GWLP_USERDATA"]())
+    )
+    if stored == 0:
+        return
+    var chrome = Pointer[Chrome, MutAnyOrigin](unsafe_from_address=stored)
+    var GetClientRect = win32[
+        def (Int, Pointer[RECT, MutAnyOrigin]) thin abi("C") -> c_int,
+        "GetClientRect",
+    ]()
+    var rc = RECT()
+    _ = GetClientRect(hwnd, Pointer(to=rc).unsafe_origin_cast[MutAnyOrigin]())
+    recreate(
+        chrome, hwnd, Int(rc.right - rc.left), Int(rc.bottom - rc.top)
+    )
+    if chrome[].doc != 0:
+        Pointer[Doc, MutAnyOrigin](
+            unsafe_from_address=chrome[].doc
+        )[].grid.line_height = scaled(LINE_H, chrome[].scale)
+    var InvalidateRect = win32[
+        def (Int, Int, c_int) thin abi("C") -> c_int, "InvalidateRect"
+    ]()
+    _ = InvalidateRect(hwnd, 0, c_int(0))
+
+
+def recreate(chrome: Pointer[Chrome, MutAnyOrigin], hwnd: Int, width: Int,
+             height: Int) raises:
+    """Build a new render target after the device was lost.
+
+    The window's own state -- the document, the drop target -- survives; only
+    Direct2D's objects are rebuilt. Cached text layouts go too: they were made
+    by the old DirectWrite factory, and outliving it is not a risk worth
+    taking for one frame's worth of work.
+
+    Args:
+        chrome: The window's chrome, replaced in place.
+        hwnd: The window to make a target for.
+        width: Client width.
+        height: Client height.
+
+    Raises:
+        If Direct2D cannot be brought up again.
+    """
+    print("griddle: device lost, rebuilding the render target")
+    var doc = chrome[].doc
+    var drop = chrome[].drop_target
+    if doc != 0:
+        release_cache(Pointer[Doc, MutAnyOrigin](unsafe_from_address=doc)[].grid)
+    var immediate = chrome[].immediate
+    release(chrome[])
+    chrome[] = bring_up(hwnd, width, height, immediate)
+    chrome[].doc = doc
+    chrome[].drop_target = drop
+
+
+# ===----------------------------------------------------------------------===#
+# Searching the project, and noticing it change
+# ===----------------------------------------------------------------------===#
+
+
+def find_needle(hwnd: Int) raises -> String:
+    """What was last searched for in this document.
+
+    Ctrl+Shift+F searches the project for it, so finding something in a file
+    and then asking where else it appears is two keystrokes rather than
+    retyping it.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        The needle, or empty.
+
+    Raises:
+        If the window has no document.
+    """
+    return _doc_at(hwnd)[].needle
+
+
+def search_in_project(hwnd: Int, needle: String) raises -> String:
+    """Search every file under the project root and list the hits.
+
+    The results go into the output pane rather than a pane of their own. A hit
+    is written `path:line:col: text`, which is what a compiler writes, which
+    is what the pane's click handler already parses -- so every result is
+    clickable without a line of new interface. Reusing the shape a tool
+    already speaks is cheaper than teaching the editor a second one.
+
+    Args:
+        hwnd: The window.
+        needle: The literal to look for.
+
+    Returns:
+        A summary line.
+
+    Raises:
+        If the project cannot be read.
+    """
+    if needle.byte_length() == 0:
+        return String("nothing to search for")
+    var root = project_root()
+    if root.byte_length() == 0:
+        return String("no project; use tree root <path>")
+
+    var found = search_project(root, needle)
+    clear_output()
+    append_output(
+        String("searching ") + root + " for " + repr(needle) + "\n"
+    )
+    for i in range(hit_count()):
+        append_output(
+            hit_path(i) + ":" + String(hit_line(i) + 1) + ":"
+            + String(hit_column(i) + 1) + ": " + hit_text(i) + "\n"
+        )
+    var summary = (
+        String("\n[") + String(found) + " hits in "
+        + String(searched_files()) + " files"
+    )
+    if hit_truncated():
+        summary += ", stopped at the limit"
+    summary += "]\n"
+    append_output(summary^)
+    _touch(hwnd)
+    return (
+        String("found ") + String(found) + " in "
+        + String(searched_files()) + " files"
+    )
+
+
+def watch_project(hwnd: Int) raises -> String:
+    """Start watching the project root for changes on disk.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What happened.
+
+    Raises:
+        If the directory cannot be watched.
+    """
+    _ = hwnd
+    var root = project_root()
+    if root.byte_length() == 0:
+        return String("no project to watch")
+    return watch_directory(root)
+
+
+def poll_disk(hwnd: Int) raises -> Bool:
+    """Notice anything that changed on disk, and react to it.
+
+    Called from the window's timer. Two different questions get asked here
+    because they have two different answers: the tree cares that *something*
+    under the project changed, and the open document cares whether that
+    something was itself.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        True if anything was done.
+
+    Raises:
+        Never in practice; failures are reported rather than raised.
+    """
+    if not poll_changes():
+        return False
+    try:
+        _ = refresh()
+    except:
+        pass
+
+    # And the document being edited. A file that changed underneath a clean
+    # document is reloaded without asking, because there is nothing to lose
+    # and an editor showing stale text is worse than one that moved. A dirty
+    # document is left alone and the person is told -- choosing for them which
+    # copy survives is not the editor's decision to make.
+    try:
+        var doc = _doc_at(hwnd)
+        var path = document_path(hwnd)
+        if path.byte_length() > 0:
+            var now = file_stamp(path)
+            # A stamp of zero means this document has never been compared
+            # against its file. Record it rather than treating it as a
+            # change: the first observation is not evidence of anything, and
+            # calling it one would reload every document a second after it
+            # opened.
+            if now != 0 and doc[].disk_stamp == 0:
+                doc[].disk_stamp = now
+            elif now != 0 and now != doc[].disk_stamp:
+                doc[].disk_stamp = now
+                if doc[].dirty:
+                    append_output(
+                        String("\n[") + path
+                        + " changed on disk; your version is unsaved]\n"
+                    )
+                else:
+                    var line = doc[].caret_line
+                    _ = reload_document(hwnd)
+                    _ = caret_move(hwnd, line, 0)
+                    append_output(
+                        String("\n[") + path + " changed on disk; reloaded]\n"
+                    )
+    except:
+        pass
+    _touch(hwnd)
+    return True
+
+
+def stamp_report(hwnd: Int) raises -> String:
+    """The document's remembered file stamp against the file's current one.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        Both numbers and the path they are about.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    var path = document_path(hwnd)
+    return (
+        String("stamp remembered=") + String(doc[].disk_stamp)
+        + " ondisk=" + String(file_stamp(path) if path.byte_length() > 0 else 0)
+        + " watching=" + String(watching())
+        + " path=" + path
+    )
+
+
+def reload_document(hwnd: Int) raises -> String:
+    """Read the open document's file again, discarding what is in memory.
+
+    Only ever called for a document with nothing to lose. The undo history
+    goes: its snapshots describe a text this document no longer holds, and
+    restoring one would put the old file back on screen and call it an undo.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What happened.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    var path = document_path(hwnd)
+    if path.byte_length() == 0:
+        return String("this document has no file")
+    var text = String("")
+    try:
+        with open(path, "r") as f:
+            text = f.read()
+    except err:
+        return String("cannot reread ") + path + ": " + String(err)
+    doc[].rope = Rope(text^)
+    doc[].revision += 1
+    doc[].past = List[Snapshot]()
+    doc[].future = List[Snapshot]()
+    doc[].saved_depth = 0
+    doc[].disk_stamp = file_stamp(path)
+    restate_dirty(doc[])
+    release_cache(doc[].grid)
+    _touch(hwnd)
+    return String("reloaded ") + path
+
