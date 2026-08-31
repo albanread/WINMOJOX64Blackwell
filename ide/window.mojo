@@ -70,11 +70,34 @@ from ide.toolchain import (
     toolchain_root,
 )
 from ide.python_env import (
+    install_packages,
     project_location,
     python_report,
 )
 from ide.python_env import variables as python_variables
 from ide.pipeutf8 import without_bom
+from ide.prompt import (
+    asking,
+    ASK_FIND,
+    ASK_GOTO,
+    ASK_NOTHING,
+    ASK_OPEN,
+    ASK_PACKAGE,
+    ASK_REPLACE_WITH,
+    ASK_SYMBOL,
+    accept,
+    ask,
+    cancel,
+    clear as prompt_clear,
+    backspace as prompt_backspace,
+    delete_forward as prompt_delete,
+    move as prompt_move,
+    move_to_end as prompt_end,
+    move_to_start as prompt_home,
+    prompt_report,
+    put,
+    recalled,
+)
 from ide.clipboard import (
     clipboard_text,
     clipboard_was_busy,
@@ -943,6 +966,11 @@ def type_unit(hwnd: Int, unit: Int) raises -> String:
             return String("a stray low surrogate, ignored")
         code = 0x10000 + ((doc[].pending - 0xD800) << 10) + (unit - 0xDC00)
     doc[].pending = 0
+    # The prompt, when it is open, is what a keystroke is for. The pairing
+    # above happens first either way: a surrogate half is not a character, and
+    # the line has no more business holding one than the document does.
+    if asking():
+        return prompt_type(hwnd, String(chr(code)))
     return type_text(hwnd, String(chr(code)))
 
 
@@ -2416,7 +2444,8 @@ def run_file(hwnd: Int) raises -> String:
             return wrote
     var tools = _toolchain()
     return start_build(
-        '"' + tools[0] + '" run -I "' + tools[1] + '" -I . "' + path + '"'
+        '"' + tools[0] + '" run -I "' + tools[1] + '" -I .'
+        + _extra_flags() + ' "' + path + '"'
     )
 
 
@@ -2447,7 +2476,7 @@ def build_file(hwnd: Int) raises -> String:
     var tools = _toolchain()
     return start_build(
         '"' + tools[0] + '" build --no-optimization -I "' + tools[1]
-        + '" -I . -o "' + out + '" "' + path + '"'
+        + '" -I .' + _extra_flags() + ' -o "' + out + '" "' + path + '"'
     )
 
 
@@ -3441,7 +3470,8 @@ def debug_file(hwnd: Int) raises -> String:
     g_debug_pending()[] = 1
     return start_build(
         '"' + tools[0] + '" build --no-optimization --debug-level full -I "'
-        + tools[1] + '" -I . -o "' + out + '" "' + path + '"'
+        + tools[1] + '" -I .' + _extra_flags() + ' -o "' + out + '" "'
+        + path + '"'
     ) + " (debug build; the debugger starts when it finishes)"
 
 
@@ -4499,3 +4529,323 @@ def about(hwnd: Int = 0) raises -> String:
     if gpu_count() > 0:
         out += "  " + gpu_at(0) + "\n"
     return out^
+
+
+# ===----------------------------------------------------------------------===#
+# The line a person types into
+#
+# `ide/prompt.mojo` holds the text and the caret and knows nothing about the
+# editor; this is the other half, which knows what a find is and what a line
+# number means and never touches a character. The split is the same one the
+# rest of the editor uses -- state that can be checked without a window, and
+# a window that reads it.
+# ===----------------------------------------------------------------------===#
+
+
+def prompt_find(hwnd: Int) raises -> String:
+    """Ask what to search for.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What is being asked.
+
+    Raises:
+        If the window has no document.
+    """
+    # Offering what was searched for last, with the caret at its end: somebody
+    # who found four matches, looked at them and pressed Ctrl+F again meant to
+    # search for something near it, not to start from an empty line.
+    ask(ASK_FIND, String("Find"), recalled(ASK_FIND))
+    _touch(hwnd)
+    return String("asking what to find")
+
+
+def prompt_replace(hwnd: Int) raises -> String:
+    """Ask what to replace the current search with.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What is being asked, or why it cannot be.
+
+    Raises:
+        If the window has no document.
+    """
+    if find_needle(hwnd).byte_length() == 0:
+        # Replace needs two answers and this line gives one at a time, so the
+        # first has to already exist. Saying which one is missing is the
+        # difference between a refusal and a mystery.
+        return String("find something first; Ctrl+H replaces what Ctrl+F found")
+    ask(
+        ASK_REPLACE_WITH,
+        String("Replace ") + find_needle(hwnd) + " with",
+        recalled(ASK_REPLACE_WITH),
+    )
+    _touch(hwnd)
+    return String("asking what to replace it with")
+
+
+def prompt_goto(hwnd: Int) raises -> String:
+    """Ask which line to go to.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What is being asked.
+
+    Raises:
+        If the window has no document.
+    """
+    ask(ASK_GOTO, String("Go to line"), String(""))
+    _touch(hwnd)
+    return String("asking which line")
+
+
+def prompt_symbol(hwnd: Int) raises -> String:
+    """Ask which symbol to go to.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What is being asked.
+
+    Raises:
+        If the window has no document.
+    """
+    ask(ASK_SYMBOL, String("Go to symbol"), String(""))
+    _touch(hwnd)
+    return String("asking which symbol")
+
+
+def prompt_package(hwnd: Int) raises -> String:
+    """Ask which package to install into this project's environment.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What is being asked.
+
+    Raises:
+        If the window has no document.
+    """
+    ask(ASK_PACKAGE, String("Install package"), String(""))
+    _touch(hwnd)
+    return String("asking which package")
+
+
+def prompt_open(hwnd: Int) raises -> String:
+    """Ask for a path to open, for when a dialog is more than is wanted.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What is being asked.
+
+    Raises:
+        If the window has no document.
+    """
+    ask(ASK_OPEN, String("Open"), String(""))
+    _touch(hwnd)
+    return String("asking which file")
+
+
+def prompt_cancel(hwnd: Int) raises -> String:
+    """Put the question away without answering it.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        That it is gone.
+
+    Raises:
+        If the window has no document.
+    """
+    cancel()
+    _touch(hwnd)
+    return String("nothing is being asked")
+
+
+def prompt_accept(hwnd: Int) raises -> String:
+    """Act on what was typed.
+
+    The one place that knows what each question was for. Every branch hands
+    off to the verb that already does the work, so a thing done from this line
+    and the same thing done from `--cmd` are the same code and cannot
+    disagree.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        Whatever the answer led to.
+
+    Raises:
+        If the window has no document.
+    """
+    var answered = accept()
+    var kind = answered[0]
+    var text = answered[1]
+    _touch(hwnd)
+    if kind == ASK_NOTHING:
+        return String("nothing was being asked")
+    if text.byte_length() == 0:
+        return String("nothing typed")
+
+    if kind == ASK_FIND:
+        return find_text(hwnd, text)
+    if kind == ASK_REPLACE_WITH:
+        return replace_every(hwnd, find_needle(hwnd), text)
+    if kind == ASK_GOTO:
+        # A line number, and anything else is a mistake worth naming rather
+        # than a jump to line zero.
+        var line = 0
+        for byte in text.as_bytes():
+            var c = Int(byte)
+            if c < 0x30 or c > 0x39:
+                return String("not a line number: ") + text
+            line = line * 10 + (c - 0x30)
+        if line < 1:
+            return String("lines start at 1")
+        return goto(hwnd, line - 1, 0)
+    if kind == ASK_SYMBOL:
+        return goto_symbol(hwnd, text)
+    if kind == ASK_PACKAGE:
+        return install_packages(
+            text, project_location(project_root(), document_path(hwnd))
+        )
+    if kind == ASK_OPEN:
+        return open_path(hwnd, text)
+    return String("nothing to do with that")
+
+
+def prompt_key(hwnd: Int, what: StringSlice) raises -> String:
+    """One editing key, for the prompt rather than the document.
+
+    Named the way `edit_key` and `move_key` are, and for the same reason: a
+    keystroke and a check should take one path, so what a person can do a
+    check can drive.
+
+    Args:
+        hwnd: The window.
+        what: `backspace`, `delete`, `left`, `right`, `home`, `end`, `clear`.
+
+    Returns:
+        What the line holds now.
+
+    Raises:
+        If the window has no document.
+    """
+    if what == "backspace":
+        prompt_backspace()
+    elif what == "delete":
+        prompt_delete()
+    elif what == "left":
+        prompt_move(-1)
+    elif what == "right":
+        prompt_move(1)
+    elif what == "home":
+        prompt_home()
+    elif what == "end":
+        prompt_end()
+    elif what == "clear":
+        prompt_clear()
+    else:
+        return String("not a prompt key: ") + String(what)
+    _touch(hwnd)
+    return prompt_report()
+
+
+def prompt_type(hwnd: Int, text: String) raises -> String:
+    """Type into the line.
+
+    Args:
+        hwnd: The window.
+        text: What to add.
+
+    Returns:
+        What the line holds now.
+
+    Raises:
+        If the window has no document.
+    """
+    for c in text.codepoints():
+        put(Int(c))
+    _touch(hwnd)
+    return prompt_report()
+
+
+def _extra_flags() raises -> String:
+    """The include path and the library the shipped examples need.
+
+    Griddle could not build its own examples. `-I mojo/stdlib -I .` does not
+    reach the `max` package -- it lives at `max/mojo/max` -- so every GPU
+    example stopped at `unable to locate module 'gpu'`, and with the include
+    path added they stopped again at `undefined symbol:
+    AsyncRT_DeviceContext_create`, which is the NVIDIA device runtime that
+    Bazel links as `nvptx/runtime/nvptxrt.lib`.
+
+    Passed on every build rather than only when a file looks like it needs
+    them, because deciding from the source text would mean reading imports and
+    getting it wrong for the file that imports something that imports GPU. The
+    cost of passing them anyway was measured rather than assumed: an ordinary
+    program that uses neither built in the same nine seconds and produced a
+    byte-identical 14848-byte executable, because a linker takes only what is
+    referenced out of a library.
+
+    Each is included only if it is really there, so a tree without the max
+    package builds exactly as it did before.
+
+    Returns:
+        The flags, with a leading space, or empty.
+    """
+    var out = String("")
+    var max_package = absolute(String("max/mojo"))
+    if _is_directory(max_package):
+        out += ' -I "' + max_package + '"'
+    var runtime = absolute(String("bazel-bin/nvptx/runtime/nvptxrt.lib"))
+    if _file_exists(runtime):
+        out += ' -Xlinker "' + runtime + '"'
+    return out^
+
+
+def _file_exists(path: String) raises -> Bool:
+    """Whether a file is there.
+
+    Args:
+        path: What to look for.
+
+    Returns:
+        True when it exists.
+    """
+    try:
+        var handle = open(path, "r")
+        handle.close()
+        return True
+    except:
+        return False
+
+
+def _is_directory(path: String) raises -> Bool:
+    """Whether a directory is there.
+
+    Asked by looking for something inside it rather than by stat'ing it: the
+    only caller wants `max/mojo` as an include path, and an include path that
+    exists and holds nothing is no more use than one that does not exist.
+
+    Args:
+        path: The directory.
+
+    Returns:
+        True when it holds the max package.
+    """
+    return _file_exists(path + "\\max\\__init__.mojo") or _file_exists(
+        path + "\\max\\gpu\\__init__.mojo"
+    )

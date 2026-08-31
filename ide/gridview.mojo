@@ -58,6 +58,7 @@ from ide.diagnostics import (
     on_line,
 )
 from ide.find import matches_in_line
+from ide.prompt import asking, prompt_caret, prompt_label, prompt_text
 from ide.symbols import symbol_at, symbol_count, symbol_kind_name
 from ide.toolchain import toolchain_report
 from ide.python_env import python_report
@@ -819,10 +820,28 @@ def draw_caret(
 def status_line(doc: Doc) raises -> String:
     """What the status bar says: position, selection, and whether it is saved.
 
+    Or the question, when one is being asked. The prompt takes this line
+    rather than a region of its own: it is where an editor has always put a
+    question it wants answered now, and taking a line that already exists
+    means nothing on screen moves when it opens.
+
     One-based, because that is what a person counts in and what every compiler
     diagnostic says. Everything inside is zero-based; this is the one place
     the two meet.
     """
+    if asking():
+        # The caret is drawn as a character rather than as a rectangle,
+        # because this line is drawn as one text layout and inserting a glyph
+        # is the whole of it. A block would need its own geometry, measured
+        # against a proportional-safe advance, for a caret that blinks in a
+        # field holding at most a line.
+        var typed = prompt_text()
+        var at = _byte_of_codepoint(typed, prompt_caret())
+        return (
+            prompt_label() + "  " + String(typed[byte=:at]) + chr(0x2502)
+            + typed[byte=at:]
+        )
+
     var out = (
         String("Ln ") + String(doc.caret_line + 1)
         + ", Col " + String(doc.caret_col + 1)
@@ -2399,3 +2418,32 @@ def draw_python(chrome: Chrome, region: D2D_RECT_F, project: String) raises:
         If DirectWrite refuses.
     """
     _draw_lines(chrome, region, python_report(project))
+
+
+def _byte_of_codepoint(s: String, position: Int) -> Int:
+    """Where the nth character starts, in bytes.
+
+    The same walk `ide/prompt.mojo` does, repeated here rather than exported
+    from there, because a drawing module asking a state module for string
+    arithmetic is a dependency in the wrong direction -- and because this one
+    is four lines.
+
+    Args:
+        s: The text.
+        position: How many characters in.
+
+    Returns:
+        The byte offset.
+    """
+    if position <= 0:
+        return 0
+    var seen = 0
+    var at = 0
+    var bytes = s.as_bytes()
+    while at < len(bytes):
+        if (Int(bytes[at]) & 0xC0) != 0x80:
+            if seen == position:
+                return at
+            seen += 1
+        at += 1
+    return len(bytes)

@@ -820,9 +820,28 @@ def iid_bytes[name: StaticString]() -> List[UInt8]:
 
 
 def utf16(s: StringSlice) -> List[UInt16]:
-    """A NUL-terminated UTF-16 copy of ASCII text."""
+    """A NUL-terminated UTF-16 copy of text.
+
+    It used to copy one byte to one unit, which is Latin-1 rather than UTF-8,
+    and its docstring said "ASCII text" -- true of every label there was:
+    GRIDDLE, OUTPUT, and a status line of digits and commas. The status line
+    now carries whatever a person types into the prompt, so the shortcut
+    became visible the first time something non-ASCII went through it: the
+    caret glyph U+2502 is E2 94 82 in UTF-8, and one-byte-per-unit drew it as
+    three Latin-1 characters starting with an a-circumflex.
+
+    Surrogate pairs are here for the same reason they are in the clipboard:
+    UTF-16 has no other way to say a character above the basic plane, and a
+    search for an emoji is a perfectly ordinary thing to type.
+    """
     var out = List[UInt16]()
-    for byte in s.as_bytes():
-        out.append(UInt16(Int(byte)))
+    for c in s.codepoints():
+        var v = Int(c)
+        if v >= 0x10000:
+            var u = v - 0x10000
+            out.append(UInt16(0xD800 + (u >> 10)))
+            out.append(UInt16(0xDC00 + (u & 0x3FF)))
+        else:
+            out.append(UInt16(v))
     out.append(0)
     return out^

@@ -123,7 +123,16 @@ from ide.window import (
     paste,
     find_text,
     new_tab,
+    asking,
     outline,
+    prompt_accept,
+    prompt_cancel,
+    prompt_find,
+    prompt_goto,
+    prompt_key,
+    prompt_replace,
+    prompt_symbol,
+    prompt_type,
     pane_problems,
     pane_python,
     pane_toolchain,
@@ -503,6 +512,25 @@ def griddle_wndproc(
             # the response has begun would measure a shorter one.
             mark_keystroke(hwnd)
             var unit = wparam & 0xFFFF
+            # While a question is on screen the keyboard belongs to it. This
+            # is the same rule the completion popup already follows, and for
+            # the same reason: two things that both want Return have to take
+            # turns, and the one that just opened is the one being used.
+            if asking():
+                if unit == 13:  # Return
+                    print("griddle:", prompt_accept(hwnd))
+                elif unit == 27:  # Escape
+                    _ = prompt_cancel(hwnd)
+                elif unit == 8:  # Backspace
+                    _ = prompt_key(hwnd, "backspace")
+                elif unit == 9 or unit >= 32:
+                    # Through `type_unit`, not straight into the line: it is
+                    # the one place that joins a surrogate pair across two
+                    # messages, and an emoji typed into a search box is two
+                    # WM_CHARs exactly as it is in the document. It hands the
+                    # joined character to whichever of the two is listening.
+                    _ = type_unit(hwnd, unit)
+                return 0
             if unit == 13:  # Return
                 _ = edit_key(hwnd, "enter")
             elif unit == 8:  # Backspace
@@ -519,6 +547,30 @@ def griddle_wndproc(
             var GetKeyState = win32[
                 def (c_int) thin abi("C") -> Int16, "GetKeyState"
             ]()
+            if asking():
+                # Escape and the movement keys arrive here rather than as
+                # characters. Everything else is left alone deliberately:
+                # Ctrl+C while a question is open should still copy, and a
+                # function key should still do what it does.
+                if wparam == winkb_constant["VK_ESCAPE"]():
+                    _ = prompt_cancel(hwnd)
+                    return 0
+                if wparam == winkb_constant["VK_LEFT"]():
+                    _ = prompt_key(hwnd, "left")
+                    return 0
+                if wparam == winkb_constant["VK_RIGHT"]():
+                    _ = prompt_key(hwnd, "right")
+                    return 0
+                if wparam == winkb_constant["VK_HOME"]():
+                    _ = prompt_key(hwnd, "home")
+                    return 0
+                if wparam == winkb_constant["VK_END"]():
+                    _ = prompt_key(hwnd, "end")
+                    return 0
+                if wparam == winkb_constant["VK_DELETE"]():
+                    _ = prompt_key(hwnd, "delete")
+                    return 0
+
             var held = GetKeyState(c_int(winkb_constant["VK_SHIFT"]()))
             var shift = (Int(held) & 0x8000) != 0
             var ctrl_held = GetKeyState(c_int(winkb_constant["VK_CONTROL"]()))
@@ -623,6 +675,15 @@ def griddle_wndproc(
                     # Ctrl+Shift+F, the search-everywhere chord every editor
                     # shares. Plain Ctrl+F stays with the document.
                     print("griddle:", search_in_project(hwnd, find_needle(hwnd)))
+                elif wparam == ord("F"):
+                    # Ctrl+F asks. It used to search for whatever the last
+                    # search was, which is a strange thing for a key called
+                    # Find to do, and there was nowhere to type a new one.
+                    print("griddle:", prompt_find(hwnd))
+                elif wparam == ord("G"):
+                    print("griddle:", prompt_goto(hwnd))
+                elif wparam == ord("P") and shift:
+                    print("griddle:", prompt_symbol(hwnd))
                 elif wparam == ord("O") and shift:
                     # Ctrl+Shift+O, the go-to-symbol chord, opposite Ctrl+O
                     # for open the way Ctrl+Shift+F sits opposite Ctrl+F.
@@ -644,7 +705,7 @@ def griddle_wndproc(
                     # preview rather than a key that quietly rewrites a file.
                     print(
                         "griddle:",
-                        replace_preview(hwnd, find_needle(hwnd), String("")),
+                        prompt_replace(hwnd),
                     )
                 elif wparam == ord("W"):
                     print("griddle:", close_tab(hwnd))

@@ -28,6 +28,7 @@ from ide.gridview import (
     GUTTER_W,
 )
 from ide.pipeutf8 import without_bom
+from ide.prompt import prompt_report
 from ide.settings import set_setting, setting, settings_report
 from ide.build import append_output
 from ide.symbols import symbols_report
@@ -49,6 +50,17 @@ from ide.window import (
     about,
     copy,
     cut,
+    prompt_accept,
+    prompt_cancel,
+    prompt_find,
+    prompt_goto,
+    prompt_key,
+    prompt_open,
+    prompt_package,
+    prompt_replace,
+    prompt_symbol,
+    prompt_type,
+    type_unit,
     document_path,
     start_build,
     paste,
@@ -1039,6 +1051,41 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         if rest.byte_length() == 0:
             return String("usage: run-script <path>")
         return run_script(hwnd, String(String(rest).strip()))
+
+    # The line a person types into. Every sub-verb is the keystroke that
+    # drives it, so a check exercises the same path a person does rather than
+    # a parallel one that can quietly stop agreeing.
+    if verb == "unit":
+        # One UTF-16 code unit, as WM_CHAR delivers it. The only way to drive
+        # a surrogate pair from a check: an emoji cannot survive the console's
+        # own encoding on the way in as an argument, so the halves are named
+        # by number instead. `unit 55357;;unit 56832` is U+1F600.
+        if rest.byte_length() == 0:
+            return String("usage: unit <utf-16 code unit>")
+        return type_unit(hwnd, Int(rest))
+
+    if verb == "prompt":
+        if rest == "" or rest == "show":
+            return prompt_report()
+        if rest == "accept":
+            return prompt_accept(hwnd)
+        if rest == "cancel":
+            return prompt_cancel(hwnd)
+        if rest == "find":
+            return prompt_find(hwnd)
+        if rest == "replace":
+            return prompt_replace(hwnd)
+        if rest == "goto":
+            return prompt_goto(hwnd)
+        if rest == "symbol":
+            return prompt_symbol(hwnd)
+        if rest == "package":
+            return prompt_package(hwnd)
+        if rest == "open":
+            return prompt_open(hwnd)
+        if rest.startswith("type "):
+            return prompt_type(hwnd, String(rest[byte=5:]))
+        return prompt_key(hwnd, rest)
 
     if verb == "about":
         return about(hwnd)
