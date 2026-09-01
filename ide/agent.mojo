@@ -29,7 +29,7 @@ from ide.gridview import (
 )
 from ide.pipeutf8 import without_bom
 from ide.prompt import prompt_report
-from ide.chrome import pane_height, set_pane_height, set_sidebar_width, sidebar_width
+from ide.chrome import hot_splitter, pane_height, set_pane_height, set_sidebar_width, sidebar_width
 from ide.settings import set_setting, setting, settings_report
 from ide.build import append_output
 from ide.symbols import symbols_report
@@ -62,6 +62,7 @@ from ide.window import (
     prompt_symbol,
     open_project,
     scroll_output_pane,
+    splitter_at,
     open_sample_named,
     prompt_type,
     python_create,
@@ -183,6 +184,7 @@ from ide.win32 import (
 
 
 from std.ffi import c_int
+from std.sys._winkb import winkb_constant
 from std.time import perf_counter_ns
 from std.memory import Pointer
 
@@ -312,6 +314,9 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             "debug [launch|wait|step|stop]    the debugger\n"
             "break [N|list|clear]             breakpoints\n"
             "toolchain [refresh|gaps|<part>]  which compiler this is\n"
+            "mouse <x> <y>                    move the pointer, through the real message queue\n"
+            "drag <x0> <y0> <x1> <y1>         press, move and release, likewise\n"
+            "splitter <x> <y>                 which movable edge is at a point\n"
             "split [sidebar|pane <px>]        where the movable edges are\n"
             "output-scroll <lines>            move the output pane; negative goes back\n"
             "project [<folder>]               open a folder as the project, closing the last one\n"
@@ -1095,6 +1100,89 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
     # The two movable edges, and the pane that scrolls. Verbs because a
     # splitter dragged with a mouse and a splitter set by a check should be
     # the same code, and because a check cannot drag anything.
+    if verb == "drag":
+        # A real drag, through the real message queue: button down, three
+        # moves, button up. `click` calls the handler directly and so proves
+        # nothing about the window procedure; this posts the messages Windows
+        # would post, which is the only way to check that a press, a move and
+        # a release add up to the thing they are supposed to.
+        var parts = String(rest).split(" ")
+        if len(parts) < 4:
+            return String("usage: drag <x0> <y0> <x1> <y1>")
+        var x0 = Int(String(parts[0]))
+        var y0 = Int(String(parts[1]))
+        var x1 = Int(String(parts[2]))
+        var y1 = Int(String(parts[3]))
+        var SendMessageW = win32[
+            def (Int, UInt32, Int, Int) thin abi("C") -> Int, "SendMessageW"
+        ]()
+
+        fn packed(x: Int, y: Int) -> Int:
+            return ((y & 0xFFFF) << 16) | (x & 0xFFFF)
+
+        _ = SendMessageW(
+            hwnd,
+            UInt32(winkb_constant["WM_LBUTTONDOWN"]()),
+            winkb_constant["MK_LBUTTON"](),
+            packed(x0, y0),
+        )
+        for step in range(1, 4):
+            var mx = x0 + (x1 - x0) * step // 3
+            var my = y0 + (y1 - y0) * step // 3
+            _ = SendMessageW(
+                hwnd,
+                UInt32(winkb_constant["WM_MOUSEMOVE"]()),
+                winkb_constant["MK_LBUTTON"](),
+                packed(mx, my),
+            )
+        _ = SendMessageW(
+            hwnd,
+            UInt32(winkb_constant["WM_LBUTTONUP"]()),
+            0,
+            packed(x1, y1),
+        )
+        return (
+            String("dragged ") + String(x0) + "," + String(y0) + " to "
+            + String(x1) + "," + String(y1)
+        )
+
+    if verb == "mouse":
+        # A pointer move with no button down, through the real queue. The
+        # cursor and the splitter highlight both hang off WM_MOUSEMOVE, and
+        # neither can be checked by calling a function directly.
+        var at = String(rest).split(" ")
+        if len(at) < 2:
+            return String("usage: mouse <x> <y>")
+        var hx = Int(String(at[0]))
+        var hy = Int(String(at[1]))
+        var SendHover = win32[
+            def (Int, UInt32, Int, Int) thin abi("C") -> Int, "SendMessageW"
+        ]()
+        _ = SendHover(
+            hwnd,
+            UInt32(winkb_constant["WM_MOUSEMOVE"]()),
+            0,
+            ((hy & 0xFFFF) << 16) | (hx & 0xFFFF),
+        )
+        var lit = hot_splitter()
+        if lit == 0:
+            return String("pointer at ") + String(hx) + "," + String(hy)
+        return (
+            String("pointer on ") + ("the sidebar" if lit == 1 else "the pane")
+            + " splitter"
+        )
+
+    if verb == "splitter":
+        var where = String(rest).split(" ")
+        if len(where) < 2:
+            return String("usage: splitter <x> <y>")
+        var found = splitter_at(
+            hwnd, Int(String(where[0])), Int(String(where[1]))
+        )
+        if found == 0:
+            return String("no splitter there")
+        return String("splitter ") + ("sidebar" if found == 1 else "pane")
+
     if verb == "split":
         var spec = String(rest).strip()
         if spec.byte_length() == 0:

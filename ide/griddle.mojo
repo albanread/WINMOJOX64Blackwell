@@ -43,8 +43,10 @@ from ide.chrome import (
     bring_up,
     draw,
     finish,
+    hot_splitter,
     pane_height,
     release,
+    set_hot_splitter,
     sidebar_width,
 )
 from ide.drop import register as register_drop, revoke as revoke_drop
@@ -524,6 +526,7 @@ def griddle_wndproc(
             var grabbed = splitter_at(hwnd, px, py)
             if grabbed != 0:
                 g_dragging()[] = grabbed
+                set_hot_splitter(grabbed)
                 var SetCapture = win32[
                     def (Int) thin abi("C") -> Int, "SetCapture"
                 ]()
@@ -532,6 +535,60 @@ def griddle_wndproc(
 
             _ = caret_click(hwnd, px, py)
             return 0
+
+        # Windows asks this on every move over the window, which makes it
+        # the one place that can answer for the whole window rather than for
+        # one edge of it. Answering only for the splitters -- which is what
+        # setting the cursor from WM_MOUSEMOVE amounted to -- leaves nothing
+        # to put it back.
+        if message == UInt32(winkb_constant["WM_SETCURSOR"]()):
+            # The low word of lParam is the hit-test code. Anything that is
+            # not the client area is the frame, the border or a scrollbar,
+            # and those are Windows' business rather than ours.
+            var hit = lparam & 0xFFFF
+            if hit != winkb_constant["HTCLIENT"]():
+                return 0
+
+            var GetCursorPos = win32[
+                def (Pointer[POINT, MutAnyOrigin]) thin abi("C") -> c_int,
+                "GetCursorPos",
+            ]()
+            var ScreenToClient2 = win32[
+                def (Int, Pointer[POINT, MutAnyOrigin]) thin abi("C") -> c_int,
+                "ScreenToClient",
+            ]()
+            var where = POINT()
+            _ = GetCursorPos(
+                Pointer(to=where).unsafe_origin_cast[MutAnyOrigin]()
+            )
+            _ = ScreenToClient2(
+                hwnd, Pointer(to=where).unsafe_origin_cast[MutAnyOrigin]()
+            )
+
+            var on = 0
+            try:
+                on = (
+                    g_dragging()[] if g_dragging()[] != 0
+                    else splitter_at(hwnd, Int(where.x), Int(where.y))
+                )
+            except:
+                on = 0
+
+            var LoadCursorW2 = win32[
+                def (Int, Int) thin abi("C") -> Int, "LoadCursorW"
+            ]()
+            var SetCursor2 = win32[
+                def (Int) thin abi("C") -> Int, "SetCursor"
+            ]()
+            var shape = winkb_constant["IDC_ARROW"]()
+            if on == 1:
+                shape = winkb_constant["IDC_SIZEWE"]()
+            elif on == 2:
+                shape = winkb_constant["IDC_SIZENS"]()
+            _ = SetCursor2(LoadCursorW2(0, shape))
+            # TRUE: the cursor has been dealt with, so Windows must not go on
+            # to set the class one over the top of it.
+            return 1
 
         if message == UInt32(winkb_constant["WM_MOUSEMOVE"]()):
             var mx = lparam & 0xFFFF
@@ -545,27 +602,26 @@ def griddle_wndproc(
                 _ = drag_splitter(hwnd, g_dragging()[], mx, my)
                 return 0
 
-            # Not dragging: the cursor still has to say that this edge can be
-            # moved. Windows resets it to the class cursor on every move, so
-            # this is set every time rather than on the way in and out.
+
+            # Which splitter the pointer is over, so the paint can light it
+            # up. The cursor is not set here: WM_SETCURSOR above owns that,
+            # and doing it in two places is how one of them gets forgotten.
             var over = splitter_at(hwnd, mx, my)
-            if over != 0:
-                var LoadCursorW = win32[
-                    def (Int, Int) thin abi("C") -> Int, "LoadCursorW"
+            if over != hot_splitter():
+                set_hot_splitter(over)
+                # Only when it changes. Repainting on every mouse move over a
+                # window is a lot of frames to draw the same thing.
+                var InvalidateHot = win32[
+                    def (Int, Int, c_int) thin abi("C") -> c_int,
+                    "InvalidateRect",
                 ]()
-                var SetCursor = win32[
-                    def (Int) thin abi("C") -> Int, "SetCursor"
-                ]()
-                var which = (
-                    winkb_constant["IDC_SIZEWE"]() if over
-                    == 1 else winkb_constant["IDC_SIZENS"]()
-                )
-                _ = SetCursor(LoadCursorW(0, which))
+                _ = InvalidateHot(hwnd, 0, c_int(0))
             return 0
 
         if message == UInt32(winkb_constant["WM_LBUTTONUP"]()):
             if g_dragging()[] != 0:
                 g_dragging()[] = 0
+                set_hot_splitter(0)
                 var ReleaseCapture = win32[
                     def () thin abi("C") -> Int, "ReleaseCapture"
                 ]()
@@ -1382,6 +1438,15 @@ def main() raises:
     wc.lpfnWndProc = Int(_fn_ptr_as_opaque(proc))
     wc.hInstance = hInstance
     wc.lpszClassName = Int(class_name.unsafe_ptr())
+
+    # The class cursor. Zero here means the class has no cursor at all, and a
+    # window whose class has no cursor is a window Windows never sets one
+    # for: whatever the last SetCursor anywhere said stays said, which is how
+    # a resize cursor over a splitter became the cursor everywhere.
+    var LoadCursorForClass = win32[
+        def (Int, Int) thin abi("C") -> Int, "LoadCursorW"
+    ]()
+    wc.hCursor = LoadCursorForClass(0, winkb_constant["IDC_ARROW"]())
 
     # The icon, out of this executable's own resources. Resource 1, which is
     # what `ide/griddle.rc` names it and what the shell shows as the file's

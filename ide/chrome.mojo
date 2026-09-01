@@ -61,6 +61,7 @@ comptime DIM = 0x8B93A1  # secondary text
 comptime SELECT = 0x2A3A55  # selected text, behind the glyphs
 comptime MATCH = 0x4A3D1E  # every other match of the current search
 comptime ERROR = 0xE05252  # a squiggle under something that is wrong
+comptime SPLITTER_HOT = 0x4C8FD8  # a live splitter: the one blue in the chrome
 comptime WARN = 0xD8A657  # and under something that is merely doubtful
 comptime POPUP = 0x22262E  # the completion list's own ground
 comptime POPUP_SEL = 0x2F3A4E  # and the row under the cursor
@@ -213,6 +214,31 @@ comptime SIDEBAR_MIN = 80
 comptime SIDEBAR_MAX = 600
 comptime PANE_MIN = 60
 comptime PANE_MAX = 700
+
+# Which splitter the pointer is on, or is dragging: 1 the sidebar's, 2 the
+# bottom panes', 0 neither. Drawn brighter so the edge says it can be moved
+# before anybody tries -- a hairline that does nothing and a hairline that
+# resizes the window look identical otherwise.
+comptime g_hot_splitter = named_global["chrome.splitter.hot", Int]
+
+
+def hot_splitter() -> Int:
+    """Which splitter is live.
+
+    Returns:
+        1, 2, or 0 for none.
+    """
+    return g_hot_splitter()[]
+
+
+def set_hot_splitter(which: Int):
+    """Say which splitter the pointer is on.
+
+    Args:
+        which: 1 the sidebar's, 2 the bottom panes', 0 neither.
+    """
+    g_hot_splitter()[] = which
+
 
 comptime g_sidebar_w = named_global["chrome.sidebar.w", Int]
 comptime g_pane_h = named_global["chrome.pane.h", Int]
@@ -692,10 +718,21 @@ def draw(
         D2D_RECT_F(rail.right, 0, rail.right + hair, bar.top),
         LINE,
     )
+    # The two movable ones are drawn thicker and blue while the pointer is on
+    # them or dragging them. A hairline that does nothing and a hairline that
+    # resizes the window look identical, and the difference is worth showing
+    # before somebody has to discover it by trying.
+    var hot = hot_splitter()
+    var live = scaled(3, chrome.scale)
     _fill(
         chrome.target,
-        D2D_RECT_F(editor.left, 0, editor.left + hair, bar.top),
-        LINE,
+        D2D_RECT_F(
+            editor.left,
+            0,
+            editor.left + (live if hot == 1 else hair),
+            bar.top,
+        ),
+        SPLITTER_HOT if hot == 1 else LINE,
     )
     _fill(
         chrome.target,
@@ -705,9 +742,12 @@ def draw(
     _fill(
         chrome.target,
         D2D_RECT_F(
-            editor.left, editor.bottom - hair, Float32(width), editor.bottom
+            editor.left,
+            editor.bottom - (live if hot == 2 else hair),
+            Float32(width),
+            editor.bottom,
         ),
-        LINE,
+        SPLITTER_HOT if hot == 2 else LINE,
     )
 
     # The rail's selected item, as the one piece of accent on screen.
