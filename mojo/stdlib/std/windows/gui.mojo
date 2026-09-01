@@ -34,47 +34,19 @@ and gets out of the way. `examples/win32/life` is what using it looks like.
 
 from std.ffi import c_int
 from std.memory import Pointer
-from std.sys._win32 import Win32Module
 from std.sys._winkb import (
     winkb_constant,
-    winkb_function_dll,
     winkb_struct_size,
 )
 
 from std.sys.info import size_of
 from std.python._cpython import _fn_ptr_as_opaque
-from std.windows.core import WideString
 
-
-# ===----------------------------------------------------------------------===#
-# Entry points
-# ===----------------------------------------------------------------------===#
-
-
-def win32[Sig: TrivialRegisterPassable, name: StaticString]() raises -> Sig:
-    """A Win32 entry point, typed, from whichever DLL the metadata names.
-
-    The DLL is not written down anywhere: `winkb_function_dll` knows that
-    `CreateWindowExW` is in USER32 and `StretchDIBits` is in GDI32, and a
-    misspelled name is a compile error rather than a null at run time.
-
-    The signature must be spelled in full. An under-declared one compiles and
-    then corrupts the call, because the ABI has already been decided by the
-    time anybody notices an argument is missing.
-
-    Parameters:
-        Sig: The full thin C-ABI signature.
-        name: The exported function, for example "CreateWindowExW".
-
-    Returns:
-        The entry point, ready to call.
-
-    Raises:
-        If the module does not load or the export is absent.
-    """
-    return Win32Module(String(winkb_function_dll[name]())).function[Sig](
-        String(name)
-    )
+# `win32` is re-exported: it was written here first, and moved down to `core`
+# when `std.windows.audio` became its second caller. Importing it here keeps
+# `from std.windows.gui import win32` -- which every example already writes --
+# spelling the same thing.
+from std.windows.core import WideString, win32
 
 
 # ===----------------------------------------------------------------------===#

@@ -14,7 +14,42 @@
 from std.ffi import c_int
 from std.memory import Pointer, OpaquePointer
 from std.sys._win32 import Win32Module
-from std.sys._winkb import winkb_constant
+from std.sys._winkb import winkb_constant, winkb_function_dll
+
+
+# ===----------------------------------------------------------------------=== #
+# Entry points
+# ===----------------------------------------------------------------------=== #
+
+
+def win32[Sig: TrivialRegisterPassable, name: StaticString]() raises -> Sig:
+    """A Win32 entry point, typed, from whichever DLL the metadata names.
+
+    The DLL is not written down anywhere: `winkb_function_dll` knows that
+    `CreateWindowExW` is in USER32, `StretchDIBits` is in GDI32 and
+    `AvSetMmThreadCharacteristicsW` is in AVRT, and a misspelled name is a
+    compile error rather than a null at run time.
+
+    The signature must be spelled in full. An under-declared one compiles and
+    then corrupts the call, because the ABI has already been decided by the
+    time anybody notices an argument is missing.
+
+    It sits in this file rather than in one of the modules above it because
+    two of them need it now, which is the admission test the header states.
+
+    Parameters:
+        Sig: The full thin C-ABI signature.
+        name: The exported function, for example "CreateWindowExW".
+
+    Returns:
+        The entry point, ready to call.
+
+    Raises:
+        If the module does not load or the export is absent.
+    """
+    return Win32Module(String(winkb_function_dll[name]())).function[Sig](
+        String(name)
+    )
 
 
 # ===----------------------------------------------------------------------=== #
