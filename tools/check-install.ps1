@@ -61,10 +61,23 @@ try {
 }
 
 # ---- 3. uninstall ---------------------------------------------------------
+# A witness for the per-user data question: the uninstaller asks whether to
+# remove %LOCALAPPDATA%\Griddle, and its SILENT answer must be No. An
+# unattended uninstall that quietly deletes somebody's settings is a bug
+# even when the directory is ours.
+$userData = Join-Path $env:LOCALAPPDATA 'Griddle'
+$hadUserData = Test-Path $userData
+if (-not $hadUserData) {
+    New-Item -ItemType Directory -Path $userData -Force | Out-Null
+    Set-Content (Join-Path $userData 'settings.json') '{"witness":true}' -Encoding utf8
+}
+
 # NSIS silent uninstall copies itself to temp and returns at once; _?= makes
 # it run in place and actually wait.
 $p = Start-Process -FilePath "$Target\uninstall.exe" -ArgumentList '/S', "_?=$Target" -Wait -PassThru
 Check 'silent-uninstall' ($p.ExitCode -eq 0) "exit $($p.ExitCode)"
+Check 'keeps-user-data' (Test-Path $userData) 'a silent uninstall does not delete settings'
+if (-not $hadUserData) { Remove-Item $userData -Recurse -Force -ErrorAction SilentlyContinue }
 Remove-Item "$Target\uninstall.exe" -Force -ErrorAction SilentlyContinue
 Remove-Item $Target -Force -ErrorAction SilentlyContinue
 Check 'tree-removed' (-not (Test-Path "$Target\bin")) 'installation directory gone'

@@ -176,8 +176,9 @@ SectionEnd
 Section "Uninstall"
   ; Everything the installer created lives under $INSTDIR, and projects the
   ; user made live wherever the user made them -- the IDE never writes them
-  ; here. So removal is the directory, the shortcuts and the two registry
-  ; keys, and nothing else.
+  ; here. So removal is the directory, the shortcuts, the two registry keys,
+  ; and then one question about the data that is the user's rather than the
+  ; installation's.
   ;
   ; The sentinel first: $INSTDIR is wherever the user pointed the installer,
   ; and deleting a directory recursively on the strength of a registry entry
@@ -193,4 +194,26 @@ Section "Uninstall"
   Delete "$DESKTOP\Griddle.lnk"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\WinMojo"
   DeleteRegKey HKCU "Software\WinMojo"
+
+  ; ---- the user's own data, and only if they say so ----------------------
+  ; %LOCALAPPDATA%\Griddle is Griddle's, not the installation's: the
+  ; settings a person chose, and the Python environments the IDE built for
+  ; their projects -- which is where the size is, tens of megabytes per
+  ; environment. Removing it unasked would delete preferences somebody may
+  ; want back after a reinstall; leaving it unasked strands those
+  ; environments forever, because nothing else on the machine knows they are
+  ; Griddle's. So it is asked.
+  ;
+  ; The silent answer is No. An unattended uninstall -- a script, a fleet
+  ; tool, this repository's own check -- must never be the thing that
+  ; destroys data nobody was there to be asked about.
+  IfFileExists "$LOCALAPPDATA\Griddle\*.*" 0 winmojo_no_user_data
+    MessageBox MB_YESNO|MB_ICONQUESTION \
+      "Also remove your Griddle settings and the Python environments it created?$\r$\n$\r$\n\
+$LOCALAPPDATA\Griddle$\r$\n$\r$\n\
+Choose No to keep them for a future install.$\r$\n$\r$\n\
+Your own projects and source files are never stored there, and are not affected either way." \
+      /SD IDNO IDNO winmojo_no_user_data
+    RMDir /r "$LOCALAPPDATA\Griddle"
+  winmojo_no_user_data:
 SectionEnd
