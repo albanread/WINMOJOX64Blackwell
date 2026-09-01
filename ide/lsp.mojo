@@ -45,6 +45,7 @@ comptime MAX_INBOX = 96 * 1024 * 1024
 
 comptime g_pending = named_global["lsp.inbox.pending", List[UInt8]]
 comptime g_read_fd = named_global["lsp.readfd", Int]   # we read here
+comptime g_job = named_global["lsp.job", Int]          # its Job Object
 comptime g_next_id = named_global["lsp.nextid", Int]
 comptime g_ready = named_global["lsp.ready", Int]
 # Bumped each time a server finishes its handshake. The app watches this to
@@ -793,6 +794,7 @@ def start_with_environment(
         g_thread()[] = child.thread
         g_in()[] = child.writes_to
         g_read_fd()[] = child.reads_from
+        g_job()[] = child.job
     except err:
         print("  lsp: could not start:", String(err))
         return False
@@ -817,7 +819,7 @@ def stop():
     if not is_running():
         return
     var child = Child(
-        g_task()[], g_thread()[], g_in()[], g_read_fd()[]
+        g_task()[], g_thread()[], g_in()[], g_read_fd()[], g_job()[]
     )
     try:
         kill(child)
@@ -828,6 +830,7 @@ def stop():
     g_in()[] = 0
     g_ready()[] = 0
     g_read_fd()[] = 0
+    g_job()[] = 0
     set_inbox(String())
     g_def_request()[] = 0
     g_hover_request()[] = 0

@@ -29,7 +29,7 @@ from std.ffi import c_int
 from std.memory import OpaquePointer, Pointer
 from std.sys.info import size_of
 from std.sys._com import com_addr
-from std.sys._winkb import winkb_constant, winkb_struct_size
+from std.sys._winkb import winkb_constant, winkb_field_offset, winkb_struct_size
 
 from ide.win32 import win32
 
@@ -128,6 +128,12 @@ struct Child(Defaultable, ImplicitlyCopyable, Movable):
     # Our end of the child's stdin, and our end of its stdout.
     var writes_to: Int
     var reads_from: Int
+    # The Job Object the child tree lives in. Killing the job kills every
+    # process the child started, however many generations down; closing the
+    # handle does the same, because the job is created kill-on-close. Zero
+    # when job creation failed, in which case kill falls back to terminating
+    # the one process it knows about.
+    var job: Int
 
     def __init__(out self):
         """Nothing running."""
@@ -135,6 +141,7 @@ struct Child(Defaultable, ImplicitlyCopyable, Movable):
         self.thread = 0
         self.writes_to = 0
         self.reads_from = 0
+        self.job = 0
 
     def running(self) -> Bool:
         """Whether there is a process here at all."""
@@ -287,18 +294,66 @@ def spawn(
         ]()
         si.hStdError = GetStdHandle(UInt32(0xFFFFFFF4))  # STD_ERROR_HANDLE
 
+    # The Job Object first, configured kill-on-close: every process the
+    # child starts joins the job, so ending the job ends the tree -- and if
+    # this editor dies without ending anything, the handle's destruction does
+    # it instead. This is what the design meant by "nothing zombies, by
+    # construction"; TerminateProcess on one PID was never that.
+    var CreateJobObjectW = win32[
+        def (Int, Int) thin abi("C") -> Int, "CreateJobObjectW"
+    ]()
+    var SetInformationJobObject = win32[
+        def (Int, c_int, Int, UInt32) thin abi("C") -> c_int,
+        "SetInformationJobObject",
+    ]()
+    var job = CreateJobObjectW(0, 0)
+    if job != 0:
+        var ext_size = winkb_struct_size["JOBOBJECT_EXTENDED_LIMIT_INFORMATION"]()
+        var limits = List[UInt8](length=ext_size, fill=0)
+        # LimitFlags lives inside the basic block, which sits at the front of
+        # the extended one; both offsets come from the metadata rather than a
+        # count on fingers.
+        var flags_at = winkb_field_offset[
+            "JOBOBJECT_EXTENDED_LIMIT_INFORMATION", "BasicLimitInformation"
+        ]() + winkb_field_offset[
+            "JOBOBJECT_BASIC_LIMIT_INFORMATION", "LimitFlags"
+        ]()
+        Pointer[UInt32, MutAnyOrigin](
+            unsafe_from_address=Int(limits.unsafe_ptr()) + flags_at
+        )[] = UInt32(winkb_constant["JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE"]())
+        if SetInformationJobObject(
+            job,
+            c_int(winkb_constant["JobObjectExtendedLimitInformation"]()),
+            Int(limits.unsafe_ptr()),
+            UInt32(ext_size),
+        ) == 0:
+            # A job that cannot be configured is a job that will not kill its
+            # tree on close; better no job than a false promise.
+            var CloseJob = win32[
+                def (Int) thin abi("C") -> c_int, "CloseHandle"
+            ]()
+            _ = CloseJob(job)
+            job = 0
+        _ = limits
+
     var info = PROCESS_INFORMATION()
     # CreateProcessW may modify the command line in place, which is why it
     # takes a mutable buffer and not a literal.
     var line = utf16z(command)
     var cwd = utf16z(working_dir)
+    # Suspended when there is a job to join: a child that runs before it is
+    # in the job can spawn a grandchild that never joins it, and that
+    # grandchild is exactly the orphan this machinery exists to prevent.
+    var flags = winkb_constant["CREATE_NO_WINDOW"]()
+    if job != 0:
+        flags |= winkb_constant["CREATE_SUSPENDED"]()
     var ok = CreateProcessW(
         0,
         line.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
         0,
         0,
         c_int(1),  # inherit handles, so the two pipe ends above reach it
-        UInt32(winkb_constant["CREATE_NO_WINDOW"]()),
+        UInt32(flags),
         0,
         0 if working_dir.byte_length() == 0 else Int(cwd.unsafe_ptr()),
         com_addr(si),
@@ -316,9 +371,26 @@ def spawn(
     if ok == 0:
         _ = CloseHandle(our_write)
         _ = CloseHandle(our_read)
+        if job != 0:
+            _ = CloseHandle(job)
         return Child()
 
-    return Child(info.hProcess, info.hThread, our_write, our_read)
+    if job != 0:
+        var AssignProcessToJobObject = win32[
+            def (Int, Int) thin abi("C") -> c_int, "AssignProcessToJobObject"
+        ]()
+        if AssignProcessToJobObject(job, info.hProcess) == 0:
+            # It could not join -- an old Windows without nested jobs, or a
+            # job the process is already locked into. The child still runs;
+            # it just runs with the one-process guarantee instead.
+            _ = CloseHandle(job)
+            job = 0
+        var ResumeThread = win32[
+            def (Int) thin abi("C") -> UInt32, "ResumeThread"
+        ]()
+        _ = ResumeThread(info.hThread)
+
+    return Child(info.hProcess, info.hThread, our_write, our_read, job)
 
 
 def waiting(handle: Int) raises -> Int:
@@ -399,14 +471,26 @@ def write_all(handle: Int, text: String) raises -> Bool:
 
 
 def kill(mut child: Child) raises:
-    """End the child and close both pipes."""
+    """End the child's whole tree and close both pipes.
+
+    The job goes first: terminating it terminates every process the child
+    started, which is what a person pressing Stop means. The direct
+    terminate stays for the child that never got a job.
+    """
     if child.process == 0:
         return
-    var TerminateProcess = win32[
-        def (Int, UInt32) thin abi("C") -> c_int, "TerminateProcess"
-    ]()
     var CloseHandle = win32[def (Int) thin abi("C") -> c_int, "CloseHandle"]()
-    _ = TerminateProcess(child.process, UInt32(0))
+    if child.job != 0:
+        var TerminateJobObject = win32[
+            def (Int, UInt32) thin abi("C") -> c_int, "TerminateJobObject"
+        ]()
+        _ = TerminateJobObject(child.job, UInt32(0))
+        _ = CloseHandle(child.job)
+    else:
+        var TerminateProcess = win32[
+            def (Int, UInt32) thin abi("C") -> c_int, "TerminateProcess"
+        ]()
+        _ = TerminateProcess(child.process, UInt32(0))
     _ = CloseHandle(child.writes_to)
     _ = CloseHandle(child.reads_from)
     _ = CloseHandle(child.thread)
@@ -415,3 +499,4 @@ def kill(mut child: Child) raises:
     child.thread = 0
     child.writes_to = 0
     child.reads_from = 0
+    child.job = 0
