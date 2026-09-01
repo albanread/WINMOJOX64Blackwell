@@ -18,6 +18,7 @@ from std.memory import Pointer
 from std.sys._winkb import winkb_constant
 
 from ide.win32 import win32
+from ide.samples import sample_count, sample_name
 
 
 # Command ids. Small and explicit: the agent never uses them -- it uses the
@@ -53,6 +54,20 @@ comptime ID_BUILD_STEP_OUT = 1027
 comptime ID_BUILD_RUN_TO_CARET = 1017
 comptime ID_BUILD_EVALUATE = 1018
 comptime ID_BUILD_CLEAR_BREAKPOINTS = 1019
+
+# Python. CPython is loaded into a built program rather than run beside it,
+# so these four commands own the project's environment and pip's changes to
+# it -- everything that happens before that program starts.
+comptime ID_PYTHON_CREATE = 1060
+comptime ID_PYTHON_PROJECT = 1061
+comptime ID_PYTHON_INSTALL = 1062
+comptime ID_PYTHON_SHOW = 1063
+
+# Examples. One id per example, assigned in the order they are listed, so the
+# first is ID_SAMPLE_FIRST and the nth is ID_SAMPLE_FIRST + n. A range rather
+# than named constants because what is in it is whatever is on disk.
+comptime ID_SAMPLE_FIRST = 1200
+comptime ID_SAMPLE_LIMIT = 64
 
 comptime ID_VIEW_OUTLINE = 1023
 comptime ID_VIEW_TOOLCHAIN = 1024
@@ -215,6 +230,57 @@ def build(hwnd: Int) raises:
             "Stop\tShift+F5")
     _append(AppendMenuW, bar, winkb_constant["MF_POPUP"](), build, "Build")
 
+    # Python, between Build and Help, where Roast puts it. No accelerators:
+    # none of these is a thing anybody does often enough to learn a chord for,
+    # and every one of them is slow enough that a menu's deliberateness suits
+    # it.
+    var python = CreatePopupMenu()
+    _append(AppendMenuW, python, winkb_constant["MF_STRING"](),
+            ID_PYTHON_CREATE, "Create or Repair Environment")
+    _append(AppendMenuW, python, winkb_constant["MF_STRING"](),
+            ID_PYTHON_PROJECT, "Install Project Dependencies")
+    _append(AppendMenuW, python, winkb_constant["MF_STRING"](),
+            ID_PYTHON_INSTALL, "Install Package...")
+    _append(AppendMenuW, python, winkb_constant["MF_SEPARATOR"](), 0, "")
+    _append(AppendMenuW, python, winkb_constant["MF_STRING"](),
+            ID_PYTHON_SHOW, "Show Environment")
+    _append(AppendMenuW, bar, winkb_constant["MF_POPUP"](), python, "Python")
+
+    # Examples, built from what is on disk rather than from a list written
+    # here, so the menu and the installation cannot disagree about which
+    # examples exist. An empty one gets a single disabled line rather than
+    # hanging there empty and looking broken.
+    var samples = CreatePopupMenu()
+    var found = 0
+    try:
+        found = sample_count()
+    except:
+        found = 0
+    if found == 0:
+        _append(
+            AppendMenuW,
+            samples,
+            winkb_constant["MF_STRING"]() | winkb_constant["MF_GRAYED"](),
+            0,
+            "No examples found",
+        )
+    else:
+        var shown = found if found < ID_SAMPLE_LIMIT else ID_SAMPLE_LIMIT
+        for i in range(shown):
+            var name = String("")
+            try:
+                name = sample_name(i)
+            except:
+                name = String("?")
+            _append_text(
+                AppendMenuW,
+                samples,
+                winkb_constant["MF_STRING"](),
+                ID_SAMPLE_FIRST + i,
+                name^,
+            )
+    _append(AppendMenuW, bar, winkb_constant["MF_POPUP"](), samples, "Examples")
+
     var help = CreatePopupMenu()
     _append(AppendMenuW, help, winkb_constant["MF_STRING"](), 1002, "About")
     _append(AppendMenuW, bar, winkb_constant["MF_POPUP"](), help, "Help")
@@ -241,6 +307,54 @@ def _append(
         label.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
     )
     # The label must outlive the call: Windows copies it, but not before.
+    _ = label
+
+
+def _append_text(
+    AppendMenuW: def (
+        Int, UInt32, Int, Pointer[UInt16, MutAnyOrigin]
+    ) thin abi("C") -> c_int,
+    menu: Int,
+    flags: Int,
+    id_or_submenu: Int,
+    text: String,
+) raises:
+    """Append one item whose label is only known at run time.
+
+    The same as `_append` with a different kind of string. Every label in this
+    file is a literal except the examples, which are whatever files are on
+    disk, and a `StaticString` cannot be one of those.
+
+    Args:
+        AppendMenuW: The resolved entry point.
+        menu: The menu to append to.
+        flags: MF_STRING and friends.
+        id_or_submenu: The command id.
+        text: The label.
+
+    Raises:
+        If Windows refuses.
+    """
+    # This file's `utf16` takes a StaticString, which every other label here
+    # is. A file name is not one, so the conversion is done inline -- and
+    # properly, surrogate pairs included, because an example could be called
+    # anything.
+    var label = List[UInt16]()
+    for c in text.codepoints():
+        var v = Int(c)
+        if v >= 0x10000:
+            var u = v - 0x10000
+            label.append(UInt16(0xD800 + (u >> 10)))
+            label.append(UInt16(0xDC00 + (u & 0x3FF)))
+        else:
+            label.append(UInt16(v))
+    label.append(0)
+    _ = AppendMenuW(
+        menu,
+        UInt32(flags),
+        id_or_submenu,
+        label.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+    )
     _ = label
 
 

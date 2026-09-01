@@ -4,7 +4,7 @@ package(default_visibility = ["//visibility:private"])
 
 mojo_binary(
     name = "nvidia_mandelbrot",
-    srcs = ["nvidia_mandelbrot.mojo"],
+    srcs = ["nvidia_mandelbrot/main.mojo"],
     target_compatible_with = [
         "@mojo_gpu_toolchains//:nvidia_gpu",
         "@platforms//cpu:x86_64",

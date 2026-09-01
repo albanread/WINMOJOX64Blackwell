@@ -86,7 +86,7 @@ fi
   --target-cpu generic \
   "${extra[@]}" \
   -o "$out/$example.exe" \
-  "$repo/examples/win32/$example.mojo" "$@"
+  "$repo/examples/win32/$example/main.mojo" "$@"
 
 # The built exe imports KGENCompilerRTShared.dll, which in turn imports
 # AsyncRTRuntimeGlobals.dll and MSupportGlobals.dll. PE has no rpath, so the

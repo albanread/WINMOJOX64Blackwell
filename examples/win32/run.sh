@@ -29,7 +29,7 @@ export MODULAR_MOJO_MAX_WINKB_PATH="$external/+new_local_repository+winkb/window
 
 extra=()
 [[ -d "$repo/bazel-bin/max/mojo/max" ]] && extra+=(-I "$repo/bazel-bin/max/mojo/max")
-if grep -q "target-accelerator\|max.gpu" "$repo/examples/win32/$example.mojo"; then
+if grep -q "target-accelerator\|max.gpu" "$repo/examples/win32/$example/main.mojo"; then
   extra+=(--target-accelerator adreno-x1)
   if [[ -f "$repo/bazel-bin/dragon/runtime/dragonrt.dll" ]]; then
     extra+=(-Xlinker "$(cygpath -w "$repo/bazel-bin/dragon/runtime/dragonrt.dll")")
@@ -41,4 +41,4 @@ fi
 exec "$repo/bazel-bin/KGEN/tools/mojo/mojo.exe" run \
   --target-cpu generic \
   "${extra[@]}" \
-  "$repo/examples/win32/$example.mojo" "$@"
+  "$repo/examples/win32/$example/main.mojo" "$@"

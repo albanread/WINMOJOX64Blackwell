@@ -132,7 +132,13 @@ from ide.window import (
     prompt_goto,
     prompt_key,
     prompt_replace,
+    prompt_package,
     prompt_symbol,
+    python_create,
+    python_install,
+    open_sample,
+    _lsp_exe as lsp_exe,
+    _lsp_stdlib as lsp_stdlib,
     prompt_type,
     pane_problems,
     pane_python,
@@ -906,6 +912,28 @@ def griddle_wndproc(
             if which == 1019:  # Build > Clear All Breakpoints
                 print("griddle:", clear_breakpoints(hwnd))
                 return 0
+            # ---- Python ------------------------------------------
+            if which == 1060:  # Python > Create or Repair Environment
+                print("griddle:", python_create(hwnd))
+                return 0
+            if which == 1061:  # Python > Install Project Dependencies
+                print("griddle:", python_install(hwnd, String("")))
+                return 0
+            if which == 1062:  # Python > Install Package...
+                # Asks, rather than doing something to a package nobody
+                # named. This is what the prompt line was built for.
+                print("griddle:", prompt_package(hwnd))
+                return 0
+            if which == 1063:  # Python > Show Environment
+                print("griddle:", pane_python(hwnd))
+                return 0
+
+            # ---- Examples ----------------------------------------
+            # One id per example, in the order the menu listed them.
+            if which >= 1200 and which < 1264:
+                print("griddle:", open_sample(hwnd, which - 1200))
+                return 0
+
             if which == 1023:  # View > Outline
                 print("griddle:", outline(hwnd))
                 return 0
@@ -1528,20 +1556,11 @@ def main() raises:
     # document a person opens -- which the check suite, whose fixtures are
     # .txt, would pay on every one of its sixty-odd runs.
     if open_path.endswith(".mojo") and not no_lsp:
-        var server = String(env_or("WINMOJO_LSP", ""))
-        if server.byte_length() == 0:
-            server = String(
-                "bazel-bin/KGEN/tools/mojo-lsp-server/mojo-lsp-server.exe"
-            )
-        var stdlib = String(env_or("WINMOJO_STDLIB", "mojo/stdlib"))
-        # Absolute, and with the separators Windows expects. CreateProcessW
-        # with no application name parses the command line itself, and a
-        # relative path full of forward slashes is not a path it finds --
-        # it fails with "cannot find the file", naming a file that is there.
-        print(
-            "griddle:",
-            start_server(hwnd, absolute(server), absolute(stdlib)),
-        )
+        # From the toolchain, not spelled here. Written out as a relative
+        # bazel-bin path this resolved against whatever directory the editor
+        # was started in, so a packaged installation tried to start a server
+        # inside the user's own project folder and failed naming it.
+        print("griddle:", start_server(hwnd, lsp_exe(), lsp_stdlib()))
 
     if command.byte_length() > 0:
         # Nobody is watching this run, so nothing in it may stop to ask.

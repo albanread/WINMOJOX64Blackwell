@@ -112,10 +112,21 @@ $artifacts = [ordered]@{
 # (the adreno_* trio) target Qualcomm hardware and will build here and refuse
 # to run on an NVIDIA machine, which is a fact about the example rather than
 # about the release, and the menu says so.
-$exampleSources = Get-ChildItem -LiteralPath (Join-Path $repository 'examples\win32') -Filter *.mojo -File |
+# Each example is a project in a folder of its own -- main.mojo, a README,
+# and whatever else it needs -- so this copies the folders whole rather than
+# picking out the .mojo files. Build output from a previous run is left
+# behind: an example that ships with someone else's .exe in it is not the
+# pristine copy it is meant to be.
+$exampleRoot = Join-Path $repository 'examples\win32'
+$exampleProjects = Get-ChildItem -LiteralPath $exampleRoot -Directory |
+    Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'main.mojo') } |
     Sort-Object Name
-foreach ($example in $exampleSources) {
-    $artifacts['examples\win32\' + $example.Name] = 'examples\win32\' + $example.Name
+foreach ($project in $exampleProjects) {
+    foreach ($file in (Get-ChildItem -LiteralPath $project.FullName -File -Recurse)) {
+        if ($file.Extension -in @('.exe', '.lib', '.pdb', '.obj')) { continue }
+        $relative = $file.FullName.Substring($exampleRoot.Length).TrimStart('\\')
+        $artifacts['examples\win32\' + $relative] = 'examples\win32\' + $relative
+    }
 }
 
 $resolvedArtifacts = [ordered]@{}

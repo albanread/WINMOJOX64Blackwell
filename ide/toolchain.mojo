@@ -312,8 +312,30 @@ def _lookup() raises:
         _accept(named, String("WINMOJO_ROOT"), LAYOUT_INSTALLED)
         return
 
-    # 2. %LOCALAPPDATA%\WinMojo\current -- the junction an installer would
-    # re-point to make a version current. No such directory exists here.
+    # 2. Beside the binary, and above it: an installed editor sits in the
+    # toolchain's own `bin`, so its root is a level or two up.
+    #
+    # Ahead of the junction below, and the order matters. This is the most
+    # specific answer there is: an executable that is sitting inside an
+    # installation is running from that installation, whatever some other
+    # directory has been made current since. With the junction first, a copy
+    # installed anywhere else reported the current one as its toolchain --
+    # correct-looking, entirely wrong, and invisible until its Examples menu
+    # was empty because the *other* installation had no examples in it.
+    var here = _module_dir()
+    var up = here
+    var steps = 0
+    while up != "" and steps < WALK_LIMIT:
+        if _exists(_under(up, INSTALLED_SENTINEL)):
+            _accept(up^, String("beside the binary"), LAYOUT_INSTALLED)
+            return
+        up = _parent(up)
+        steps += 1
+
+    # 3. %LOCALAPPDATA%\WinMojo\current -- the junction an installer
+    # re-points to make a version current. This is for an executable that is
+    # not inside an installation at all: a shortcut somewhere, a build in a
+    # scratch directory, a bare griddle.exe copied onto a desktop.
     var local = String(env_or("LOCALAPPDATA", ""))
     if local != "":
         var current = _under(local, "WinMojo/current")
@@ -325,18 +347,6 @@ def _lookup() raises:
                 LAYOUT_INSTALLED,
             )
             return
-
-    # 3. Beside the binary, and above it: an installed editor sits in the
-    # toolchain's own `bin`, so its root is a level or two up.
-    var here = _module_dir()
-    var up = here
-    var steps = 0
-    while up != "" and steps < WALK_LIMIT:
-        if _exists(_under(up, INSTALLED_SENTINEL)):
-            _accept(up^, String("beside the binary"), LAYOUT_INSTALLED)
-            return
-        up = _parent(up)
-        steps += 1
 
     # 4. The from-source tree. Current directory first, because
     # `build.ensure_linker` resolves its runtime directories against the

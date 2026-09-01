@@ -695,7 +695,19 @@ $src = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'ide\griddle.mo
 $unhandled = @()
 foreach ($row in $rows) {
     $id = $row.Groups[2].Value
-    if ($src -notmatch "which == $id\b") { $unhandled += $row.Groups[1].Value }
+    # An id is handled by an equality test, or by a range -- the Examples
+    # menu has one item per example on disk, so its ids are a span rather
+    # than a list of constants.
+    $handled = $src -match "which == $id\b"
+    if (-not $handled) {
+        foreach ($m in [regex]::Matches($src, 'which >= (\d+) and which < (\d+)')) {
+            if ([int]$id -ge [int]$m.Groups[1].Value -and [int]$id -lt [int]$m.Groups[2].Value) {
+                $handled = $true
+                break
+            }
+        }
+    }
+    if (-not $handled) { $unhandled += $row.Groups[1].Value }
 }
 $expected = @('File > New', 'Edit > Cut', 'Edit > Copy', 'Edit > Paste',
               'Go > Definition', 'View > Toolchain', 'Build > Step Out')
@@ -746,7 +758,7 @@ $help = Ask 'help'
 # Verbs that answer to a second name, and internal ones a person never types.
 $aliases = @{
     'def' = 'definition'; 'refs' = 'references'; 'symbols' = 'outline'
-    'run_script' = 'run-script'
+    'run_script' = 'run-script'; 'examples' = 'samples'
 }
 # The names help offers are the left column of each line -- everything before
 # the gap that separates a command from its description -- split on the bars

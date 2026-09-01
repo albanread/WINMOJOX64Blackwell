@@ -70,11 +70,21 @@ from ide.toolchain import (
     toolchain_root,
 )
 from ide.python_env import (
+    create_environment,
+    environment_ready,
     install_packages,
     project_location,
     python_report,
 )
 from ide.python_env import variables as python_variables
+from ide.samples import (
+    sample_entry,
+    sample_files,
+    sample_name,
+    sample_index_named,
+    sample_path,
+    samples_report,
+)
 from ide.pipeutf8 import without_bom
 from ide.prompt import (
     asking,
@@ -2436,7 +2446,7 @@ def run_file(hwnd: Int) raises -> String:
     Raises:
         If the process cannot be created.
     """
-    var path = document_path(hwnd)
+    var path = entry_point(hwnd)
     if path.byte_length() == 0:
         return String("save the file first; there is nothing to run")
     # Saved first, deliberately. Running the version on disk while the window
@@ -2465,7 +2475,7 @@ def build_file(hwnd: Int) raises -> String:
     Raises:
         If the process cannot be created.
     """
-    var path = document_path(hwnd)
+    var path = entry_point(hwnd)
     if path.byte_length() == 0:
         return String("save the file first; there is nothing to build")
     if is_dirty(hwnd):
@@ -4866,3 +4876,243 @@ def _stdlib_flag(stdlib: String) -> String:
         The flag with a leading space, or an empty string.
     """
     return String(' -I "') + stdlib + '"' if stdlib != "" else String("")
+
+
+# ===----------------------------------------------------------------------===#
+# Python, and the examples
+# ===----------------------------------------------------------------------===#
+
+
+def python_project(hwnd: Int) raises -> String:
+    """Which project's Python environment this window is about.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        The project directory.
+
+    Raises:
+        If the window has no document.
+    """
+    return project_location(project_root(), document_path(hwnd))
+
+
+def python_create(hwnd: Int) raises -> String:
+    """Create this project's environment, or repair the one it has.
+
+    One command for both because only the disk knows which it is, and asking
+    a person to choose between Create and Repair is asking them to know
+    something the editor can see. Eight seconds cold, measured, which is why
+    it says what it did rather than returning silently.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What happened.
+
+    Raises:
+        If the window has no document.
+    """
+    var said = create_environment(python_project(hwnd))
+    _restart_server_for_python(hwnd, said)
+    _doc_at(hwnd)[].pane_mode = PANE_PYTHON
+    _touch(hwnd)
+    return said^
+
+
+def python_install(hwnd: Int, requirement: String) raises -> String:
+    """Install into this project's environment.
+
+    Args:
+        hwnd: The window.
+        requirement: A pip requirement, or empty for whatever the project
+            declares in requirements.txt or pyproject.toml.
+
+    Returns:
+        What happened.
+
+    Raises:
+        If the window has no document.
+    """
+    var project = python_project(hwnd)
+    if not environment_ready(project):
+        # Rather than failing at pip and making somebody read its output to
+        # find out the environment was never made. The Mac does the same for
+        # Run and Debug.
+        var made = create_environment(project)
+        if not made.startswith("Python environment ready"):
+            return made^
+    var said = install_packages(requirement, project)
+    _restart_server_for_python(hwnd, said)
+    _doc_at(hwnd)[].pane_mode = PANE_PYTHON
+    _touch(hwnd)
+    return said^
+
+
+def _restart_server_for_python(hwnd: Int, outcome: String) raises:
+    """Restart the language server after the environment changed.
+
+    A server started before a package existed does not know about it: it read
+    site-packages once, and `from numpy import ...` will keep being underlined
+    in red until something tells it otherwise. The Mac port does exactly this
+    and for exactly this reason.
+
+    Only on success, and only when a server is actually running -- restarting
+    one that failed to install anything would be a slow way to change nothing.
+
+    Args:
+        hwnd: The window.
+        outcome: What the install or the creation said.
+
+    Raises:
+        Never in practice.
+    """
+    if outcome.startswith("could not") or outcome.startswith("no Python"):
+        return
+    if not is_running():
+        return
+    try:
+        stop_server()
+        _ = start_server(hwnd, _lsp_exe(), _lsp_stdlib())
+    except:
+        pass
+
+
+def open_sample(hwnd: Int, which: Int) raises -> String:
+    """Open one of the shipped examples, as a project.
+
+    Which is the whole difference between this and opening a file. The tree
+    is re-rooted at the example's folder, so the sidebar shows what the
+    example is made of; every file in it opens as a tab, because an example
+    that is a program and a README is not explained by the program alone; and
+    `main.mojo` ends up on screen because that is the one somebody clicked to
+    see.
+
+    The root is set before any file is opened, deliberately. Build and Run
+    resolve their entry point against the project root, so opening the files
+    first would mean the first build after clicking an example compiled it
+    against the project that was open before.
+
+    In place, from wherever the installation keeps them; `ide/samples.mojo`
+    says why nothing is copied first.
+
+    Args:
+        hwnd: The window.
+        which: Its index in the menu.
+
+    Returns:
+        What was opened, or why it was not.
+
+    Raises:
+        If the window has no document.
+    """
+    var folder = sample_path(which)
+    if folder == "":
+        return String("no such example")
+
+    _ = set_root(folder)
+    var files = sample_files(which)
+    var opened = 0
+    # Backwards, so that the first one -- `main.mojo` -- is opened last and is
+    # therefore the tab left showing.
+    for i in range(len(files) - 1, -1, -1):
+        var said = open_path(hwnd, files[i])
+        if not said.startswith("cannot open"):
+            opened += 1
+    _touch(hwnd)
+    return (
+        String("opened ") + sample_name(which) + ": " + String(opened)
+        + (" file" if opened == 1 else " files") + " from " + folder
+    )
+
+
+def open_sample_named(hwnd: Int, name: String) raises -> String:
+    """Open a shipped example by name.
+
+    Args:
+        hwnd: The window.
+        name: The example's name, with or without `.mojo`.
+
+    Returns:
+        What was opened, or why it was not.
+
+    Raises:
+        If the window has no document.
+    """
+    # Through the same path the menu takes. Opening it here as a file would
+    # be a second, worse way to do the same thing -- and it would open the
+    # folder rather than the project.
+    var which = sample_index_named(name)
+    if which < 0:
+        return String("no example called ") + repr(name)
+    return open_sample(hwnd, which)
+
+
+def _lsp_exe() raises -> String:
+    """The language server, from the toolchain rather than from a spelling.
+
+    This used to be written out as a relative `bazel-bin` path in two places.
+    In a packaged installation there is no bazel-bin, so it resolved against
+    whatever directory the editor happened to be started in -- and the server
+    failed to start with a path naming the user's own project folder.
+
+    Returns:
+        The absolute path.
+
+    Raises:
+        If the toolchain cannot be read.
+    """
+    var named = String(env_or("WINMOJO_LSP", ""))
+    if named != "":
+        return absolute(named)
+    var found = component_path(String("language server"))
+    if found != "":
+        return found^
+    return absolute(
+        String("bazel-bin/KGEN/tools/mojo-lsp-server/mojo-lsp-server.exe")
+    )
+
+
+def _lsp_stdlib() raises -> String:
+    """The stdlib the server should read, or empty when there is none.
+
+    Returns:
+        The path, or empty for an installed toolchain, which has no stdlib
+        directory and finds `std` through its import path instead.
+
+    Raises:
+        If the toolchain cannot be read.
+    """
+    return _toolchain()[1]
+
+
+def entry_point(hwnd: Int) raises -> String:
+    """The file a build should compile.
+
+    The project's `main.mojo` when there is one, and the document on screen
+    otherwise. A project has one entry point and it is not "whichever file I
+    was last looking at": reading a project's README and pressing Run should
+    build the project, and clicking into a helper module should not quietly
+    change what Run means.
+
+    The fallback is what makes a loose file still work. Somebody who opened a
+    single `.mojo` from their desktop has no project and no `main.mojo`, and
+    for them the file on screen is the only sensible answer.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        The path to compile, or empty when there is nothing to compile.
+
+    Raises:
+        If the window has no document.
+    """
+    var root = project_root()
+    if root != "":
+        var main = root + chr(0x5C) + "main.mojo"
+        if _file_exists(main):
+            return main^
+    return document_path(hwnd)

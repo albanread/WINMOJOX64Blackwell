@@ -59,7 +59,12 @@ from ide.window import (
     prompt_package,
     prompt_replace,
     prompt_symbol,
+    open_sample_named,
     prompt_type,
+    python_create,
+    python_install,
+    python_project,
+    samples_report,
     type_unit,
     document_path,
     start_build,
@@ -304,6 +309,7 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             "debug [launch|wait|step|stop]    the debugger\n"
             "break [N|list|clear]             breakpoints\n"
             "toolchain [refresh|gaps|<part>]  which compiler this is\n"
+            "samples [<name>]                 the shipped examples; open one as a project\n"
             "python [create|install|clear]    this project's Python environment\n"
             "prompt [find|goto|symbol|package|open|type <t>|accept|cancel]\n"
             "                                 the line at the bottom to type into\n"
@@ -841,25 +847,6 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             return String("no such component ") + repr(String(rest).strip())
         return found^
 
-    if verb == "python":
-        var project = project_location(project_root(), document_path(hwnd))
-        if rest == "view":
-            return pane_python(hwnd)
-        if rest == "" or rest == "show":
-            return python_report(project)
-        if rest == "create" or rest == "repair":
-            return create_environment(project)
-        if rest == "clear":
-            clear_variables()
-            return String("python environment cleared from this process")
-        if rest == "install":
-            return install_packages(String(), project)
-        if rest.startswith("install "):
-            return install_packages(
-                String(String(rest[byte=8:]).strip()), project
-            )
-        return String("usage: python [show|create|install [what]|clear]")
-
     if verb == "tree":
         # `tree` lists it, `tree N` expands or collapses row N, `tree root
         # <path>` points it somewhere else.
@@ -1089,6 +1076,30 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         if rest.startswith("type "):
             return prompt_type(hwnd, String(rest[byte=5:]))
         return prompt_key(hwnd, rest)
+
+    # The shipped examples. `samples` lists them, `samples <name>` opens one,
+    # which is what the Examples menu does with a click.
+    if verb == "samples" or verb == "examples":
+        if rest == "" or rest == "show":
+            return samples_report()
+        return open_sample_named(hwnd, String(String(rest).strip()))
+
+    if verb == "python":
+        var project = python_project(hwnd)
+        if rest == "view":
+            return pane_python(hwnd)
+        if rest == "" or rest == "show":
+            return python_report(project)
+        if rest == "create" or rest == "repair":
+            return python_create(hwnd)
+        if rest == "clear":
+            clear_variables()
+            return String("python environment cleared from this process")
+        if rest == "install":
+            return python_install(hwnd, String(""))
+        if rest.startswith("install "):
+            return python_install(hwnd, String(String(rest[byte=8:]).strip()))
+        return String("usage: python [show|view|create|install [what]|clear]")
 
     if verb == "about":
         return about(hwnd)

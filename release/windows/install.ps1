@@ -123,6 +123,21 @@ if (Test-Path -LiteralPath $currentLink) {
 }
 New-Item -ItemType Junction -Path $currentLink -Target $target | Out-Null
 
+# And check it can actually be walked. A junction whose target exists can
+# still be untraversable -- inside a container whose %LOCALAPPDATA% is
+# redirected, this one resolved for Get-Item and failed for every path that
+# went through it, so the IDE found an installation with no examples in it
+# and said so. Better to find that out here, with the target still in hand,
+# than from an empty Examples menu later.
+if (-not (Test-Path -LiteralPath (Join-Path $currentLink 'bin\mojo.exe'))) {
+    Write-Host ""
+    Write-Host "warning: $currentLink was created but cannot be walked."
+    Write-Host "         The installation itself is fine -- use it directly at:"
+    Write-Host "           $target"
+    Write-Host "         Griddle finds a toolchain beside its own executable, so"
+    Write-Host "         $target\bin\griddle.exe works regardless."
+}
+
 # ---- and point it at itself ------------------------------------------------
 # Through the copy's own relocator, so this script does not need to know what
 # is in modular.cfg. Griddle does the same thing for itself at startup; doing
