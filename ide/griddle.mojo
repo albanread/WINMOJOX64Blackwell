@@ -39,6 +39,7 @@ from std.memory import alloc
 from ide.agent import agent_command
 from ide.chrome import Chrome, bring_up, draw, finish, release
 from ide.drop import register as register_drop, revoke as revoke_drop
+from ide.toolchain import adopt_installed_toolchain
 from ide.python_env import project_location
 from ide.tree import project_root
 from ide.pipeutf8 import file_starts_with_bom, without_bom
@@ -1448,6 +1449,18 @@ def main() raises:
         print("griddle:", ensure_linker())
     except err:
         print("griddle: toolchain not staged (", String(err), ")")
+
+    # Before anything is compiled: an installed copy that has been moved
+    # since it was packaged has a modular.cfg naming the packaging machine's
+    # directories, and the launchers that fix that are not what a person
+    # pinned to their taskbar. Silent when there is nothing to do, which is
+    # every start after the first and every start from a source tree.
+    try:
+        var adopted = adopt_installed_toolchain()
+        if adopted != "":
+            print("griddle:", adopted)
+    except err2:
+        print("griddle: could not adopt the toolchain (", String(err2), ")")
 
     # The editor's heartbeat, and it is not the language server's. It used to
     # be: the timer was created only when a server started, so a text file

@@ -305,6 +305,9 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             "break [N|list|clear]             breakpoints\n"
             "toolchain [refresh|gaps|<part>]  which compiler this is\n"
             "python [create|install|clear]    this project's Python environment\n"
+            "prompt [find|goto|symbol|package|open|type <t>|accept|cancel]\n"
+            "                                 the line at the bottom to type into\n"
+            "unit <n>                         one UTF-16 code unit, as WM_CHAR sends it\n"
             "about                            which build this is, and what it runs on\n"
             "run-script <path>                replay a file of these commands"
         )

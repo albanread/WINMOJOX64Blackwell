@@ -244,3 +244,9 @@ spikes/com/*.obj
 # Griddle writes where you left off into the project it opened. That is
 # one developer's window state, not a fact about the project.
 .griddle-session.json
+
+# Building an example from the IDE writes the binary beside its source.
+# The sources are the deliverable; what a build makes of them is not.
+examples/**/*.exe
+examples/**/*.lib
+examples/**/*.pdb

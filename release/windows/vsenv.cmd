@@ -28,8 +28,15 @@ set "VSWHERE=!PF32!\Microsoft Visual Studio\Installer\vswhere.exe"
 rem Ask the installer first: it knows every edition and side-by-side version,
 rem and -requires filters to installs that actually carry the x64 C++
 rem toolchain rather than, say, a C#-only one.
+rem
+rem Its stderr is discarded. On some installations this probe prints
+rem "'vswhere.exe' is not recognized" while still answering correctly, and a
+rem red line on every single command is a bad first impression of a release
+rem that is working. Nothing is hidden by it: if no toolchain is found by
+rem either this or the fallback below, the warning at the end of this file
+rem says so in full.
 if exist "!VSWHERE!" (
-    for /f "usebackq tokens=*" %%i in (`"!VSWHERE!" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+    for /f "usebackq tokens=*" %%i in (`"!VSWHERE!" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do (
         if exist "%%i\Common7\Tools\VsDevCmd.bat" set "VSDEVCMD=%%i\Common7\Tools\VsDevCmd.bat"
     )
 )
@@ -61,6 +68,18 @@ if not defined MOJO_VSDEVCMD (
     exit /b 0
 )
 
-call "%MOJO_VSDEVCMD%" -no_logo -arch=x64 -host_arch=x64 >nul
+rem Both streams discarded, and the outcome checked instead. VsDevCmd.bat
+rem runs vswhere itself and on this machine prints "'vswhere.exe' is not
+rem recognized" to stderr while going on to set the environment correctly --
+rem a red line on every command in a release that is working perfectly. What
+rem matters is whether it worked, and VSCMD_VER answers that: the script sets
+rem it, so its absence afterwards means the environment was not set up and is
+rem worth saying out loud.
+call "%MOJO_VSDEVCMD%" -no_logo -arch=x64 -host_arch=x64 >nul 2>nul
 set "MOJO_VSDEVCMD="
+if not defined VSCMD_VER (
+    echo warning: the Visual Studio environment script did not complete. 1>&2
+    echo          "mojo build" may fail to link. Run from a Developer 1>&2
+    echo          Command Prompt if it does. 1>&2
+)
 exit /b 0

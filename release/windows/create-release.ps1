@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$Destination = 'C:\projects\mojo_release',
-    [string]$OutputBase
+    [string]$OutputBase,
+    [switch]$NoArchive
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,6 +53,18 @@ if ($destinationPath -eq [System.IO.Path]::GetPathRoot($destinationPath)) {
 
 $artifacts = [ordered]@{
     'bin\mojo.exe' = 'bazel-bin\KGEN\tools\mojo\mojo.exe'
+    # The IDE. A release that ships a compiler and no editor is a toolchain;
+    # shipping both is the product. Built by tools/build-griddle.ps1, which
+    # this script does not run -- packaging copies what is there and says so
+    # when it is not, rather than quietly building something different from
+    # what was tested.
+    'bin\griddle.exe' = 'build\griddle.exe'
+    # The language server. Without it the IDE has no diagnostics, no
+    # completion, no hover, no go-to-definition and no outline -- an editor
+    # with syntax colouring. It was missing until Griddle's own toolchain
+    # view, run from a packaged copy, reported it as the one component that
+    # was not there.
+    'bin\mojo-lsp-server.exe' = 'bazel-bin\KGEN\tools\mojo-lsp-server\mojo-lsp-server.exe'
     'bin\mojo-lldb.exe' = 'bazel-bin\external\+llvm_configure+llvm-project\lldb\lldb.exe'
     'bin\lld.exe' = 'bazel-bin\external\+llvm_configure+llvm-project\lld\lld.exe'
     'bin\lld-link.exe' = 'bazel-bin\external\+llvm_configure+llvm-project\lld\lld.exe'
@@ -63,6 +76,14 @@ $artifacts = [ordered]@{
     'bin\llvm-symbolizer.exe' = 'bazel-bin\external\+llvm_configure+llvm-project\llvm\llvm-symbolizer.exe'
     'bin\lldb24.0.0git.dll' = 'bazel-bin\external\+llvm_configure+llvm-project\lldb\lldb24.0.0git.dll'
     'bin\modular-crashpad-handler.exe' = 'bazel-bin\external\+http_archive+crashpad\modular-crashpad-handler.exe'
+    # The runtime DLLs, beside the executables as well as in lib. Windows
+    # searches an executable's own directory before PATH, so bin\griddle.exe
+    # launched directly -- pinned to a taskbar, double-clicked, which is how
+    # anybody actually starts an editor -- could not load these and exited
+    # before it drew anything. Three megabytes to make a direct launch work.
+    'bin\KGENCompilerRTShared.dll' = 'bazel-bin\KGEN\KGENCompilerRTShared.dll'
+    'bin\AsyncRTRuntimeGlobals.dll' = 'bazel-bin\AsyncRT\AsyncRTRuntimeGlobals.dll'
+    'bin\MSupportGlobals.dll' = 'bazel-bin\Support\MSupportGlobals.dll'
     'lib\MojoLLDB.dll' = 'bazel-bin\KGEN\MojoLLDB.dll'
     'lib\MojoLLDB.lib' = 'bazel-bin\KGEN\MojoLLDB.lib'
     'lib\mojo-repl-entry-point.exe' = 'bazel-bin\KGEN\tools\mojo-repl-entry-point\mojo-repl-entry-point.exe'
@@ -86,6 +107,17 @@ $artifacts = [ordered]@{
     'LICENSE' = 'LICENSE'
 }
 
+# The curated Windows examples, which the IDE's Samples menu reads. Every one
+# of these builds with the toolchain in this release; three of them
+# (the adreno_* trio) target Qualcomm hardware and will build here and refuse
+# to run on an NVIDIA machine, which is a fact about the example rather than
+# about the release, and the menu says so.
+$exampleSources = Get-ChildItem -LiteralPath (Join-Path $repository 'examples\win32') -Filter *.mojo -File |
+    Sort-Object Name
+foreach ($example in $exampleSources) {
+    $artifacts['examples\win32\' + $example.Name] = 'examples\win32\' + $example.Name
+}
+
 $resolvedArtifacts = [ordered]@{}
 foreach ($entry in $artifacts.GetEnumerator()) {
     $source = $entry.Value
@@ -100,6 +132,14 @@ foreach ($entry in $artifacts.GetEnumerator()) {
 
 $templateFiles = @(
     'README.md',
+    # The template and the relocator. Both have to be inside the package: the
+    # config is rewritten from the template by whichever launcher runs first
+    # after the package is moved, so a copy that carries neither is a copy
+    # that can only work in the directory it was packaged into.
+    'modular.cfg.in',
+    'paths.cmd',
+    'install.ps1',
+    'griddle.cmd',
     'mojo.cmd',
     'vsenv.cmd',
     'mojo-shell.cmd',
@@ -142,6 +182,11 @@ if (Test-Path -LiteralPath $licenseDirectory -PathType Container) {
 $config = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'modular.cfg.in') -Raw).Replace('@RELEASE_ROOT@', $destinationPath)
 [System.IO.File]::WriteAllText((Join-Path $destinationPath 'modular.cfg'), $config, [System.Text.UTF8Encoding]::new($false))
 
+# The root this config was written for. paths.cmd compares it against where
+# the package actually is and rewrites modular.cfg when they differ, so a
+# release used where it was built never pays for the check.
+[System.IO.File]::WriteAllText((Join-Path $destinationPath 'modular.cfg.root'), $destinationPath, [System.Text.UTF8Encoding]::new($false))
+
 $revision = (git -C $repository rev-parse --short HEAD).Trim()
 [System.IO.File]::WriteAllText((Join-Path $destinationPath 'BUILD-REVISION.txt'), "$revision`r`n", [System.Text.UTF8Encoding]::new($false))
 
@@ -163,3 +208,23 @@ $hashLines = Get-ChildItem -LiteralPath $destinationPath -File -Recurse |
 
 $totalBytes = (Get-ChildItem -LiteralPath $destinationPath -File -Recurse | Measure-Object -Property Length -Sum).Sum
 Write-Host ('Release created at {0} ({1:N1} MiB).' -f $destinationPath, ($totalBytes / 1MB))
+
+if (-not $NoArchive) {
+    # The zip is the deliverable. Everything above assembles a directory; this
+    # is what somebody downloads, and it is deliberately a plain archive
+    # rather than a self-extracting executable -- an unsigned .exe from the
+    # internet is a thing people are right to be suspicious of, and the
+    # package relocates itself wherever it lands, so there is nothing for an
+    # installer to do that Explorer's "Extract All" does not.
+    $archivePath = $destinationPath + '-' + $revision + '.zip'
+    if (Test-Path -LiteralPath $archivePath) { Remove-Item -LiteralPath $archivePath -Force }
+    Write-Host 'Compressing...'
+    # -CompressionLevel Optimal on 670 MiB takes a while; Fastest is within a
+    # few per cent on binaries that are mostly already-compressed sections.
+    Compress-Archive -Path (Join-Path $destinationPath '*') -DestinationPath $archivePath -CompressionLevel Fastest
+    $zipBytes = (Get-Item -LiteralPath $archivePath).Length
+    Write-Host ('Archive: {0} ({1:N1} MiB).' -f $archivePath, ($zipBytes / 1MB))
+    $zipHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    [System.IO.File]::WriteAllText($archivePath + '.sha256', "$zipHash  $(Split-Path -Leaf $archivePath)`r`n", [System.Text.UTF8Encoding]::new($false))
+    Write-Host "sha256: $zipHash"
+}

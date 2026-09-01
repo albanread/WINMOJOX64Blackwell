@@ -11,13 +11,17 @@ toolchain", and it answers with paths it has actually stat'd.
 
 THE LOOKUP THE SPRINT ASKS FOR, AND THE ONE THAT WORKS HERE. The sprint
 specifies three candidates in order -- `WINMOJO_ROOT`, then
-`%LOCALAPPDATA%\\WinMojo\\current`, then beside the binary -- each accepted
-only if it really contains `bin\\winmojo.exe`. That order is implemented
-first and unchanged. But none of those three exists on this machine and none
-ever has: there is no `%LOCALAPPDATA%\\WinMojo`, no `WINMOJO_ROOT` in the
-environment, no `current` junction anywhere in the tree, and no `winmojo.exe`
-on the disk at all. A lookup that stopped there would return nothing on the
-only machine that runs it, which is a lookup nobody can test.
+`%LOCALAPPDATA%\\WinMojo\\current`, then beside the binary. That order is
+implemented first and unchanged, and it now finds something: packaging
+produces exactly this layout, so an installed Griddle sitting in `bin`
+recognises the toolchain it was shipped with.
+
+The sentinel is `bin\\mojo.exe`, which is the compiler a release actually
+contains. The sprint called it `bin\\winmojo.exe`, a name that exists
+nowhere on disk and never did, and while this module used it the installed
+branch could not match: a packaged editor walked straight past its own
+toolchain and picked up whatever source tree the current directory happened
+to be sitting in. A sentinel nobody ships is a lookup that always fails.
 
 So there is a fourth candidate, and it is the one that actually resolves
 today: the from-source Bazel tree, identified by
@@ -50,7 +54,7 @@ from std.sys._globals import named_global
 from std.sys._winkb import winkb_constant
 from std.time import perf_counter_ns
 
-from ide.pipes import Child, kill, read_some, spawn
+from ide.pipes import Child, kill, read_some, set_env, spawn
 from ide.win32 import absolute, env_or, win32
 
 
@@ -83,7 +87,7 @@ struct Component(ImplicitlyCopyable, Movable):
 # this file is under it; a directory that merely exists proves nothing, and
 # accepting one would move the failure from "no toolchain" to "the compiler
 # would not start", which is a much longer walk back to the truth.
-comptime INSTALLED_SENTINEL = "bin/winmojo.exe"
+comptime INSTALLED_SENTINEL = "bin/mojo.exe"
 
 # The from-source sentinel: the compiler Bazel builds, under the junction.
 comptime SOURCE_SENTINEL = "bazel-bin/KGEN/tools/mojo/mojo.exe"
@@ -383,12 +387,21 @@ def _accept(var root: String, var source: String, layout: Int) raises:
 def _installed_components(root: String, mut rows: List[Component]) raises:
     """The components of a packaged toolchain.
 
-    UNVERIFIED, and deliberately so. No such directory has ever existed on
-    this machine, so the only path here with any evidence behind it is the
-    sentinel the sprint names: `bin\\winmojo.exe`. The rest are where the
-    binaries would sit if they sat beside it. Choosing this layout adds a gap
-    saying exactly that, so a pane drawn from an installed root never claims
-    more confidence than the sprint text it came from.
+    These were guesses when this was written, and they are not any more.
+    `release/windows/create-release.ps1` builds this layout, so every path
+    below is one that packaging actually produces and that has been walked on
+    disk. The one that mattered most was the sentinel: nothing ships as
+    `winmojo.exe` -- the sprint invented the name -- so this branch had never
+    once matched, and a packaged Griddle walked past its own toolchain to find
+    whatever source tree the current directory happened to be sitting in.
+
+    Two differences from the source tree are worth naming, because they are
+    what makes an installed toolchain a different shape rather than the same
+    shape somewhere else. The debugger is `mojo-lldb.exe`, renamed by
+    packaging so it cannot be confused with a system LLDB on PATH. And there
+    is no stdlib directory at all: a release ships `lib/std.mojoc`, a compiled
+    package that the compiler finds through `import_path` in `modular.cfg`,
+    so a build from an installed toolchain passes no `-I` for it and must not.
     """
     _add(rows, String("compiler"), _under(root, INSTALLED_SENTINEL), False)
     _add(
@@ -398,13 +411,14 @@ def _installed_components(root: String, mut rows: List[Component]) raises:
         False,
     )
     _add(rows, String("debug adapter"), _under(root, "bin/lldb-dap.exe"), False)
-    _add(rows, String("debugger"), _under(root, "bin/lldb.exe"), False)
+    _add(rows, String("debugger"), _under(root, "bin/mojo-lldb.exe"), False)
     _add(
-        rows, String("debugger plugin"), _under(root, "bin/MojoLLDB.dll"), False
+        rows, String("debugger plugin"), _under(root, "lib/MojoLLDB.dll"), False
     )
     _add(rows, String("linker"), _under(root, "bin/lld.exe"), False)
     _add(rows, String("runtime bin"), _under(root, "bin"), True)
-    _add(rows, String("stdlib"), _under(root, "lib/mojo/stdlib"), True)
+    _add(rows, String("runtime lib"), _under(root, "lib"), True)
+    _add(rows, String("import path"), _under(root, "lib/std.mojoc"), False)
     _add(rows, String("staged linker"), _staged_linker(), False)
     _add(rows, String("win32 metadata"), _metadata_path(), False)
 
@@ -929,19 +943,8 @@ def toolchain_gaps() raises -> List[String]:
                 "no toolchain found: no candidate had bin"
             )
             + chr(0x5C)
-            + "winmojo.exe under it and no bazel-bin tree was above the"
+            + "mojo.exe under it and no bazel-bin tree was above the"
             + " executable or in the current directory"
-        )
-    if g_layout()[] == LAYOUT_INSTALLED:
-        gaps.append(
-            String(
-                "the installed layout has never existed on this machine; only"
-                " bin"
-            )
-            + chr(0x5C)
-            + "winmojo.exe is named by the sprint, and the other paths under"
-            + " this root are where those files would be, not where anyone has"
-            + " seen them"
         )
 
     for i in range(component_count()):
@@ -1037,3 +1040,123 @@ def toolchain_report() raises -> String:
     for gap in gaps:
         out += "  gap " + gap + "\n"
     return out^
+
+
+# ===----------------------------------------------------------------------===#
+# Making an installed copy point at itself
+# ===----------------------------------------------------------------------===#
+
+
+def adopt_installed_toolchain() raises -> String:
+    """Point this installation's configuration and environment at itself.
+
+    Every path in a release's `modular.cfg` is absolute and was written for
+    the directory the release was packaged in. `paths.cmd` rewrites them, and
+    every launcher in the package calls it -- but nobody pins a batch file to
+    their taskbar. Launched as `bin\\griddle.exe`, the editor spawned a compiler
+    that went looking for a directory on the packaging machine, and every
+    build failed with "unable to locate module 'std'", which reads like a
+    broken installation rather than a moved one.
+
+    So the editor does it too, from the root its own lookup found. Three
+    things, all of them things a launcher would otherwise have had to do:
+    the configuration is rewritten if this copy has moved, `MODULAR_HOME` is
+    set so a child compiler finds that configuration at all, and `bin` and
+    `lib` go on PATH so a built program finds the runtime DLLs beside it.
+
+    Does nothing for a source tree, which has no `modular.cfg` and needs none.
+
+    Returns:
+        What it did, for the startup log, or why there was nothing to do.
+
+    Raises:
+        Never in practice; a failure to write is reported, not raised.
+    """
+    if layout_name() != "installed":
+        return String("")
+    var root = toolchain_root()
+    if root == "":
+        return String("")
+
+    # The environment first: it costs nothing and is right even when the
+    # configuration is already current.
+    try:
+        set_env(String("MODULAR_HOME"), root)
+    except:
+        pass
+    try:
+        var path = String(env_or("PATH", ""))
+        var bin = _under(root, "bin")
+        var lib = _under(root, "lib")
+        set_env(String("PATH"), bin + ";" + lib + ";" + path)
+    except:
+        pass
+
+    var stamp = _under(root, "modular.cfg.root")
+    var recorded = _read_text(stamp)
+    if _same_path(recorded, root):
+        return String("")
+
+    var template = _read_text(_under(root, "modular.cfg.in"))
+    if template == "":
+        # No template, so nothing can be rewritten. Said rather than silently
+        # skipped: a package missing its template is one that cannot be moved,
+        # and somebody should find that out here rather than from a build.
+        return String("this installation has no modular.cfg.in; it cannot be moved")
+
+    var written = _replaced(template, String("@RELEASE_ROOT@"), root)
+    if not _write_text(_under(root, "modular.cfg"), written):
+        return String("could not rewrite modular.cfg in ") + root
+    _ = _write_text(stamp, root)
+    return String("pointed the toolchain at ") + root
+
+
+def _read_text(path: String) -> String:
+    """A whole file, or empty when it cannot be read."""
+    try:
+        var handle = open(path, "r")
+        var text = handle.read()
+        # Closed by name: `with` does not release it here, and this file is
+        # about to be written. See docs/mojo-traps.md.
+        handle.close()
+        return String(text.strip())
+    except:
+        return String("")
+
+
+def _write_text(path: String, text: String) -> Bool:
+    """Replace a file's contents. True when it worked."""
+    try:
+        var handle = open(path, "w")
+        handle.write(text)
+        handle.close()
+        return True
+    except:
+        return False
+
+
+def _same_path(a: String, b: String) -> Bool:
+    """Whether two paths name the same place, ignoring case.
+
+    Windows paths are case-insensitive, and a shortcut that spells the drive
+    letter in lower case would otherwise rewrite the configuration on every
+    single start.
+    """
+    return a.lower() == b.lower()
+
+
+def _replaced(text: String, needle: String, value: String) -> String:
+    """Every occurrence of `needle` replaced by `value`."""
+    var out = String("")
+    var rest = text
+    while True:
+        var at = rest.find(needle)
+        if at < 0:
+            out += rest
+            return out^
+        out += rest[byte=:at] + value
+        # Into a fresh String first, then moved: assigning a slice of `rest`
+        # back over `rest` makes the slice borrow the storage it is about to
+        # overwrite. `ide/window.mojo` hits the same wall in `start_server`.
+        var tail = String(rest[byte = at + needle.byte_length() :])
+        rest = tail^

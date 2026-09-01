@@ -2415,9 +2415,13 @@ def _toolchain() raises -> Tuple[String, String]:
     var stdlib = String(env_or("WINMOJO_STDLIB", ""))
     if stdlib.byte_length() == 0:
         stdlib = component_path(String("stdlib"))
-        if stdlib.byte_length() == 0:
-            stdlib = String("mojo/stdlib")
-    return (absolute(exe), absolute(stdlib))
+    # Empty is a real answer, not a failure to find one. An installed
+    # toolchain has no stdlib directory: it ships `lib/std.mojoc`, a compiled
+    # package the compiler finds through `import_path` in modular.cfg, and a
+    # build from one passes no `-I` for the standard library at all. Falling
+    # back to a source-tree path here would hand the compiler a directory that
+    # is not there.
+    return (absolute(exe), absolute(stdlib) if stdlib != "" else String(""))
 
 
 def run_file(hwnd: Int) raises -> String:
@@ -2444,7 +2448,7 @@ def run_file(hwnd: Int) raises -> String:
             return wrote
     var tools = _toolchain()
     return start_build(
-        '"' + tools[0] + '" run -I "' + tools[1] + '" -I .'
+        '"' + tools[0] + '" run' + _stdlib_flag(tools[1]) + ' -I .'
         + _extra_flags() + ' "' + path + '"'
     )
 
@@ -2475,8 +2479,9 @@ def build_file(hwnd: Int) raises -> String:
     out += ".exe"
     var tools = _toolchain()
     return start_build(
-        '"' + tools[0] + '" build --no-optimization -I "' + tools[1]
-        + '" -I .' + _extra_flags() + ' -o "' + out + '" "' + path + '"'
+        '"' + tools[0] + '" build --no-optimization'
+        + _stdlib_flag(tools[1]) + ' -I .' + _extra_flags()
+        + ' -o "' + out + '" "' + path + '"'
     )
 
 
@@ -3469,9 +3474,9 @@ def debug_file(hwnd: Int) raises -> String:
     # into locals that are simply absent.
     g_debug_pending()[] = 1
     return start_build(
-        '"' + tools[0] + '" build --no-optimization --debug-level full -I "'
-        + tools[1] + '" -I .' + _extra_flags() + ' -o "' + out + '" "'
-        + path + '"'
+        '"' + tools[0] + '" build --no-optimization --debug-level full'
+        + _stdlib_flag(tools[1]) + ' -I .' + _extra_flags() + ' -o "' + out
+        + '" "' + path + '"'
     ) + " (debug build; the debugger starts when it finishes)"
 
 
@@ -4849,3 +4854,15 @@ def _is_directory(path: String) raises -> Bool:
     return _file_exists(path + "\\max\\__init__.mojo") or _file_exists(
         path + "\\max\\gpu\\__init__.mojo"
     )
+
+
+def _stdlib_flag(stdlib: String) -> String:
+    """`-I <stdlib>`, or nothing when there is no stdlib directory.
+
+    Args:
+        stdlib: The path, possibly empty.
+
+    Returns:
+        The flag with a leading space, or an empty string.
+    """
+    return String(' -I "') + stdlib + '"' if stdlib != "" else String("")
