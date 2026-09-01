@@ -76,6 +76,7 @@ from ide.toolchain import (
     component_path,
     gpu_at,
     gpu_count,
+    layout_name,
     mojo_version,
     toolchain_root,
 )
@@ -4850,14 +4851,59 @@ def _extra_flags() raises -> String:
     Returns:
         The flags, with a leading space, or empty.
     """
+    # An installed release needs nothing. Its modular.cfg already names the
+    # import path holding max.mojoc and the shared libraries that include
+    # nvptxrt, which is why all twenty example projects build there with no
+    # flag but `-I .` -- measured, by tools/check-packaged.ps1. Adding a
+    # path here would at best duplicate that and at worst point the
+    # installed compiler at a machine it has never seen.
+    if layout_name() == "installed":
+        return String("")
+
+    # A source tree, then. Resolved against the CHECKOUT rather than the
+    # working directory: these are facts about where the toolchain is, and
+    # the shell's idea of "here" is not that. Asking the cwd meant an
+    # editor started from a checkout lent its paths to whatever it built,
+    # and an editor started from anywhere else quietly supplied nothing --
+    # so the same program built or failed to link depending on which
+    # directory somebody had launched the IDE from.
+    var root = toolchain_root()
+    if root == "":
+        return String("")
+    if _basename(root).lower() == "bazel-bin":
+        root = _parent(root)
+
     var out = String("")
-    var max_package = absolute(String("max/mojo"))
+    var max_package = _under(root, "max") + chr(0x5C) + "mojo"
     if _is_directory(max_package):
         out += ' -I "' + max_package + '"'
-    var runtime = absolute(String("bazel-bin/nvptx/runtime/nvptxrt.lib"))
+    var runtime = (
+        _under(root, "bazel-bin") + chr(0x5C) + "nvptx" + chr(0x5C)
+        + "runtime" + chr(0x5C) + "nvptxrt.lib"
+    )
     if _file_exists(runtime):
         out += ' -Xlinker "' + runtime + '"'
     return out^
+
+
+def _under(directory: String, name: String) -> String:
+    """A path inside a directory, with exactly one separator between."""
+    var sep = chr(0x5C)
+    if directory.endswith(sep):
+        return directory + name
+    return directory + sep + name
+
+
+def _basename(path: String) -> String:
+    """The last component of a path."""
+    var cut = path.rfind(chr(0x5C))
+    return String(path[byte=cut + 1 :]) if cut >= 0 else path
+
+
+def _parent(path: String) -> String:
+    """Everything above the last component, or the path when there is none."""
+    var cut = path.rfind(chr(0x5C))
+    return String(path[byte=:cut]) if cut > 0 else path
 
 
 def _file_exists(path: String) raises -> Bool:
