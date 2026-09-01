@@ -1,55 +1,55 @@
 # A window, cleared and presented through Direct3D 11, from Mojo on Windows
-# ARM64. Struct layouts are checked against the Win32 metadata by the
-# compiler; COM vtable slots are queries against the same metadata.
+# ARM64. The smallest of the Win32 examples: one window, one swap chain, one
+# colour a frame.
+#
+# The window, its class, its procedure and its message loop are NOT here any
+# more. They come from std.windows.gui, which is where the ninth copy of
+# WNDCLASSEXW went to die. What is left in this file is Direct3D and nothing
+# else -- which is what the example was always supposed to be about.
+#
+# Nothing below is a hand-written number. Struct layouts, field offsets, the
+# back buffer's interface IID, every COM vtable slot and every DXGI enumerator
+# are queries against the Win32 metadata, so a wrong one is a compile error
+# naming the source line rather than a black window at run time.
 #
 # Origin rules, learned the hard way (see structptr.mojo):
-#   - variadic calls take Pointer(to=local) with its TRUE origin, no cast;
-#   - declared COM signatures spell Mojo-owned pointers over AnyOrigin and
-#     call sites cast to AnyOrigin, which keeps the aliasing;
+#   - a fully declared signature spells Mojo-owned pointers over AnyOrigin,
+#     and the call site casts to AnyOrigin, which keeps the aliasing;
 #   - Untracked is only for pointers Windows hands us.
+# The third rule -- that a VARIADIC call takes Pointer(to=local) with its true
+# origin and no cast -- no longer applies anywhere in this file, because there
+# are no variadic calls left. win32[] gives every entry point a real signature,
+# which is the better trade: an under-declared variadic call compiles and then
+# corrupts itself, and this one cannot be spelled wrong.
 
-from std.ffi import c_int, OwnedDLHandle
+from std.ffi import c_int
 from std.memory import Pointer, OpaquePointer
 from std.sys.info import size_of
-from std.sys._winkb import winkb_struct_size
-from std.sys._com import com_method_of
-
-
-# Big structs are not register-passable. Claiming otherwise does not fail to
-# compile -- it silently writes fields to the wrong places.
-@fieldwise_init
-struct WNDCLASSEXW(Defaultable, Copyable, Movable):
-    var cbSize: UInt32
-    var style: UInt32
-    var lpfnWndProc: Int
-    var cbClsExtra: Int32
-    var cbWndExtra: Int32
-    var hInstance: Int
-    var hIcon: Int
-    var hCursor: Int
-    var hbrBackground: Int
-    var lpszMenuName: Int
-    var lpszClassName: Int
-    var hIconSm: Int
-
-    def __init__(out self):
-        self.cbSize = 0
-        self.style = 0
-        self.lpfnWndProc = 0
-        self.cbClsExtra = 0
-        self.cbWndExtra = 0
-        self.hInstance = 0
-        self.hIcon = 0
-        self.hCursor = 0
-        self.hbrBackground = 0
-        self.lpszMenuName = 0
-        self.lpszClassName = 0
-        self.hIconSm = 0
+from std.sys._com import com_method_of, _guid_bytes
+from std.sys._winkb import (
+    winkb_constant,
+    winkb_field_offset,
+    winkb_interface_iid,
+    winkb_struct_size,
+)
+from std.windows.gui import (
+    Window,
+    WindowClass,
+    default_handler,
+    pump,
+    quit,
+    win32,
+)
 
 
 # DXGI_SWAP_CHAIN_DESC flattened: the nested DXGI_MODE_DESC, DXGI_RATIONAL and
-# DXGI_SAMPLE_DESC written out as fields. Natural alignment puts OutputWindow
-# at 48, as Windows expects; the comptime assert below holds it to that.
+# DXGI_SAMPLE_DESC written out as fields. This one stays local. It is the
+# subject of the example, and a Direct3D structure sitting in a module about
+# windows and message loops would make that module worse, not this file
+# shorter.
+#
+# Big structs are not register-passable. Claiming otherwise does not fail to
+# compile -- it silently writes fields to the wrong places.
 @fieldwise_init
 struct DXGI_SWAP_CHAIN_DESC(Defaultable, Copyable, Movable):
     var Width: UInt32
@@ -86,184 +86,118 @@ struct DXGI_SWAP_CHAIN_DESC(Defaultable, Copyable, Movable):
         self.Flags = 0
 
 
-@fieldwise_init
-struct MSG(Defaultable, Copyable, Movable):
-    var hwnd: Int
-    var message: UInt32
-    var _pad: UInt32
-    var wParam: Int
-    var lParam: Int
-    var time: UInt32
-    var pt_x: Int32
-    var pt_y: Int32
+@export("d3dwindow_wndproc")
+def d3dwindow_wndproc(
+    hwnd: Int, message: UInt32, wparam: Int, lparam: Int
+) abi("C") -> Int:
+    """Stop when the window goes away; let Windows have the rest.
 
-    def __init__(out self):
-        self.hwnd = 0
-        self.message = 0
-        self._pad = 0
-        self.wParam = 0
-        self.lParam = 0
-        self.time = 0
-        self.pt_x = 0
-        self.pt_y = 0
+    The version before this one named DefWindowProcW itself as the class
+    procedure, so closing the window destroyed it and the loop carried on
+    presenting to a handle that no longer existed. Four lines of Mojo fix
+    that, and they have to live here: what a program does with a message is
+    the program, not the library.
 
-
-def wide(s: StaticString) -> List[UInt16]:
-    """A NUL-terminated UTF-16 buffer for the W-suffixed entry points."""
-    var out = List[UInt16]()
-    for byte in s.as_bytes():
-        out.append(UInt16(Int(byte)))
-    out.append(0)
-    return out^
-
-
-def hex_nibble(c: UInt8) -> Int:
-    if c >= UInt8(ord("0")) and c <= UInt8(ord("9")):
-        return Int(c) - ord("0")
-    if c >= UInt8(ord("a")) and c <= UInt8(ord("f")):
-        return Int(c) - ord("a") + 10
-    return Int(c) - ord("A") + 10
-
-
-def guid_bytes(text: StaticString) -> List[UInt8]:
-    """The 16 bytes COM expects for a textual GUID.
-
-    Not text order: the first three groups are little-endian integers, the
-    last eight bytes literal. Wrong order yields E_NOINTERFACE, which looks
-    like an unsupported interface rather than a mangled identifier.
+    Never raises. Unwinding through a Windows stack frame is undefined
+    behaviour, so every failure is swallowed here.
     """
-    var digits = List[UInt8]()
-    for byte in text.as_bytes():
-        if byte != UInt8(ord("-")):
-            digits.append(byte)
-
-    var raw = List[UInt8]()
-    for i in range(16):
-        raw.append(
-            UInt8(hex_nibble(digits[i * 2]) * 16 + hex_nibble(digits[i * 2 + 1]))
-        )
-
-    var out = List[UInt8]()
-    out.append(raw[3])
-    out.append(raw[2])
-    out.append(raw[1])
-    out.append(raw[0])
-    out.append(raw[5])
-    out.append(raw[4])
-    out.append(raw[7])
-    out.append(raw[6])
-    for i in range(8, 16):
-        out.append(raw[i])
-    return out^
+    try:
+        if message == UInt32(winkb_constant["WM_DESTROY"]()):
+            quit(0)
+            return 0
+        return default_handler(hwnd, message, wparam, lparam)
+    except:
+        return 0
 
 
 def main() raises:
-    # Layouts checked against Windows itself, by the compiler.
-    comptime assert (
-        size_of[WNDCLASSEXW]() == winkb_struct_size["WNDCLASSEXW"]()
-    ), "WNDCLASSEXW does not match Windows"
+    # The one layout this file still declares, checked against Windows itself
+    # by the compiler. WNDCLASSEXW and MSG used to be checked here too; they
+    # are checked in std.windows.gui now, once, for every example.
     comptime assert (
         size_of[DXGI_SWAP_CHAIN_DESC]()
         == winkb_struct_size["DXGI_SWAP_CHAIN_DESC"]()
     ), "DXGI_SWAP_CHAIN_DESC does not match Windows"
+    # A size assert does not prove a field is in the right PLACE: swap two
+    # equally sized fields and the size is unchanged. OutputWindow is the one
+    # that matters -- an HWND read from the wrong offset is a swap chain
+    # bound to nothing, and it fails silently.
     comptime assert (
-        size_of[MSG]() == winkb_struct_size["MSG"]()
-    ), "MSG does not match Windows"
-
-    var user32 = OwnedDLHandle("user32.dll")
-    var kernel32 = OwnedDLHandle("kernel32.dll")
-    var d3d11 = OwnedDLHandle("d3d11.dll")
-
-    var GetModuleHandleW = kernel32.get_function[Int]("GetModuleHandleW")
-    var GetLastError = kernel32.get_function[UInt32]("GetLastError")
-    var Sleep = kernel32.get_function[NoneType]("Sleep")
-    var RegisterClassExW = user32.get_function[UInt16]("RegisterClassExW")
-    var CreateWindowExW = user32.get_function[Int]("CreateWindowExW")
-    var ShowWindow = user32.get_function[c_int]("ShowWindow")
-    var PeekMessageW = user32.get_function[c_int]("PeekMessageW")
-    var DispatchMessageW = user32.get_function[Int]("DispatchMessageW")
-    var DestroyWindow = user32.get_function[c_int]("DestroyWindow")
-    var create_device = d3d11.get_function[c_int](
-        "D3D11CreateDeviceAndSwapChain"
-    )
-
-    var def_proc = user32.get_symbol[NoneType]("DefWindowProcW")
-    if not def_proc:
-        raise Error("DefWindowProcW not found")
-
-    var hInstance = GetModuleHandleW(Int(0))
-    var class_name = wide("MojoD3DWindow")
-    var title = wide("Mojo + Direct3D 11 on Windows ARM64")
+        winkb_field_offset["DXGI_SWAP_CHAIN_DESC", "OutputWindow"]() == 48
+    ), "DXGI_SWAP_CHAIN_DESC.OutputWindow moved; re-flatten the struct"
 
     # -- the window ---------------------------------------------------------
-    var wc = WNDCLASSEXW()
-    wc.cbSize = UInt32(size_of[WNDCLASSEXW]())
-    wc.style = 0x0003  # CS_HREDRAW | CS_VREDRAW
-    wc.lpfnWndProc = Int(def_proc.value())
-    wc.hInstance = hInstance
-    wc.lpszClassName = Int(class_name.unsafe_ptr())
-
-    # True origin, no cast: the variadic call infers the pointer's real
-    # origin, so the checker knows the callee reads wc and keeps it alive and
-    # in memory. This is the idiom the stdlib uses at every libc boundary.
-    var atom = RegisterClassExW(Pointer(to=wc))
-    if atom == 0:
-        raise Error(
-            "RegisterClassExW failed, GetLastError = " + String(GetLastError())
-        )
-
-    var hwnd = CreateWindowExW(
-        UInt32(0),
-        class_name.unsafe_ptr(),
-        title.unsafe_ptr(),
-        UInt32(0x00CF0000),  # WS_OVERLAPPEDWINDOW
-        c_int(120),
-        c_int(120),
-        c_int(800),
-        c_int(600),
-        Int(0),
-        Int(0),
-        hInstance,
-        Int(0),
-    )
-    if hwnd == 0:
-        raise Error("CreateWindowExW failed")
-    _ = ShowWindow(hwnd, c_int(5))  # SW_SHOW
-    print("window    ->", hwnd, "(class atom", String(atom) + ")")
+    # Three lines where there were forty. WindowClass fills in cbSize, the
+    # redraw-on-resize style, the module handle and an arrow cursor; Window
+    # converts the title through the real UTF-16 conversion rather than the
+    # ASCII-only wide() this file used to carry.
+    var klass = WindowClass("MojoD3DWindow", d3dwindow_wndproc)
+    var window = Window(klass, "Mojo + Direct3D 11 on Windows ARM64", 800, 600)
+    window.show()
+    print("window    ->", window.handle, "(class atom", String(klass.atom) + ")")
 
     # -- the device and swap chain ------------------------------------------
+    # The buffer is sized from the CLIENT rectangle, not from the 800x600
+    # asked for above: that number is the outer size, borders and title bar
+    # included, and it is not the area anything is drawn into. Getting this
+    # wrong costs nothing on a solid clear and is a stretched, soft image the
+    # moment there is a texture.
+    var client = window.client_size()
     var desc = DXGI_SWAP_CHAIN_DESC()
-    desc.Width = 800
-    desc.Height = 600
+    desc.Width = UInt32(client.width())
+    desc.Height = UInt32(client.height())
     desc.RefreshRateNumerator = 60
     desc.RefreshRateDenominator = 1
-    desc.Format = 87  # DXGI_FORMAT_B8G8R8A8_UNORM
+    desc.Format = UInt32(winkb_constant["DXGI_FORMAT_B8G8R8A8_UNORM"]())
     desc.SampleCount = 1
-    desc.BufferUsage = 32  # DXGI_USAGE_RENDER_TARGET_OUTPUT
+    desc.BufferUsage = UInt32(
+        winkb_constant["DXGI_USAGE_RENDER_TARGET_OUTPUT"]()
+    )
+    # FLIP_DISCARD needs two buffers or more; one is a validation failure.
     desc.BufferCount = 2
-    desc.OutputWindow = hwnd
+    desc.OutputWindow = window.handle
     desc.Windowed = 1
-    desc.SwapEffect = 4  # DXGI_SWAP_EFFECT_FLIP_DISCARD
+    desc.SwapEffect = UInt32(winkb_constant["DXGI_SWAP_EFFECT_FLIP_DISCARD"]())
 
-    # Four separate out-parameters, each a plain local with its true origin.
+    var create_device = win32[
+        def (
+            Int,  # pAdapter
+            UInt32,  # DriverType
+            Int,  # Software
+            UInt32,  # Flags
+            Int,  # pFeatureLevels
+            UInt32,  # FeatureLevels
+            UInt32,  # SDKVersion
+            Pointer[DXGI_SWAP_CHAIN_DESC, MutAnyOrigin],
+            Pointer[Int, MutAnyOrigin],
+            Pointer[Int, MutAnyOrigin],
+            Pointer[UInt32, MutAnyOrigin],
+            Pointer[Int, MutAnyOrigin],
+        ) thin abi("C") -> c_int,
+        "D3D11CreateDeviceAndSwapChain",
+    ]()
+
+    # Four separate out-parameters, each a plain local. pFeatureLevel is a
+    # UInt32 out-parameter and is declared as one: Windows writes four bytes
+    # there, and an Int that happens to have been zeroed only looks correct.
     var swapchain_addr: Int = 0
     var device_addr: Int = 0
-    var level: Int = 0
+    var level: UInt32 = 0
     var context_addr: Int = 0
 
     var hr = create_device(
-        Int(0),  # pAdapter
-        UInt32(1),  # D3D_DRIVER_TYPE_HARDWARE
-        Int(0),  # Software
-        UInt32(0),  # Flags
-        Int(0),  # pFeatureLevels
-        UInt32(0),  # FeatureLevels
-        UInt32(7),  # D3D11_SDK_VERSION
-        Pointer(to=desc),
-        Pointer(to=swapchain_addr),
-        Pointer(to=device_addr),
-        Pointer(to=level),
-        Pointer(to=context_addr),
+        0,
+        UInt32(winkb_constant["D3D_DRIVER_TYPE_HARDWARE"]()),
+        0,
+        UInt32(0),
+        0,
+        UInt32(0),
+        UInt32(winkb_constant["D3D11_SDK_VERSION"]()),
+        Pointer(to=desc).unsafe_origin_cast[MutAnyOrigin](),
+        Pointer(to=swapchain_addr).unsafe_origin_cast[MutAnyOrigin](),
+        Pointer(to=device_addr).unsafe_origin_cast[MutAnyOrigin](),
+        Pointer(to=level).unsafe_origin_cast[MutAnyOrigin](),
+        Pointer(to=context_addr).unsafe_origin_cast[MutAnyOrigin](),
     )
     print("D3D11CreateDeviceAndSwapChain hr =", hr, " feature level =", level)
     if hr != 0 or swapchain_addr == 0:
@@ -282,7 +216,11 @@ def main() raises:
     )
 
     # -- back buffer and render target view ---------------------------------
-    var iid = guid_bytes("6f15aaf2-d208-4e89-9ab4-489535d34f9c")  # ID3D11Texture2D
+    # The IID is a query, not a literal. A GUID typed out by hand is 32 hex
+    # digits in an order that is not the order it is written in, and getting
+    # it wrong yields E_NOINTERFACE -- which reads as "this object does not
+    # support that interface" rather than "you mistyped the interface".
+    var iid = _guid_bytes(winkb_interface_iid["ID3D11Texture2D"]())
     var backbuf_addr: Int = 0
 
     var get_buffer = com_method_of[
@@ -345,7 +283,6 @@ def main() raises:
     ](swapchain)
 
     var colour = List[Float32](length=4, fill=0.0)
-    var msg = MSG()
     var frames = 0
 
     for i in range(180):
@@ -366,12 +303,18 @@ def main() raises:
             raise Error("Present failed, hr = " + String(phr))
         frames += 1
 
-        while PeekMessageW(
-            Pointer(to=msg), Int(0), UInt32(0), UInt32(0), UInt32(1)
-        ) != 0:
-            _ = DispatchMessageW(Pointer(to=msg))
+        # Every message waiting, without blocking, and False once WM_QUIT has
+        # arrived. A window that stops taking messages is one Windows calls
+        # hung; whatever else a frame does, it has to come back here.
+        if not pump():
+            break
 
     print("presented", frames, "frames")
+
+    var Sleep = win32[def (UInt32) thin abi("C") -> NoneType, "Sleep"]()
+    var DestroyWindow = win32[
+        def (Int) thin abi("C") -> c_int, "DestroyWindow"
+    ]()
     _ = Sleep(UInt32(300))
-    _ = DestroyWindow(hwnd)
+    _ = DestroyWindow(window.handle)
     print("done")

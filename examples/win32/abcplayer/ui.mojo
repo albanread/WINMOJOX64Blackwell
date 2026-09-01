@@ -43,7 +43,8 @@ from chip import (
 from chipplay import (
     SC_PAUSE, SC_VOICE_NOTE, midi_to_hz, record_adsr, CHIP_ADSR,
 )
-from win32 import win32, wide_of, RECT
+from std.windows.core import WideString, win32
+from std.windows.gui import RECT
 import winmidi
 
 
@@ -433,18 +434,21 @@ def draw_text(
         ) thin abi("C") -> c_int,
         "TextOutW",
     ]()
-    var buf = wide_of(text)
+    var buf = WideString(text)
     var old = SelectObject(hdc, font) if font != 0 else 0
     # TRANSPARENT, or every label paints a rectangle of the last background
     # colour over whatever it sits on -- which here is a filled bar.
     _ = SetBkMode(hdc, c_int(winkb_constant["TRANSPARENT"]()))
     _ = SetTextColor(hdc, colour)
+    # `len` on a WideString is code units WITHOUT the terminator, which is
+    # exactly what TextOutW's count wants -- the hand-rolled buffer this
+    # replaced counted the NUL and had to subtract it here.
     _ = TextOutW(
         hdc,
         c_int(x),
         c_int(y),
-        buf.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
-        c_int(len(buf) - 1),
+        buf.unsafe_ptr(),
+        c_int(len(buf)),
     )
     if font != 0:
         _ = SelectObject(hdc, old)
@@ -468,7 +472,7 @@ def make_font(px: Int, bold: Bool) raises -> Int:
         ) thin abi("C") -> Int,
         "CreateFontW",
     ]()
-    var face = wide_of(String("Consolas"))
+    var face = WideString("Consolas")
     var f = CreateFontW(
         c_int(-px), c_int(0), c_int(0), c_int(0),
         c_int(winkb_constant["FW_BOLD"]() if bold else winkb_constant["FW_NORMAL"]()),
@@ -480,7 +484,7 @@ def make_font(px: Int, bold: Bool) raises -> Int:
         UInt32(
             winkb_constant["FIXED_PITCH"]() | winkb_constant["FF_MODERN"]()
         ),
-        face.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+        face.unsafe_ptr(),
     )
     _ = face
     return f

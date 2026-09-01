@@ -47,18 +47,33 @@
 # ===----------------------------------------------------------------------=== #
 
 from std.ffi import c_int, external_call
-from std.memory import Pointer, OpaquePointer
+from std.memory import Pointer, OpaquePointer, Span
 from std.memory.alloc import unsafe_alloc
 from std.python._cpython import _fn_ptr_as_opaque
 from std.sys import argv
-from std.sys._com import ComPtr, com_addr
+from std.sys._com import com_addr
+from std.sys.info import size_of
 from std.sys._winkb import (
     winkb_constant,
     winkb_db_schema_version,
     winkb_struct_size,
 )
 from std.sys.com import Apartment
-from std.sys.info import size_of
+from std.windows.audio import RenderStream, pro_audio_begin, pro_audio_end
+from std.windows.core import WideString
+from std.windows.gui import (
+    MSG,
+    RECT,
+    WNDCLASSEXW,
+    Window,
+    WindowClass,
+    WndProc,
+    default_handler,
+    present_bgra,
+    quit,
+    run,
+    win32,
+)
 
 from abc import install_abc, parse_abc
 from chip import (
@@ -104,47 +119,35 @@ from tune import (
     player_attach,
     player_tick,
 )
-from wasapi import (
-    MixFormat,
-    ST_ERROR,
-    ST_FILL_US,
-    ST_FRAMES,
-    ST_GAPMAX_US,
-    ST_GAP_US,
-    ST_LOAD_PPM,
-    ST_PEAK,
-    ST_PEAKMAX,
-    ST_QUIT,
-    ST_RUNNING,
-    ST_STALL_MS,
-    ST_UNDERRUNS,
-    ST_WAKES,
-    Stream,
-    activate,
-    co_task_free,
-    default_render_device,
-    endpoint_id,
-    initialize_stream,
-    mix_format_address,
-    open_enumerator,
-    read_mix_format,
-    render_client,
-    run_stream,
-    win32,
-)
-
 
 # ── The interface's own slots ───────────────────────────────────────────────
 # The tail of the chip's player region is unused by the player, so the parts
 # the interface owns live there. That keeps the audio thread reachable from
-# one pointer: it is handed the chip, and everything hangs off that. The
-# stream's own slots (ST_*) are further along, declared in wasapi.mojo.
+# one pointer: it is handed the chip, and everything hangs off that.
 
 comptime UI_SCOPE = PLAYER_BASE + 64  # address of the scope ring buffer
 comptime UI_SCOPE_POS = PLAYER_BASE + 65
 comptime UI_PAUSE = PLAYER_BASE + 66
 comptime UI_MUTE = PLAYER_BASE + 68  # three slots, one per voice
 comptime UI_SAVED_WAVE = PLAYER_BASE + 72  # what a muted voice was playing
+
+# ── The five flags the two threads pass between them ────────────────────────
+# What is left of the thirteen slots the local wasapi.mojo needed. The stream's
+# own statistics -- wakes, underruns, gap, fill, load, frames -- are
+# `RenderStream.stats` now, read straight out of the stream by whichever thread
+# is asking; there is no lock and there must not be one, exactly as before.
+# These five are the ones the STREAM has no business knowing about, because
+# they are this program's, not WASAPI's: a quit request, a liveness flag, a
+# fault code, a deadline this example misses on purpose, and the last meter
+# reading (`poll_meter` returns the instantaneous peak and remembers only the
+# maximum, and the display wants the falling number).
+
+comptime ST_QUIT = PLAYER_BASE + 96  # the window asks the stream to stop
+comptime ST_RUNNING = PLAYER_BASE + 97  # the audio thread says it is alive
+comptime ST_ERROR = PLAYER_BASE + 98
+comptime ST_STALL_MS = PLAYER_BASE + 99  # a deliberate miss, for --stall
+comptime ST_PEAK = PLAYER_BASE + 100  # endpoint peak meter x 10000
+comptime ST_PEAKMAX = PLAYER_BASE + 101  # the loudest it ever got
 
 comptime SCOPE_LEN = 1024
 
@@ -210,74 +213,100 @@ struct AudioLink(Copyable, Movable):
 
     A thread procedure gets exactly one pointer, the same way a window
     procedure does, so this is the audio side's equivalent of GWLP_USERDATA.
-    The interface pointers are addresses rather than `ComPtr`s because the
-    main thread owns them and releases them: an owning wrapper on this side
-    would Release a second time on the way out.
+    Two addresses is all it takes now: the chip, which is what the fill is
+    handed, and the stream, which the main thread opened and still owns. Both
+    are addresses rather than owning values because the main thread releases
+    them -- an owning wrapper on this side would let go a second time on the
+    way out.
     """
 
     var chip: Int
-    var client: Int
-    var render: Int
-    var meter: Int
-    var mono: Int  # Float32*, one scratch buffer of ring size
-    var fmt: MixFormat
-    var stream: Stream
+    var stream: Int  # a RenderStream, opened and owned by main()
 
 
 comptime AudioLinkPtr = Pointer[AudioLink, MutAnyOrigin]
+comptime StreamPtr = Pointer[RenderStream, MutAnyOrigin]
 comptime ThreadProc = def (Int) thin abi("C") -> UInt32
 
 
 def audio_body(link: AudioLinkPtr) raises:
-    """The audio thread's real work, in a function that may report failure."""
+    """The audio thread's real work, in a function that may report failure.
+
+    This is the whole of the deadline, and it is what is left of the 522-line
+    `wasapi.mojo` this example used to carry: the eight-step open, the mix
+    format, the ring, the fan-out and the underrun accounting are
+    `std.windows.audio` now.
+
+    The loop is written out rather than handed to `RenderStream.run`, which
+    does exactly this, because of one line: `--stall`. Missing a deadline on
+    purpose is the point of this example -- it is how the claim that an
+    underrun is SILENT is made falsifiable -- and there is no place inside
+    `run` to be late from. Everything else here is the module's.
+    """
     # Every thread that touches COM must initialise it for itself. The MTA,
     # deliberately: this thread owns no window and pumps no messages, and an
     # STA whose messages are never pumped is where cross-apartment calls go to
-    # hang. WASAPI's objects are in-process and thread-agile, so a pointer
-    # created on the window thread is callable here with no marshalling.
+    # hang. WASAPI's objects are in-process and thread-agile, so a stream
+    # opened on the window thread is callable here with no marshalling.
     with Apartment(multithreaded=True):
         # Tell the scheduler this is audio. Without it this is an ordinary
         # thread competing with everything else on the machine; with it the
         # Multimedia Class Scheduler gives it the guaranteed slice it needs to
         # make a 10 ms deadline. A failure here is not fatal -- the loop still
-        # runs, just less reliably -- so it is not checked.
-        var av_set = win32[
-            def (
-                Pointer[UInt16, MutAnyOrigin], Pointer[UInt32, MutAnyOrigin]
-            ) thin abi("C") -> Int,
-            "AvSetMmThreadCharacteristicsW",
-        ]()
-        var av_revert = win32[
-            def (Int) thin abi("C") -> Int32,
-            "AvRevertMmThreadCharacteristics",
-        ]()
-        var task_name = wide("Pro Audio")
-        var task_index = UInt32(0)
-        var av = av_set(
-            task_name.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
-            com_addr(task_index),
-        )
-        _ = task_name
+        # runs, just less reliably -- so it is a result rather than an error.
+        var task = pro_audio_begin()
         print(
             "audio thread:",
-            "MMCSS 'Pro Audio'" if av != 0 else "ordinary priority (MMCSS"
+            "MMCSS 'Pro Audio'" if task != 0 else "ordinary priority (MMCSS"
             " declined)",
         )
 
+        var st = P(unsafe_from_address=link[].chip)
+        var speaker = StreamPtr(unsafe_from_address=link[].stream)
         var fill = chip_fill
-        run_stream(
-            P(unsafe_from_address=link[].chip),
-            link[].client,
-            link[].render,
-            link[].meter,
-            link[].stream,
-            link[].fmt,
-            link[].mono,
-            fill,
-        )
+        var sleep_ms = win32[def (UInt32) thin abi("C") -> NoneType, "Sleep"]()
 
-        if av != 0:
-            _ = av_revert(av)
+        # Pre-roll and Start, in one call. The event is never signalled before
+        # the stream runs, so the first ring has to be filled by hand; starting
+        # on an unfilled ring is a guaranteed first-period underrun.
+        speaker[].start(fill, st)
+        put(st, ST_RUNNING, 1)
+
+        var timeout = speaker[].wake_timeout_ms()
+        while get(st, ST_QUIT) == 0:
+            if not speaker[].wait(timeout):
+                # The event never came: the stream is gone, and hanging
+                # forever on it is the wrong answer.
+                put(st, ST_ERROR, Int(speaker[].wait_status) + 1)
+                break
+
+            # Ask the endpoint, not ourselves, whether sound is happening.
+            # This is the machine's own answer, independent of anything this
+            # program believes about its buffers.
+            var peak_now = Int(speaker[].poll_meter() * 10000.0)
+            put(st, ST_PEAK, peak_now)
+            if peak_now > get(st, ST_PEAKMAX):
+                put(st, ST_PEAKMAX, peak_now)
+
+            # A deliberate miss, once, to see what starvation looks like from
+            # the inside. The answer is: silent. Every call still returns S_OK.
+            var stall = get(st, ST_STALL_MS)
+            if stall > 0:
+                put(st, ST_STALL_MS, 0)
+                sleep_ms(UInt32(stall))
+
+            # Write exactly what has drained, and not one frame more. That is
+            # the whole contract, and `write` is it: padding, GetBuffer, the
+            # fill, the fan-out from one mono voice to however many channels
+            # the mixer wants, ReleaseBuffer.
+            _ = speaker[].write(fill, st)
+
+        # Let the tail of the ring reach the speaker before Stop truncates it.
+        speaker[].drain()
+        speaker[].stop()
+        put(st, ST_RUNNING, 0)
+
+        pro_audio_end(task)
 
 
 @export("chip_audio_thread")
@@ -303,104 +332,13 @@ def chip_audio_thread(param: Int) abi("C") -> UInt32:
 
 
 # ===----------------------------------------------------------------------===#
-# Windows structures. Layouts are asserted against the metadata in main();
-# claiming a size that is wrong would not fail to compile, it would silently
-# write fields to the wrong places.
+# The window's own state
+#
+# WNDCLASSEXW, MSG, RECT and BITMAPINFOHEADER used to be declared here, each
+# with a `comptime assert` against the metadata. They are `std.windows.gui`'s
+# now, asserted there, which is the only place a layout that has drifted from
+# the SDK ought to be caught.
 # ===----------------------------------------------------------------------===#
-
-
-@fieldwise_init
-struct WNDCLASSEXW(Defaultable, Copyable, Movable):
-    var cbSize: UInt32
-    var style: UInt32
-    var lpfnWndProc: Int
-    var cbClsExtra: Int32
-    var cbWndExtra: Int32
-    var hInstance: Int
-    var hIcon: Int
-    var hCursor: Int
-    var hbrBackground: Int
-    var lpszMenuName: Int
-    var lpszClassName: Int
-    var hIconSm: Int
-
-    def __init__(out self):
-        self.cbSize = 0
-        self.style = 0
-        self.lpfnWndProc = 0
-        self.cbClsExtra = 0
-        self.cbWndExtra = 0
-        self.hInstance = 0
-        self.hIcon = 0
-        self.hCursor = 0
-        self.hbrBackground = 0
-        self.lpszMenuName = 0
-        self.lpszClassName = 0
-        self.hIconSm = 0
-
-
-@fieldwise_init
-struct MSG(Defaultable, Copyable, Movable):
-    var hwnd: Int
-    var message: UInt32
-    var wParam: Int
-    var lParam: Int
-    var time: UInt32
-    var ptX: Int32
-    var ptY: Int32
-    var lPrivate: UInt32
-
-    def __init__(out self):
-        self.hwnd = 0
-        self.message = 0
-        self.wParam = 0
-        self.lParam = 0
-        self.time = 0
-        self.ptX = 0
-        self.ptY = 0
-        self.lPrivate = 0
-
-
-@fieldwise_init
-struct RECT(Defaultable, Copyable, Movable):
-    var left: Int32
-    var top: Int32
-    var right: Int32
-    var bottom: Int32
-
-    def __init__(out self):
-        self.left = 0
-        self.top = 0
-        self.right = 0
-        self.bottom = 0
-
-
-@fieldwise_init
-struct BITMAPINFOHEADER(Defaultable, Copyable, Movable):
-    var biSize: UInt32
-    var biWidth: Int32
-    var biHeight: Int32
-    var biPlanes: UInt16
-    var biBitCount: UInt16
-    var biCompression: UInt32
-    var biSizeImage: UInt32
-    var biXPelsPerMeter: Int32
-    var biYPelsPerMeter: Int32
-    var biClrUsed: UInt32
-    var biClrImportant: UInt32
-
-    def __init__(out self):
-        self.biSize = 0
-        self.biWidth = 0
-        self.biHeight = 0
-        self.biPlanes = 0
-        self.biBitCount = 0
-        self.biCompression = 0
-        self.biSizeImage = 0
-        self.biXPelsPerMeter = 0
-        self.biYPelsPerMeter = 0
-        self.biClrUsed = 0
-        self.biClrImportant = 0
 
 
 @fieldwise_init
@@ -413,6 +351,7 @@ struct Screen(Defaultable, Copyable, Movable):
     """
 
     var chip: Int  # the state block; also all the audio thread has
+    var stream: Int  # the RenderStream, for the numbers on the evidence line
     var frame: Int  # UInt32*  BGRA pixels, WIN_W x WIN_H
     var rom: Int  # UInt8*   the character ROM
     var ticks: Int
@@ -422,6 +361,7 @@ struct Screen(Defaultable, Copyable, Movable):
 
     def __init__(out self):
         self.chip = 0
+        self.stream = 0
         self.frame = 0
         self.rom = 0
         self.ticks = 0
@@ -431,31 +371,6 @@ struct Screen(Defaultable, Copyable, Movable):
 
 
 comptime ScreenPtr = Pointer[Screen, MutAnyOrigin]
-comptime WndProcType = def (Int, UInt32, Int, Int) thin abi("C") -> Int
-
-
-def wide(s: StaticString) -> List[UInt16]:
-    """A NUL-terminated UTF-16 buffer for the W-suffixed entry points."""
-    var out = List[UInt16]()
-    for byte in s.as_bytes():
-        out.append(UInt16(Int(byte)))
-    out.append(0)
-    return out^
-
-
-def wide_of(s: String) -> List[UInt16]:
-    """The same, for text built at run time -- the window title."""
-    var out = List[UInt16]()
-    for c in s.codepoints():
-        var v = Int(c)
-        if v >= 0x10000:
-            var u = v - 0x10000
-            out.append(UInt16(0xD800 + (u >> 10)))
-            out.append(UInt16(0xDC00 + (u & 0x3FF)))
-        else:
-            out.append(UInt16(v))
-    out.append(0)
-    return out^
 
 
 # ===----------------------------------------------------------------------===#
@@ -595,6 +510,7 @@ def render_screen(scr: ScreenPtr) raises:
     showing a number from a microsecond ago.
     """
     var st = P(unsafe_from_address=scr[].chip)
+    var speaker = StreamPtr(unsafe_from_address=scr[].stream)
     var rate = get(st, S_RATE)
 
     # The border, and the screen inside it.
@@ -638,13 +554,13 @@ def render_screen(scr: ScreenPtr) raises:
     # underrun leaves anywhere.
     var audio = (
         String("WAKE ")
-        + one_decimal(get(st, ST_GAP_US))
+        + one_decimal(speaker[].stats.gap_us)
         + "MS  LOAD "
-        + tenths(get(st, ST_LOAD_PPM))
+        + tenths(speaker[].stats.load_permille)
         + "%  PEAK "
         + String(get(st, ST_PEAK) // 100)
         + "%  MISS "
-        + String(get(st, ST_UNDERRUNS))
+        + String(speaker[].stats.underruns)
     )
     if get(st, ST_RUNNING) == 0:
         audio = String("AUDIO STOPPED")
@@ -760,42 +676,26 @@ def render_screen(scr: ScreenPtr) raises:
     )
 
 
-def blit(hdc: Int, scr: ScreenPtr, dest_w: Int, dest_h: Int) raises:
-    """Push the CPU buffer into a device context, scaled to the client rect."""
-    var StretchDIBits = win32[
-        def (
-            Int,
-            c_int, c_int, c_int, c_int,
-            c_int, c_int, c_int, c_int,
-            Pointer[UInt32, MutAnyOrigin],
-            Pointer[BITMAPINFOHEADER, MutAnyOrigin],
-            UInt32,
-            UInt32,
-        ) thin abi("C") -> c_int,
-        "StretchDIBits",
-    ]()
+def blit(hwnd: Int, scr: ScreenPtr) raises:
+    """Push the CPU buffer onto the window, scaled to whatever size it is now.
 
-    var bmi = BITMAPINFOHEADER()
-    bmi.biSize = UInt32(size_of[BITMAPINFOHEADER]())
-    bmi.biWidth = Int32(WIN_W)
-    # A NEGATIVE height asks GDI for a top-down DIB: row 0 is the top row,
-    # which is the order everybody computes pixels in. Positive means
-    # bottom-up, and the picture arrives upside down.
-    bmi.biHeight = Int32(-WIN_H)
-    bmi.biPlanes = 1
-    bmi.biBitCount = 32
-    bmi.biCompression = UInt32(winkb_constant["BI_RGB"]())
-
-    _ = StretchDIBits(
-        hdc,
-        c_int(0), c_int(0), c_int(dest_w), c_int(dest_h),
-        c_int(0), c_int(0), c_int(WIN_W), c_int(WIN_H),
-        Pointer[UInt32, MutAnyOrigin](unsafe_from_address=scr[].frame),
-        com_addr(bmi),
-        UInt32(winkb_constant["DIB_RGB_COLORS"]()),
-        UInt32(winkb_constant["SRCCOPY"]()),
+    One call. `present_bgra` is the `BITMAPINFOHEADER`, the negative height
+    that asks GDI for a top-down DIB, the `GetClientRect` and the
+    `StretchDIBits` that six of the examples had each written out; the `Span`
+    is so a picture whose size does not match its dimensions is refused here
+    rather than read past the end of by the graphics driver.
+    """
+    present_bgra(
+        hwnd,
+        Span(
+            unsafe_ptr=Pointer[UInt32, MutUntrackedOrigin](
+                unsafe_from_address=scr[].frame
+            ),
+            length=PIXELS,
+        ),
+        WIN_W,
+        WIN_H,
     )
-    _ = bmi
 
 
 # ===----------------------------------------------------------------------===#
@@ -831,8 +731,7 @@ def chip_wndproc(
         if stored == 0:
             # Messages arrive during CreateWindowExW, before there is anything
             # to point at.
-            var Def0 = win32[WndProcType, "DefWindowProcW"]()
-            return Def0(hwnd, message, wparam, lparam)
+            return default_handler(hwnd, message, wparam, lparam)
         var scr = ScreenPtr(unsafe_from_address=stored)
         var st = P(unsafe_from_address=scr[].chip)
 
@@ -845,23 +744,21 @@ def chip_wndproc(
                 def (Int, Pointer[UInt8, MutAnyOrigin]) thin abi("C") -> c_int,
                 "EndPaint",
             ]()
-            var GetClientRect = win32[
-                def (Int, Pointer[RECT, MutAnyOrigin]) thin abi("C") -> c_int,
-                "GetClientRect",
-            ]()
             # PAINTSTRUCT is never declared here, only sized, from the
             # metadata -- it is a box this code never looks inside.
             var ps = List[UInt8](
                 length = winkb_struct_size["PAINTSTRUCT"](), fill=0
             )
             var ps_ptr = ps.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin]()
+            # The pair is still here after the blit moved to `present_bgra`,
+            # and it is not ceremony: BeginPaint is what clears the update
+            # region and EndPaint is what closes it. Skip them and Windows
+            # re-sends WM_PAINT immediately, forever. The device context they
+            # hand back is the one thing no longer wanted -- `present_bgra`
+            # takes its own, and asks the window how big it is.
             var hdc = BeginPaint(hwnd, ps_ptr)
             if hdc != 0:
-                var rc = RECT()
-                _ = GetClientRect(hwnd, com_addr(rc))
-                blit(
-                    hdc, scr, Int(rc.right - rc.left), Int(rc.bottom - rc.top)
-                )
+                blit(hwnd, scr)
                 scr[].painted += 1
             _ = EndPaint(hwnd, ps_ptr)
             _ = ps
@@ -882,8 +779,9 @@ def chip_wndproc(
                 if scr[].freeze_ms > 0 and scr[].ticks > 8:
                     var ms = scr[].freeze_ms
                     scr[].freeze_ms = 0
+                    var speaker = StreamPtr(unsafe_from_address=scr[].stream)
                     var painted_before = scr[].painted
-                    var wakes_before = get(st, ST_WAKES)
+                    var wakes_before = speaker[].stats.wakes
                     var Sleep = win32[
                         def (UInt32) thin abi("C") -> NoneType, "Sleep"
                     ]()
@@ -898,9 +796,9 @@ def chip_wndproc(
                         " audio wakes",
                         wakes_before,
                         "->",
-                        get(st, ST_WAKES),
+                        speaker[].stats.wakes,
                         " underruns",
-                        get(st, ST_UNDERRUNS),
+                        speaker[].stats.underruns,
                     )
 
                 render_screen(scr)
@@ -1007,14 +905,10 @@ def chip_wndproc(
             # Tell the audio thread to leave BEFORE the message loop ends, so
             # it has the whole of the shutdown to notice. main() waits for it.
             put(st, ST_QUIT, 1)
-            var PostQuitMessage = win32[
-                def (c_int) thin abi("C") -> NoneType, "PostQuitMessage"
-            ]()
-            _ = PostQuitMessage(c_int(0))
+            quit(0)
             return 0
 
-        var DefWindowProcW = win32[WndProcType, "DefWindowProcW"]()
-        return DefWindowProcW(hwnd, message, wparam, lparam)
+        return default_handler(hwnd, message, wparam, lparam)
     except:
         return 0
 
@@ -1155,19 +1049,6 @@ def check_abc(name: String, rate: Int) raises -> Int:
 
 
 def main() raises:
-    comptime assert (
-        size_of[WNDCLASSEXW]() == winkb_struct_size["WNDCLASSEXW"]()
-    ), "WNDCLASSEXW does not match Windows"
-    comptime assert (
-        size_of[MSG]() == winkb_struct_size["MSG"]()
-    ), "MSG does not match Windows"
-    comptime assert (
-        size_of[RECT]() == winkb_struct_size["RECT"]()
-    ), "RECT does not match Windows"
-    comptime assert (
-        size_of[BITMAPINFOHEADER]() == winkb_struct_size["BITMAPINFOHEADER"]()
-    ), "BITMAPINFOHEADER does not match Windows"
-
     var tune_path = String("")
     var selftest = False
     var hold_ms = 0  # 0 means "stay open until asked to close"
@@ -1233,15 +1114,17 @@ def main() raises:
         # version follows by doing its AudioUnit setup in main(). What crosses
         # to the other thread is a stream that is already open and a block of
         # memory that is already allocated.
-        var enumerator = open_enumerator()
-        var device = default_render_device(enumerator.address())
-        print("endpoint:", endpoint_id(device.address()))
-
-        var client = activate["IAudioClient"](device.address())
-        var meter = activate["IAudioMeterInformation"](device.address())
-
-        var format_address = mix_format_address(client.address())
-        var fmt = read_mix_format(format_address)
+        # The eight-step open -- enumerator, endpoint, client, meter, mix
+        # format, Initialize, event, render client -- is one constructor.
+        # `buffer_ms` is a floor rather than a request: the engine rounds up to
+        # a whole number of periods and imposes its own minimum, which is 22 ms
+        # here however small a number it is given, so `--buffer-ms 0` asks for
+        # 1 and gets the floor.
+        var speaker = RenderStream(
+            buffer_ms=buffer_ms if buffer_ms > 0 else 1
+        )
+        var fmt = speaker.format.copy()
+        print("endpoint:", speaker.endpoint.id())
         print(
             "mix format:",
             fmt.rate,
@@ -1252,27 +1135,20 @@ def main() raises:
             "bit,",
             "float" if fmt.is_float else "int16",
         )
-
-        var stream = initialize_stream(
-            client.address(), format_address, buffer_ms
-        )
-        co_task_free(format_address)
         print(
             "device period:",
-            Float64(stream.default_period_us) / 1000.0,
+            Float64(speaker.default_period_us) / 1000.0,
             "ms default,",
-            Float64(stream.minimum_period_us) / 1000.0,
+            Float64(speaker.minimum_period_us) / 1000.0,
             "ms minimum",
         )
         print(
             "ring:",
-            stream.buffer_frames,
+            speaker.frames,
             "frames =",
-            Float64(stream.buffer_frames * 1000) / Float64(fmt.rate),
+            Float64(speaker.frames * 1000) / Float64(fmt.rate),
             "ms",
         )
-
-        var render = render_client(client.address())
 
         # ── The chip, at the mixer's rate ────────────────────────────────
         var st = chip_new(fmt.rate)
@@ -1319,16 +1195,22 @@ def main() raises:
             put(st, ST_STALL_MS, stall_ms)
 
         # ── Buffers, all of them allocated before a sample is rendered ───
+        # The mono scratch buffer the fill writes into is the stream's now,
+        # allocated at exactly the ring's size, which is one fewer thing to
+        # size wrongly.
         put(
             st,
             UI_SCOPE,
             Int(external_call["calloc", P](Int(SCOPE_LEN), Int(4))),
         )
-        var mono = Int(
-            external_call["calloc", P](Int(stream.buffer_frames), Int(4))
-        )
         var frame_buf = unsafe_alloc[UInt32](PIXELS, alignment=64)
         var rom = font_rom()
+
+        # The stream's address, taken once. `com_addr` rather than
+        # `Int(Pointer(to=...))` for the reason it documents: an address
+        # converted to an integer no longer tells the compiler the value is
+        # still being read.
+        var stream_address = Int(com_addr(speaker))
 
         var store = unsafe_alloc[Screen](1, alignment=8)
         # Emplaced, not assigned: `store[] = value` would destroy what was
@@ -1336,21 +1218,12 @@ def main() raises:
         store.unsafe_write(Screen())
         var scr = ScreenPtr(unsafe_from_address=Int(store))
         scr[].chip = Int(st)
+        scr[].stream = stream_address
         scr[].frame = Int(frame_buf)
         scr[].rom = rom
 
         var link = unsafe_alloc[AudioLink](1, alignment=8)
-        link.unsafe_write(
-            AudioLink(
-                Int(st),
-                client.address(),
-                render.address(),
-                meter.address(),
-                mono,
-                fmt.copy(),
-                stream.copy(),
-            )
-        )
+        link.unsafe_write(AudioLink(Int(st), stream_address))
 
         # ── The window ───────────────────────────────────────────────────
         var GetModuleHandleW = win32[
@@ -1412,10 +1285,10 @@ def main() raises:
         ]()
 
         var hInstance = GetModuleHandleW(0)
-        var class_name = wide("MojoChipWindow")
-        var title_text = wide_of(String("CHIP - ") + loaded)
+        var class_name = WideString("MojoChipWindow")
+        var title_text = WideString(String("CHIP - ") + loaded)
 
-        var proc: WndProcType = chip_wndproc
+        var proc: WndProc = chip_wndproc
         var wc = WNDCLASSEXW()
         wc.cbSize = UInt32(size_of[WNDCLASSEXW]())
         wc.style = UInt32(
@@ -1546,52 +1419,44 @@ def main() raises:
         if waited != UInt32(winkb_constant["WAIT_OBJECT_0"]()):
             print("the audio thread did not stop; leaving it alone")
         _ = CloseHandle(thread)
-        _ = CloseHandle(stream.event)
 
-        var wakes = get(st, ST_WAKES)
+        var wakes = speaker.stats.wakes
         print("frames painted", scr[].painted, " audio wakes", wakes)
         print(
             "audio: frames written",
-            get(st, ST_FRAMES),
+            speaker.stats.frames,
             "=",
-            Float64(get(st, ST_FRAMES)) / Float64(fmt.rate),
+            Float64(speaker.stats.frames) / Float64(fmt.rate),
             "s",
         )
         if wakes > 0:
             print(
                 "wake gap: last",
-                Float64(get(st, ST_GAP_US)) / 1000.0,
+                Float64(speaker.stats.gap_us) / 1000.0,
                 "ms  worst",
-                Float64(get(st, ST_GAPMAX_US)) / 1000.0,
+                Float64(speaker.stats.gap_max_us) / 1000.0,
                 "ms   fill",
-                Float64(get(st, ST_FILL_US)) / 1000.0,
+                Float64(speaker.stats.fill_us) / 1000.0,
                 "ms =",
-                Float64(get(st, ST_LOAD_PPM)) / 10.0,
+                Float64(speaker.stats.load_permille) / 10.0,
                 "% of it",
             )
         print("underruns (wakes that found the ring empty):",
-              get(st, ST_UNDERRUNS))
+              speaker.stats.underruns)
         var peak = Float64(get(st, ST_PEAKMAX)) / 10000.0
         print("endpoint peak meter reached", peak)
         if get(st, ST_ERROR) != 0:
             print("the audio thread reported a fault, code", get(st, ST_ERROR))
 
-        # Everything the audio thread borrowed is released here, innermost
-        # first: the render client is a service of the client, the client is a
-        # service of the device, the device came from the enumerator. All of
+        # Everything the audio thread borrowed is released here, and all of
         # it before CoUninitialize, which the Apartment scope runs on the way
         # out -- releasing a COM pointer after the apartment is gone is a
-        # crash in ole32 with no useful stack. Mojo destroys at last use, so
-        # the order is forced rather than hoped for.
-        _ = render^
-        _ = meter^
-        _ = client^
-        _ = device^
-        _ = enumerator^
-
-        external_call["free", NoneType](
-            OpaquePointer[MutUntrackedOrigin](unsafe_from_address=mono)
-        )
+        # crash in ole32 with no useful stack. The stream owns every pointer
+        # the audio thread was using, so the discard that used to be five
+        # lines is one -- after the join above, because Mojo destroys at
+        # last use and an earlier one would tear the stream down while the
+        # other thread was still inside it.
+        _ = speaker^
         external_call["free", NoneType](
             OpaquePointer[MutUntrackedOrigin](unsafe_from_address=get(st, UI_SCOPE))
         )

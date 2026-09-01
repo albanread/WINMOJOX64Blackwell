@@ -6,8 +6,9 @@
 # divergence-free by a Jacobi pressure solve. Every kernel is Mojo, compiled to
 # PTX and run on the NVIDIA GPU through the CUDA driver; the finished BGRA
 # frame is handed to GDI. There is no shader anywhere in the pipeline and no
-# hand-declared Win32: every entry point, constant and structure size below
-# comes out of the windows_api.db metadata.
+# hand-declared Win32: the window, the class, the structures and the blit come
+# from `std.windows.gui`, and every entry point this file still resolves for
+# itself comes out of the windows_api.db metadata through `win32[]`.
 #
 # The solver is `solver.mojo`, and `fluid_smoke.mojo` runs THE SAME kernels
 # headless and checks them -- mass conservation to under 1%, post-projection
@@ -53,137 +54,34 @@ from examples.win32.fluid.solver import (
 )
 from max.gpu.host import DeviceContext
 from std.ffi import c_int
-from std.memory import Pointer, alloc
-from std.python._cpython import _fn_ptr_as_opaque
+from std.memory import Pointer, Span
+from std.memory.alloc import unsafe_alloc
 from std.sys.info import size_of
 from std.sys._com import com_addr
-from std.sys._win32 import Win32Module
-from std.sys._winkb import (
-    winkb_constant,
-    winkb_function_dll,
-    winkb_struct_size,
+from std.sys._winkb import winkb_constant, winkb_struct_size
+from std.windows import (
+    get_environment,
+    performance_counter,
+    performance_frequency,
 )
-from std.windows import performance_counter, performance_frequency
+from std.windows.core import WideString
 
-
-def win32[Sig: TrivialRegisterPassable, name: StaticString]() raises -> Sig:
-    """A Win32 entry point, typed, from whichever DLL the metadata names.
-
-    Parameters:
-        Sig: The full thin C-ABI signature. Spell every argument -- an
-            under-declared signature compiles and then corrupts the call.
-        name: The exported function, e.g. "CreateWindowExW".
-
-    Returns:
-        The entry point, callable.
-
-    Raises:
-        If the module or the export cannot be found.
-    """
-    return Win32Module(String(winkb_function_dll[name]())).function[Sig](
-        String(name)
-    )
-
-
-# ===----------------------------------------------------------------------=== #
-# Windows structures. NOT TrivialRegisterPassable: claiming that of a big
-# struct does not fail to compile, it silently writes fields to the wrong
-# places. Every layout is asserted against the metadata in `main`.
-# ===----------------------------------------------------------------------=== #
-
-
-@fieldwise_init
-struct WNDCLASSEXW(Copyable, Defaultable, Movable):
-    var cbSize: UInt32
-    var style: UInt32
-    var lpfnWndProc: Int
-    var cbClsExtra: Int32
-    var cbWndExtra: Int32
-    var hInstance: Int
-    var hIcon: Int
-    var hCursor: Int
-    var hbrBackground: Int
-    var lpszMenuName: Int
-    var lpszClassName: Int
-    var hIconSm: Int
-
-    def __init__(out self):
-        self.cbSize = 0
-        self.style = 0
-        self.lpfnWndProc = 0
-        self.cbClsExtra = 0
-        self.cbWndExtra = 0
-        self.hInstance = 0
-        self.hIcon = 0
-        self.hCursor = 0
-        self.hbrBackground = 0
-        self.lpszMenuName = 0
-        self.lpszClassName = 0
-        self.hIconSm = 0
-
-
-@fieldwise_init
-struct MSG(Copyable, Defaultable, Movable):
-    var hwnd: Int
-    var message: UInt32
-    var wParam: Int
-    var lParam: Int
-    var time: UInt32
-    var ptX: Int32
-    var ptY: Int32
-    var lPrivate: UInt32
-
-    def __init__(out self):
-        self.hwnd = 0
-        self.message = 0
-        self.wParam = 0
-        self.lParam = 0
-        self.time = 0
-        self.ptX = 0
-        self.ptY = 0
-        self.lPrivate = 0
-
-
-@fieldwise_init
-struct RECT(Copyable, Defaultable, Movable):
-    var left: Int32
-    var top: Int32
-    var right: Int32
-    var bottom: Int32
-
-    def __init__(out self):
-        self.left = 0
-        self.top = 0
-        self.right = 0
-        self.bottom = 0
-
-
-@fieldwise_init
-struct BITMAPINFOHEADER(Copyable, Defaultable, Movable):
-    var biSize: UInt32
-    var biWidth: Int32
-    var biHeight: Int32
-    var biPlanes: UInt16
-    var biBitCount: UInt16
-    var biCompression: UInt32
-    var biSizeImage: UInt32
-    var biXPelsPerMeter: Int32
-    var biYPelsPerMeter: Int32
-    var biClrUsed: UInt32
-    var biClrImportant: UInt32
-
-    def __init__(out self):
-        self.biSize = 0
-        self.biWidth = 0
-        self.biHeight = 0
-        self.biPlanes = 0
-        self.biBitCount = 0
-        self.biCompression = 0
-        self.biSizeImage = 0
-        self.biXPelsPerMeter = 0
-        self.biYPelsPerMeter = 0
-        self.biClrUsed = 0
-        self.biClrImportant = 0
+# Everything a Windows program does the same way every Windows program does
+# it. `WindowClass` and `Window` register and create; `present_bgra` is the
+# StretchDIBits blit; `MSG`, `RECT` and `BITMAPINFOHEADER` are the structures,
+# already checked against the metadata inside the module, so this file
+# declares -- and therefore has to assert -- none of them.
+from std.windows.gui import (
+    BITMAPINFOHEADER,
+    MSG,
+    RECT,
+    Window,
+    WindowClass,
+    default_handler,
+    present_bgra,
+    quit,
+    win32,
+)
 
 
 @fieldwise_init
@@ -205,77 +103,6 @@ struct Scene(Copyable, Defaultable, Movable):
         self.width = 0
         self.height = 0
         self.painted = 0
-
-
-def wide(s: StaticString) -> List[UInt16]:
-    """A NUL-terminated UTF-16 buffer for the W-suffixed entry points."""
-    var out = List[UInt16]()
-    for byte in s.as_bytes():
-        out.append(UInt16(Int(byte)))
-    out.append(0)
-    return out^
-
-
-def wide_str(s: String) -> List[UInt16]:
-    """The same, for a string built at run time. ASCII only, which every
-    caller here is."""
-    var out = List[UInt16]()
-    for byte in s.as_bytes():
-        out.append(UInt16(Int(byte)))
-    out.append(0)
-    return out^
-
-
-# ===----------------------------------------------------------------------=== #
-# Presenting a CPU buffer: one call.
-#
-# The GPU writes 960x720 BGRA words into pinned host memory and GDI blits them
-# straight into the window. No swap chain, no device, no COM, and nothing that
-# can report the window occluded and present nothing -- which is what the
-# Direct2D path on this machine sometimes does.
-# ===----------------------------------------------------------------------=== #
-
-
-def blit(hdc: Int, scene: Scene, dest_w: Int, dest_h: Int) raises:
-    """Push the frame into a device context, scaled to the client rect."""
-    var StretchDIBits = win32[
-        def (
-            Int,  # HDC
-            c_int, c_int, c_int, c_int,  # xDest, yDest, DestW, DestH
-            c_int, c_int, c_int, c_int,  # xSrc, ySrc, SrcW, SrcH
-            Pointer[UInt32, MutAnyOrigin],  # lpBits
-            Pointer[BITMAPINFOHEADER, MutAnyOrigin],  # lpbmi
-            UInt32,  # iUsage
-            UInt32,  # rop
-        ) thin abi("C") -> c_int,
-        "StretchDIBits",
-    ]()
-
-    var bmi = BITMAPINFOHEADER()
-    bmi.biSize = UInt32(size_of[BITMAPINFOHEADER]())
-    bmi.biWidth = Int32(scene.width)
-    # Negative height asks GDI for a TOP-DOWN DIB: row 0 is the top row, which
-    # is the order the render kernel writes. A positive height means bottom-up
-    # and the fluid arrives upside down.
-    bmi.biHeight = Int32(-scene.height)
-    bmi.biPlanes = 1
-    bmi.biBitCount = 32
-    bmi.biCompression = UInt32(winkb_constant["BI_RGB"]())
-
-    var bits = Pointer[UInt32, MutAnyOrigin](unsafe_from_address=scene.pixels)
-    _ = StretchDIBits(
-        hdc,
-        c_int(0), c_int(0), c_int(dest_w), c_int(dest_h),
-        c_int(0), c_int(0), c_int(scene.width), c_int(scene.height),
-        bits,
-        com_addr(bmi),
-        UInt32(winkb_constant["DIB_RGB_COLORS"]()),
-        UInt32(winkb_constant["SRCCOPY"]()),
-    )
-    _ = bmi
-
-
-comptime WndProcType = def (Int, UInt32, Int, Int) thin abi("C") -> Int
 
 
 @export("fluid_wndproc")
@@ -312,25 +139,26 @@ def fluid_wndproc(
                 length = winkb_struct_size["PAINTSTRUCT"](), fill=0
             )
             var ps_ptr = ps.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin]()
+            # BeginPaint is what CLEARS the update region, and EndPaint closes
+            # it. `present_bgra` draws through a device context of its own,
+            # which is fine and is not a substitute for this pair: skip them
+            # and Windows re-sends WM_PAINT immediately, forever.
             var hdc = BeginPaint(hwnd, ps_ptr)
             if stored != 0 and hdc != 0:
                 var scene = Pointer[Scene, MutAnyOrigin](
                     unsafe_from_address=stored
                 )
                 if scene[].pixels != 0:
-                    var GetClientRect = win32[
-                        def (
-                            Int, Pointer[RECT, MutAnyOrigin]
-                        ) thin abi("C") -> c_int,
-                        "GetClientRect",
-                    ]()
-                    var rc = RECT()
-                    _ = GetClientRect(hwnd, com_addr(rc))
-                    blit(
-                        hdc,
-                        scene[],
-                        Int(rc.right - rc.left),
-                        Int(rc.bottom - rc.top),
+                    present_bgra(
+                        hwnd,
+                        Span[UInt32, MutAnyOrigin](
+                            unsafe_ptr = Pointer[UInt32, MutAnyOrigin](
+                                unsafe_from_address = scene[].pixels
+                            ),
+                            length = scene[].width * scene[].height,
+                        ),
+                        scene[].width,
+                        scene[].height,
                     )
                     scene[].painted += 1
             _ = EndPaint(hwnd, ps_ptr)
@@ -345,14 +173,10 @@ def fluid_wndproc(
             return 0
 
         if message == UInt32(winkb_constant["WM_DESTROY"]()):
-            var PostQuitMessage = win32[
-                def (c_int) thin abi("C") -> NoneType, "PostQuitMessage"
-            ]()
-            _ = PostQuitMessage(c_int(0))
+            quit(0)
             return 0
 
-        var DefWindowProcW = win32[WndProcType, "DefWindowProcW"]()
-        return DefWindowProcW(hwnd, message, wparam, lparam)
+        return default_handler(hwnd, message, wparam, lparam)
     except:
         return 0
 
@@ -362,8 +186,10 @@ def fluid_wndproc(
 #
 # That every call returned S_OK is not evidence that anything is on screen.
 # This reads the window's OWN client area back through a DIB section, which is
-# the same machinery `blit` uses pointed the other way, and reports what is
-# actually there.
+# `present_bgra`'s machinery pointed the other way, and reports what is
+# actually there. It stays here rather than in `std.windows.gui` because it is
+# a diagnostic for this demo -- it prints the ink's bounding box, which is a
+# sentence about dye rather than about windows.
 # ===----------------------------------------------------------------------=== #
 
 
@@ -404,8 +230,8 @@ def readback(hwnd: Int) raises -> Int:
 
     var rc = RECT()
     _ = GetClientRect(hwnd, com_addr(rc))
-    var width = Int(rc.right - rc.left)
-    var height = Int(rc.bottom - rc.top)
+    var width = rc.width()
+    var height = rc.height()
     if width <= 0 or height <= 0:
         print("  readback: the window has no client area")
         return 0
@@ -415,7 +241,7 @@ def readback(hwnd: Int) raises -> Int:
     var bmi = BITMAPINFOHEADER()
     bmi.biSize = UInt32(size_of[BITMAPINFOHEADER]())
     bmi.biWidth = Int32(width)
-    bmi.biHeight = Int32(-height)  # top-down again
+    bmi.biHeight = Int32(-height)  # top-down, as present_bgra writes
     bmi.biPlanes = 1
     bmi.biBitCount = 32
     bmi.biCompression = UInt32(winkb_constant["BI_RGB"]())
@@ -505,60 +331,29 @@ def readback(hwnd: Int) raises -> Int:
     return count
 
 
-def env_int(name: StaticString, fallback: Int) raises -> Int:
+def env_int(name: StringSlice, fallback: Int) raises -> Int:
     """Read a small non-negative integer out of the environment.
 
-    Through GetEnvironmentVariableW rather than getenv, because this tree's
-    rule is that a Windows facility is reached through the metadata.
+    Through `std.windows.get_environment`, which is GetEnvironmentVariableW
+    decoded properly, rather than getenv: this tree's rule is that a Windows
+    facility is reached through the metadata.
     """
-    var GetEnvironmentVariableW = win32[
-        def (
-            Pointer[UInt16, MutAnyOrigin],
-            Pointer[UInt16, MutAnyOrigin],
-            UInt32,
-        ) thin abi("C") -> UInt32,
-        "GetEnvironmentVariableW",
-    ]()
-    var wname = wide(name)
-    var buffer = List[UInt16](length=32, fill=0)
-    var n = GetEnvironmentVariableW(
-        wname.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
-        buffer.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
-        UInt32(32),
-    )
-    _ = wname
-    if n == 0 or n >= 32:
+    var text = get_environment(name)
+    if text.byte_length() == 0:
         return fallback
     var value = 0
-    var seen = False
-    for i in range(Int(n)):
-        var ch = Int(buffer[i])
+    for byte in text.as_bytes():
+        var ch = Int(byte)
         if ch < 48 or ch > 57:
             return fallback
         value = value * 10 + (ch - 48)
-        seen = True
-    _ = buffer
-    return value if seen else fallback
+    return value
 
 
 # ===----------------------------------------------------------------------=== #
 
 
 def main() raises:
-    comptime assert (
-        size_of[WNDCLASSEXW]() == winkb_struct_size["WNDCLASSEXW"]()
-    ), "WNDCLASSEXW does not match Windows"
-    comptime assert (
-        size_of[MSG]() == winkb_struct_size["MSG"]()
-    ), "MSG does not match Windows"
-    comptime assert (
-        size_of[RECT]() == winkb_struct_size["RECT"]()
-    ), "RECT does not match Windows"
-    comptime assert (
-        size_of[BITMAPINFOHEADER]()
-        == winkb_struct_size["BITMAPINFOHEADER"]()
-    ), "BITMAPINFOHEADER does not match Windows"
-
     print("Fluid -", W, "x", H, "sim,", WIN_W, "x", WIN_H, "window")
 
     # ---- the accelerator -------------------------------------------------
@@ -593,113 +388,54 @@ def main() raises:
     ctx.synchronize()
 
     # ---- the window ------------------------------------------------------
-    var GetModuleHandleW = win32[
-        def (Int) thin abi("C") -> Int, "GetModuleHandleW"
-    ]()
-    var GetLastError = win32[def () thin abi("C") -> UInt32, "GetLastError"]()
-    var LoadCursorW = win32[def (Int, Int) thin abi("C") -> Int, "LoadCursorW"]()
-    var RegisterClassExW = win32[
-        def (Pointer[WNDCLASSEXW, MutAnyOrigin]) thin abi("C") -> UInt16,
-        "RegisterClassExW",
-    ]()
+    # The class and the window are `std.windows.gui`'s: it registers with
+    # CS_HREDRAW | CS_VREDRAW and an arrow cursor, and creates a
+    # WS_OVERLAPPEDWINDOW, which is exactly what this wants.
+    var klass = WindowClass("MojoFluidWindow", fluid_wndproc)
+
+    # A window is created at its OUTER size, which is not the size a program
+    # drawing pixels cares about, so ask Windows what frame the style adds
+    # rather than adding a remembered 16 and 39.
     var AdjustWindowRect = win32[
         def (Pointer[RECT, MutAnyOrigin], UInt32, c_int) thin abi("C") -> c_int,
         "AdjustWindowRect",
     ]()
-    var CreateWindowExW = win32[
-        def (
-            UInt32,
-            Pointer[UInt16, MutAnyOrigin],
-            Pointer[UInt16, MutAnyOrigin],
-            UInt32,
-            c_int, c_int, c_int, c_int,
-            Int, Int, Int, Int,
-        ) thin abi("C") -> Int,
-        "CreateWindowExW",
-    ]()
-    var ShowWindow = win32[
-        def (Int, c_int) thin abi("C") -> c_int, "ShowWindow"
-    ]()
-    var UpdateWindow = win32[def (Int) thin abi("C") -> c_int, "UpdateWindow"]()
+    var want = RECT(Int32(0), Int32(0), Int32(WIN_W), Int32(WIN_H))
+    _ = AdjustWindowRect(
+        com_addr(want),
+        UInt32(winkb_constant["WS_OVERLAPPEDWINDOW"]()),
+        c_int(0),
+    )
+
+    var window = Window(
+        klass,
+        "Fluid - Stable Fluids, every kernel a Mojo kernel",
+        want.width(),
+        want.height(),
+    )
+    var hwnd = window.handle
+
     var InvalidateRect = win32[
         def (Int, Int, c_int) thin abi("C") -> c_int, "InvalidateRect"
     ]()
+    var UpdateWindow = win32[def (Int) thin abi("C") -> c_int, "UpdateWindow"]()
     var SetWindowLongPtrW = win32[
         def (Int, c_int, Int) thin abi("C") -> Int, "SetWindowLongPtrW"
-    ]()
-    var GetClientRect = win32[
-        def (Int, Pointer[RECT, MutAnyOrigin]) thin abi("C") -> c_int,
-        "GetClientRect",
     ]()
     var SetWindowTextW = win32[
         def (Int, Pointer[UInt16, MutAnyOrigin]) thin abi("C") -> c_int,
         "SetWindowTextW",
     ]()
-    var PeekMessageW = win32[
-        def (
-            Pointer[MSG, MutAnyOrigin], Int, UInt32, UInt32, UInt32
-        ) thin abi("C") -> c_int,
-        "PeekMessageW",
+    var DestroyWindow = win32[
+        def (Int) thin abi("C") -> c_int, "DestroyWindow"
     ]()
-    var TranslateMessage = win32[
-        def (Pointer[MSG, MutAnyOrigin]) thin abi("C") -> c_int,
-        "TranslateMessage",
-    ]()
-    var DispatchMessageW = win32[
-        def (Pointer[MSG, MutAnyOrigin]) thin abi("C") -> Int,
-        "DispatchMessageW",
-    ]()
-    var DestroyWindow = win32[def (Int) thin abi("C") -> c_int, "DestroyWindow"]()
     var SetCapture = win32[def (Int) thin abi("C") -> Int, "SetCapture"]()
     var ReleaseCapture = win32[def () thin abi("C") -> c_int, "ReleaseCapture"]()
-
-    var hInstance = GetModuleHandleW(0)
-    var class_name = wide("MojoFluidWindow")
-    var title = wide("Fluid - Stable Fluids, every kernel a Mojo kernel")
-    var proc: WndProcType = fluid_wndproc
-
-    var wc = WNDCLASSEXW()
-    wc.cbSize = UInt32(size_of[WNDCLASSEXW]())
-    wc.style = UInt32(
-        winkb_constant["CS_HREDRAW"]() | winkb_constant["CS_VREDRAW"]()
-    )
-    wc.lpfnWndProc = Int(_fn_ptr_as_opaque(proc))
-    wc.hInstance = hInstance
-    wc.hCursor = LoadCursorW(0, winkb_constant["IDC_ARROW"]())
-    wc.lpszClassName = Int(class_name.unsafe_ptr())
-    if RegisterClassExW(com_addr(wc)) == 0:
-        raise Error(
-            "RegisterClassExW failed, GetLastError = " + String(GetLastError())
-        )
-
-    # CreateWindowExW is given the OUTER size, so ask Windows what frame a
-    # WS_OVERLAPPEDWINDOW adds rather than adding a remembered 16 and 39.
-    comptime STYLE = winkb_constant["WS_OVERLAPPEDWINDOW"]()
-    var want = RECT(Int32(0), Int32(0), Int32(WIN_W), Int32(WIN_H))
-    _ = AdjustWindowRect(com_addr(want), UInt32(STYLE), c_int(0))
-
-    var hwnd = CreateWindowExW(
-        UInt32(0),
-        class_name.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
-        title.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
-        UInt32(STYLE),
-        c_int(80), c_int(60),
-        c_int(Int(want.right - want.left)),
-        c_int(Int(want.bottom - want.top)),
-        0, 0, hInstance, 0,
-    )
-    if hwnd == 0:
-        raise Error(
-            "CreateWindowExW failed, GetLastError = " + String(GetLastError())
-        )
-    # The class name and title buffers must outlive the calls that read them.
-    _ = class_name
-    _ = title
 
     # The window procedure reaches the pixels through the one pointer Windows
     # keeps for us. Emplaced, not assigned: `store[] = value` would destroy
     # whatever the allocator last had in that memory first.
-    var store = alloc[Scene](1, alignment=8)
+    var store = unsafe_alloc[Scene](1, alignment=8)
     store.unsafe_write(
         Scene(
             Int(host.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin]()),
@@ -712,21 +448,18 @@ def main() raises:
         hwnd, c_int(winkb_constant["GWLP_USERDATA"]()), Int(store)
     )
 
-    _ = ShowWindow(hwnd, c_int(winkb_constant["SW_SHOW"]()))
-    _ = UpdateWindow(hwnd)
+    window.show()
 
     # The client is very probably exactly WIN_W x WIN_H, but a DPI setting can
     # make it something else and dragging the window's corner certainly does,
     # and a mouse mapped with the wrong scale paints in the wrong place. So
-    # this is re-read every frame rather than measured once: StretchDIBits
+    # this is re-read every frame rather than measured once: present_bgra
     # already scales the picture to whatever the client rect is, and the
     # pointer has to follow it.
-    var client = RECT()
-    _ = GetClientRect(hwnd, com_addr(client))
     var to_grid_x = Float32(W) / Float32(WIN_W)
     var to_grid_y = Float32(H) / Float32(WIN_H)
-    print("  client", Int(client.right - client.left), "x",
-          Int(client.bottom - client.top))
+    var opened = window.client_size()
+    print("  client", opened.width(), "x", opened.height())
 
     # ---- a puff to start with, so the window is never blank ---------------
     var hue = Float32(0.05)
@@ -751,11 +484,35 @@ def main() raises:
               "- will prove the pixels landed at that frame and exit")
 
     # ---- the loop --------------------------------------------------------
-    # PeekMessageW rather than GetMessageW: this window animates, so it must
-    # never block waiting for input. It must also never Sleep -- a thread that
-    # has not pumped for about five seconds is declared hung and DWM starts
-    # drawing a ghost of the window instead of the window.
-    comptime PM_REMOVE = UInt32(0x0001)
+    # This is NOT `std.windows.gui.pump()`, and deliberately. That one handles
+    # every waiting message and tells the caller only whether to keep going,
+    # which is the right shape for a program whose procedure does the work.
+    # Here the procedure cannot: it is captureless, and dispatching a kernel
+    # from it would need the DeviceContext and its twelve buffers reachable
+    # from a C-ABI callback. So this loop reads `msg.message` itself before
+    # dispatching, and every one of them stays an ordinary local in `main`.
+    #
+    # PeekMessageW rather than GetMessageW for the same reason `pump` uses it:
+    # this window animates, so it must never block waiting for input. It must
+    # also never Sleep -- a thread that has not pumped for about five seconds
+    # is declared hung and DWM starts drawing a ghost of the window instead of
+    # the window.
+    var PeekMessageW = win32[
+        def (
+            Pointer[MSG, MutAnyOrigin], Int, UInt32, UInt32, UInt32
+        ) thin abi("C") -> c_int,
+        "PeekMessageW",
+    ]()
+    var TranslateMessage = win32[
+        def (Pointer[MSG, MutAnyOrigin]) thin abi("C") -> c_int,
+        "TranslateMessage",
+    ]()
+    var DispatchMessageW = win32[
+        def (Pointer[MSG, MutAnyOrigin]) thin abi("C") -> Int,
+        "DispatchMessageW",
+    ]()
+
+    comptime PM_REMOVE = UInt32(winkb_constant["PM_REMOVE"]())
     comptime WM_QUIT = UInt32(winkb_constant["WM_QUIT"]())
     comptime WM_MOUSEMOVE = UInt32(winkb_constant["WM_MOUSEMOVE"]())
     comptime WM_LBUTTONDOWN = UInt32(winkb_constant["WM_LBUTTONDOWN"]())
@@ -777,13 +534,13 @@ def main() raises:
 
     while running:
         # The window can be resized under us at any time; the picture follows
-        # because StretchDIBits scales to the client rect, and the mouse has
-        # to follow with it.
-        _ = GetClientRect(hwnd, com_addr(client))
-        if client.right > client.left:
-            to_grid_x = Float32(W) / Float32(Int(client.right - client.left))
-        if client.bottom > client.top:
-            to_grid_y = Float32(H) / Float32(Int(client.bottom - client.top))
+        # because present_bgra scales to the client rect, and the mouse has to
+        # follow with it.
+        var client = window.client_size()
+        if client.width() > 0:
+            to_grid_x = Float32(W) / Float32(client.width())
+        if client.height() > 0:
+            to_grid_y = Float32(H) / Float32(client.height())
 
         while (
             PeekMessageW(com_addr(msg), 0, UInt32(0), UInt32(0), PM_REMOVE)
@@ -795,11 +552,6 @@ def main() raises:
                 running = False
                 break
 
-            # Input is handled in the pump rather than in the window
-            # procedure, which is what keeps the DeviceContext and its dozen
-            # buffers ordinary locals in `main`. A procedure that dispatched
-            # kernels would need every one of them reachable from a C-ABI
-            # callback.
             if msg.message == WM_LBUTTONDOWN or msg.message == WM_MOUSEMOVE:
                 var dragging = msg.message == WM_LBUTTONDOWN or (
                     (msg.wParam & MK_LBUTTON) != 0
@@ -928,13 +680,11 @@ def main() raises:
             # a log, which is every run that is not a person watching.
             print("  frame", frames, "-", fps, "fps,", store[].painted,
                   "paints")
-            var caption = wide_str(
+            var caption = WideString(
                 String("Fluid - ") + String(fps) + " fps   [space] pause"
                 " [c] clear  [r] rain  [s] shot"
             )
-            _ = SetWindowTextW(
-                hwnd, caption.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin]()
-            )
+            _ = SetWindowTextW(hwnd, caption.unsafe_ptr())
             _ = caption
 
     var total_us = (performance_counter() - loop_start) * 1000000 // hz

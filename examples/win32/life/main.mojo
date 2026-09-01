@@ -14,7 +14,15 @@
 # StretchDIBits, which is the shortest honest path from CPU-computed pixels to
 # the screen on Windows: no swap chain, no D3D device, no COM, and nothing that
 # can be lost and need recreating. The buffer is stretched to the client
-# rectangle, so the window resizes and the mouse mapping follows.
+# rectangle, so the window resizes and the mouse mapping follows. That blit is
+# `std.windows.gui.present_bgra` -- this file no longer spells StretchDIBits.
+#
+# The window, its class, the message loop, `RECT`, `BITMAPINFOHEADER` and the
+# UTF-16 conversion all come from `std.windows.gui` and `std.windows.core`.
+# What is left in this file is Life: the rule, the colouring, the mouse, the
+# keys, and the evidence that the picture reached the glass. If you are reading
+# this to learn how a Win32 window is made, read `std/windows/gui.mojo`; if you
+# are reading it to learn what to do with one, read on.
 #
 # Every Windows-shaped thing here -- which DLL exports each entry point, every
 # constant, the size of PAINTSTRUCT -- is a query against windows_api.db. There
@@ -28,21 +36,34 @@
 # ===----------------------------------------------------------------------=== #
 
 from std.ffi import c_int
-from std.memory import Pointer
+from std.memory import Pointer, Span
 from std.memory.alloc import unsafe_alloc
-from std.python._cpython import _fn_ptr_as_opaque
 from std.random import random_ui64, seed
 from std.sys import argv
 from std.sys.info import size_of
 from std.sys._com import com_addr
-from std.sys._win32 import Win32Module
 from std.sys._winkb import (
     winkb_constant,
     winkb_db_schema_version,
-    winkb_function_dll,
     winkb_struct_size,
 )
-from std.windows import performance_counter, performance_frequency
+from std.windows import (
+    WideString,
+    performance_counter,
+    performance_frequency,
+)
+from std.windows.gui import (
+    BITMAPINFOHEADER,
+    RECT,
+    Window,
+    WindowClass,
+    WndProc,
+    default_handler,
+    present_bgra,
+    quit,
+    run,
+    win32,
+)
 
 
 comptime CELL = 6  # pixels per cell, including a one-pixel gutter
@@ -59,152 +80,15 @@ comptime TICK_MS = 16  # the clock; `speed` decides how many ticks per step
 
 
 # ===----------------------------------------------------------------------===#
-# Entry points, typed, from whichever DLL the metadata names.
+# The state the window carries
+#
+# `WNDCLASSEXW`, `MSG`, `RECT` and `BITMAPINFOHEADER` used to be declared here,
+# each with its own compile-time size assertion. They live in
+# `std.windows.gui` now, asserted once, and this file imports the two it still
+# touches. `win32[]` and a pair of hand-rolled `wide()` helpers went the same
+# way -- `WideString` is a real UTF-16 conversion and the copies here were
+# Latin-1 wearing a hat.
 # ===----------------------------------------------------------------------===#
-
-
-def win32[Sig: TrivialRegisterPassable, name: StaticString]() raises -> Sig:
-    """A Win32 entry point, typed, from whichever DLL the metadata names.
-
-    Parameters:
-        Sig: The full thin C-ABI signature. Spell every argument -- an
-            under-declared signature compiles and then corrupts the call.
-        name: The exported function, e.g. "CreateWindowExW".
-    """
-    return Win32Module(String(winkb_function_dll[name]())).function[Sig](
-        String(name)
-    )
-
-
-def wide(s: StaticString) -> List[UInt16]:
-    """A NUL-terminated UTF-16 buffer for the W-suffixed entry points."""
-    var out = List[UInt16]()
-    for byte in s.as_bytes():
-        out.append(UInt16(Int(byte)))
-    out.append(0)
-    return out^
-
-
-def wide_of(s: String) -> List[UInt16]:
-    """The same, for text built at run time -- the title bar's statistics.
-
-    One byte to one unit would be Latin-1 rather than UTF-8, so this walks
-    codepoints, and encodes anything above the basic plane as a surrogate
-    pair. The title is ASCII today; the encoding is correct anyway, because
-    the day it stops being ASCII is not the day to discover this.
-    """
-    var out = List[UInt16]()
-    for c in s.codepoints():
-        var v = Int(c)
-        if v >= 0x10000:
-            var u = v - 0x10000
-            out.append(UInt16(0xD800 + (u >> 10)))
-            out.append(UInt16(0xDC00 + (u & 0x3FF)))
-        else:
-            out.append(UInt16(v))
-    out.append(0)
-    return out^
-
-
-# ===----------------------------------------------------------------------===#
-# Structures. Layouts are asserted against Windows at compile time; claiming
-# TrivialRegisterPassable on any of these would not fail to compile, it would
-# silently write fields to the wrong places.
-# ===----------------------------------------------------------------------===#
-
-
-@fieldwise_init
-struct WNDCLASSEXW(Defaultable, Copyable, Movable):
-    var cbSize: UInt32
-    var style: UInt32
-    var lpfnWndProc: Int
-    var cbClsExtra: Int32
-    var cbWndExtra: Int32
-    var hInstance: Int
-    var hIcon: Int
-    var hCursor: Int
-    var hbrBackground: Int
-    var lpszMenuName: Int
-    var lpszClassName: Int
-    var hIconSm: Int
-
-    def __init__(out self):
-        self.cbSize = 0
-        self.style = 0
-        self.lpfnWndProc = 0
-        self.cbClsExtra = 0
-        self.cbWndExtra = 0
-        self.hInstance = 0
-        self.hIcon = 0
-        self.hCursor = 0
-        self.hbrBackground = 0
-        self.lpszMenuName = 0
-        self.lpszClassName = 0
-        self.hIconSm = 0
-
-
-@fieldwise_init
-struct MSG(Defaultable, Copyable, Movable):
-    var hwnd: Int
-    var message: UInt32
-    var wParam: Int
-    var lParam: Int
-    var time: UInt32
-    var ptX: Int32
-    var ptY: Int32
-    var lPrivate: UInt32
-
-    def __init__(out self):
-        self.hwnd = 0
-        self.message = 0
-        self.wParam = 0
-        self.lParam = 0
-        self.time = 0
-        self.ptX = 0
-        self.ptY = 0
-        self.lPrivate = 0
-
-
-@fieldwise_init
-struct RECT(Defaultable, Copyable, Movable):
-    var left: Int32
-    var top: Int32
-    var right: Int32
-    var bottom: Int32
-
-    def __init__(out self):
-        self.left = 0
-        self.top = 0
-        self.right = 0
-        self.bottom = 0
-
-
-@fieldwise_init
-struct BITMAPINFOHEADER(Defaultable, Copyable, Movable):
-    var biSize: UInt32
-    var biWidth: Int32
-    var biHeight: Int32
-    var biPlanes: UInt16
-    var biBitCount: UInt16
-    var biCompression: UInt32
-    var biSizeImage: UInt32
-    var biXPelsPerMeter: Int32
-    var biYPelsPerMeter: Int32
-    var biClrUsed: UInt32
-    var biClrImportant: UInt32
-
-    def __init__(out self):
-        self.biSize = 0
-        self.biWidth = 0
-        self.biHeight = 0
-        self.biPlanes = 0
-        self.biBitCount = 0
-        self.biCompression = 0
-        self.biSizeImage = 0
-        self.biXPelsPerMeter = 0
-        self.biYPelsPerMeter = 0
-        self.biClrUsed = 0
-        self.biClrImportant = 0
 
 
 @fieldwise_init
@@ -546,8 +430,8 @@ def paint_at_client(
     ]()
     var rc = RECT()
     _ = GetClientRect(hwnd, com_addr(rc))
-    var w = Int(rc.right - rc.left)
-    var h = Int(rc.bottom - rc.top)
+    var w = rc.width()
+    var h = rc.height()
     if w <= 0 or h <= 0 or px < 0 or py < 0 or px >= w or py >= h:
         return
     paint_cell(life, (px * WIN_W // w) // CELL, (py * WIN_H // h) // CELL, erase)
@@ -558,44 +442,25 @@ def paint_at_client(
 # ===----------------------------------------------------------------------===#
 
 
-def blit(hdc: Int, life: LifePtr, dest_w: Int, dest_h: Int) raises:
-    """Push the CPU buffer into a device context, scaled to the client rect."""
-    var StretchDIBits = win32[
-        def (
-            Int,  # HDC
-            c_int, c_int, c_int, c_int,  # xDest, yDest, DestW, DestH
-            c_int, c_int, c_int, c_int,  # xSrc, ySrc, SrcW, SrcH
-            Pointer[UInt32, MutAnyOrigin],  # lpBits
-            Pointer[BITMAPINFOHEADER, MutAnyOrigin],  # lpbmi
-            UInt32,  # iUsage
-            UInt32,  # rop
-        ) thin abi("C") -> c_int,
-        "StretchDIBits",
-    ]()
+def show(life: LifePtr, hwnd: Int) raises:
+    """Push the CPU buffer at the window, scaled to whatever size it is now.
 
-    var bmi = BITMAPINFOHEADER()
-    bmi.biSize = UInt32(size_of[BITMAPINFOHEADER]())
-    bmi.biWidth = Int32(WIN_W)
-    # A NEGATIVE height asks GDI for a top-down DIB: row 0 is the top row,
-    # which is the order everybody computes pixels in. Positive means
-    # bottom-up, and the picture arrives upside down.
-    bmi.biHeight = Int32(-WIN_H)
-    bmi.biPlanes = 1
-    bmi.biBitCount = 32
-    bmi.biCompression = UInt32(winkb_constant["BI_RGB"]())
+    `present_bgra` is the shared blit: a top-down 32-bit DIB stretched to the
+    client rectangle by `StretchDIBits`. This example used to spell that out,
+    including the negative height that makes it top-down, which is the single
+    most-copied twenty lines across these examples and the one most likely to
+    come out upside down.
 
-    # 32 bits per pixel with BI_RGB needs no colour table, so a bare
-    # BITMAPINFOHEADER stands in for BITMAPINFO.
-    _ = StretchDIBits(
-        hdc,
-        c_int(0), c_int(0), c_int(dest_w), c_int(dest_h),
-        c_int(0), c_int(0), c_int(WIN_W), c_int(WIN_H),
-        Pointer[UInt32, MutAnyOrigin](unsafe_from_address=life[].frame),
-        com_addr(bmi),
-        UInt32(winkb_constant["DIB_RGB_COLORS"]()),
-        UInt32(winkb_constant["SRCCOPY"]()),
+    It takes a `Span`, not a pointer, so a buffer whose length disagrees with
+    the width and height it was told is refused here rather than read off the
+    end of by the graphics driver.
+    """
+    present_bgra(
+        hwnd,
+        Span(unsafe_ptr=dwords_at(life[].frame), length=PIXELS),
+        WIN_W,
+        WIN_H,
     )
-    _ = bmi
 
 
 def update_title(life: LifePtr, hwnd: Int) raises:
@@ -618,11 +483,14 @@ def update_title(life: LifePtr, hwnd: Int) raises:
         + " us   [space] pause  [drag] draw  [shift/right drag] erase"
         + "  [.] step  [r] random  [c] clear  [ [ ] ] speed"
     )
-    var buf = wide_of(text)
-    _ = SetWindowTextW(
-        hwnd, buf.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin]()
-    )
-    _ = buf
+    # `WideString` is a real UTF-8 to UTF-16 conversion through
+    # MultiByteToWideChar. The version this replaces walked codepoints by
+    # hand; the one before that assigned bytes to code units, which is
+    # Latin-1, and would have mangled the first non-ASCII character anybody
+    # put in a title.
+    var buf = WideString(text)
+    _ = SetWindowTextW(hwnd, buf.unsafe_ptr())
+    _ = buf^
 
 
 def advance(life: LifePtr, hwnd: Int) raises:
@@ -671,9 +539,10 @@ def advance(life: LifePtr, hwnd: Int) raises:
 # The window procedure. Windows calls this, so it is a captureless C-ABI
 # function that must never raise -- unwinding through a Windows frame is
 # undefined -- and every failure is caught here.
+#
+# The type is `std.windows.gui.WndProc`, named once there so a class
+# registration and the procedure it names cannot drift apart.
 # ===----------------------------------------------------------------------===#
-
-comptime WndProcType = def (Int, UInt32, Int, Int) thin abi("C") -> Int
 
 
 def stored_life(hwnd: Int) raises -> Int:
@@ -710,8 +579,7 @@ def life_wndproc(
         if stored == 0:
             # Messages arrive during CreateWindowExW, before there is anything
             # to point at.
-            var Def0 = win32[WndProcType, "DefWindowProcW"]()
-            return Def0(hwnd, message, wparam, lparam)
+            return default_handler(hwnd, message, wparam, lparam)
         var life = LifePtr(unsafe_from_address=stored)
 
         if message == UInt32(winkb_constant["WM_PAINT"]()):
@@ -723,10 +591,6 @@ def life_wndproc(
                 def (Int, Pointer[UInt8, MutAnyOrigin]) thin abi("C") -> c_int,
                 "EndPaint",
             ]()
-            var GetClientRect = win32[
-                def (Int, Pointer[RECT, MutAnyOrigin]) thin abi("C") -> c_int,
-                "GetClientRect",
-            ]()
             # PAINTSTRUCT is never declared here, only sized, from the
             # metadata -- it is a box this code never looks inside.
             var ps = List[UInt8](
@@ -735,14 +599,15 @@ def life_wndproc(
             var ps_ptr = ps.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin]()
             var hdc = BeginPaint(hwnd, ps_ptr)
             if hdc != 0:
-                var rc = RECT()
-                _ = GetClientRect(hwnd, com_addr(rc))
-                blit(
-                    hdc, life, Int(rc.right - rc.left), Int(rc.bottom - rc.top)
-                )
+                # `present_bgra` fetches its own device context and asks the
+                # window how big it is, so the handle BeginPaint returned goes
+                # unused. The pair is still required: BeginPaint is what
+                # clears the update region and EndPaint is what closes it, and
+                # a WM_PAINT that does neither is re-sent immediately,
+                # forever. That is the one thing painting through a borrowed
+                # DC does not do for you.
+                show(life, hwnd)
                 life[].painted += 1
-            # BeginPaint cleared the update region; EndPaint closes it. Skip
-            # both and Windows re-sends WM_PAINT immediately, forever.
             _ = EndPaint(hwnd, ps_ptr)
             _ = ps
             return 0
@@ -869,15 +734,11 @@ def life_wndproc(
         if message == UInt32(winkb_constant["WM_DESTROY"]()):
             # This is what puts WM_QUIT on the queue and ends the loop. A
             # window that closes but whose process hangs is always a missing
-            # PostQuitMessage.
-            var PostQuitMessage = win32[
-                def (c_int) thin abi("C") -> NoneType, "PostQuitMessage"
-            ]()
-            _ = PostQuitMessage(c_int(0))
+            # PostQuitMessage -- which is what `quit` is.
+            quit(0)
             return 0
 
-        var DefWindowProcW = win32[WndProcType, "DefWindowProcW"]()
-        return DefWindowProcW(hwnd, message, wparam, lparam)
+        return default_handler(hwnd, message, wparam, lparam)
     except:
         return 0
 
@@ -1015,8 +876,8 @@ def readback(life: LifePtr, hwnd: Int) raises:
 
     var rc = RECT()
     _ = GetClientRect(hwnd, com_addr(rc))
-    var w = Int(rc.right - rc.left)
-    var h = Int(rc.bottom - rc.top)
+    var w = rc.width()
+    var h = rc.height()
     if w <= 0 or h <= 0:
         print("readback: no client area")
         return
@@ -1097,19 +958,9 @@ def readback(life: LifePtr, hwnd: Int) raises:
 
 
 def main() raises:
-    comptime assert (
-        size_of[WNDCLASSEXW]() == winkb_struct_size["WNDCLASSEXW"]()
-    ), "WNDCLASSEXW does not match Windows"
-    comptime assert (
-        size_of[MSG]() == winkb_struct_size["MSG"]()
-    ), "MSG does not match Windows"
-    comptime assert (
-        size_of[RECT]() == winkb_struct_size["RECT"]()
-    ), "RECT does not match Windows"
-    comptime assert (
-        size_of[BITMAPINFOHEADER]() == winkb_struct_size["BITMAPINFOHEADER"]()
-    ), "BITMAPINFOHEADER does not match Windows"
-
+    # The four struct-size assertions that used to open this function are in
+    # `std.windows.gui` now, next to the structs they guard, where they are
+    # checked once instead of once per example.
     var selftest = False
     var hold_ms = 3000
     var args = argv()
@@ -1142,14 +993,13 @@ def main() raises:
         ]()
         _ = SetProcessDPIAware()
 
-    var GetModuleHandleW = win32[
-        def (Int) thin abi("C") -> Int, "GetModuleHandleW"
-    ]()
-    var GetLastError = win32[def () thin abi("C") -> UInt32, "GetLastError"]()
+    # The rest of what `main` calls directly. Creating the window, registering
+    # its class and running the loop are `std.windows.gui`'s now; what is left
+    # is the geometry correction, the timer, and the pointer Windows keeps for
+    # the procedure.
     var LoadCursorW = win32[def (Int, Int) thin abi("C") -> Int, "LoadCursorW"]()
-    var RegisterClassExW = win32[
-        def (Pointer[WNDCLASSEXW, MutAnyOrigin]) thin abi("C") -> UInt16,
-        "RegisterClassExW",
+    var SetClassLongPtrW = win32[
+        def (Int, c_int, Int) thin abi("C") -> Int, "SetClassLongPtrW"
     ]()
     var AdjustWindowRectEx = win32[
         def (
@@ -1157,21 +1007,6 @@ def main() raises:
         ) thin abi("C") -> c_int,
         "AdjustWindowRectEx",
     ]()
-    var CreateWindowExW = win32[
-        def (
-            UInt32,
-            Pointer[UInt16, MutAnyOrigin],
-            Pointer[UInt16, MutAnyOrigin],
-            UInt32,
-            c_int, c_int, c_int, c_int,
-            Int, Int, Int, Int,
-        ) thin abi("C") -> Int,
-        "CreateWindowExW",
-    ]()
-    var ShowWindow = win32[
-        def (Int, c_int) thin abi("C") -> c_int, "ShowWindow"
-    ]()
-    var UpdateWindow = win32[def (Int) thin abi("C") -> c_int, "UpdateWindow"]()
     var SetWindowLongPtrW = win32[
         def (Int, c_int, Int) thin abi("C") -> Int, "SetWindowLongPtrW"
     ]()
@@ -1180,20 +1015,6 @@ def main() raises:
     ]()
     var KillTimer = win32[
         def (Int, Int) thin abi("C") -> c_int, "KillTimer"
-    ]()
-    var GetMessageW = win32[
-        def (
-            Pointer[MSG, MutAnyOrigin], Int, UInt32, UInt32
-        ) thin abi("C") -> c_int,
-        "GetMessageW",
-    ]()
-    var TranslateMessage = win32[
-        def (Pointer[MSG, MutAnyOrigin]) thin abi("C") -> c_int,
-        "TranslateMessage",
-    ]()
-    var DispatchMessageW = win32[
-        def (Pointer[MSG, MutAnyOrigin]) thin abi("C") -> Int,
-        "DispatchMessageW",
     ]()
 
     # ── State, on the heap ───────────────────────────────────────────────
@@ -1243,30 +1064,13 @@ def main() raises:
     render(life)
 
     # ── The window ───────────────────────────────────────────────────────
-    var hInstance = GetModuleHandleW(0)
-    var class_name = wide("MojoLifeWindow")
-    var title = wide("Life")
-
-    # A `def` cannot be handed to Windows directly: it goes through a thin
-    # C-ABI fn value first, and the named type is shared with DefWindowProcW
-    # so the two cannot drift.
-    var proc: WndProcType = life_wndproc
-
-    var wc = WNDCLASSEXW()
-    wc.cbSize = UInt32(size_of[WNDCLASSEXW]())
-    wc.style = UInt32(
-        winkb_constant["CS_HREDRAW"]() | winkb_constant["CS_VREDRAW"]()
-    )
-    wc.lpfnWndProc = Int(_fn_ptr_as_opaque(proc))
-    wc.hInstance = hInstance
-    # A crosshair, because this window is a drawing surface.
-    wc.hCursor = LoadCursorW(0, winkb_constant["IDC_CROSS"]())
-    wc.lpszClassName = Int(class_name.unsafe_ptr())
-
-    if RegisterClassExW(com_addr(wc)) == 0:
-        raise Error(
-            "RegisterClassExW failed, GetLastError = " + String(GetLastError())
-        )
+    # A class and a window, from `std.windows.gui`. The class registration
+    # that used to be here -- twelve fields, a cbSize, and a size assertion --
+    # is the same twelve fields for every program that has a window, so it is
+    # written once there. `WndProc` is the procedure's type, named in the same
+    # module as `default_handler`, so the two cannot drift apart.
+    var proc: WndProc = life_wndproc
+    var klass = WindowClass("MojoLifeWindow", proc)
 
     # CreateWindowExW takes the OUTER size, so ask Windows how much frame a
     # WS_OVERLAPPEDWINDOW adds rather than guessing at a border width.
@@ -1278,33 +1082,29 @@ def main() raises:
     want.bottom = Int32(WIN_H)
     _ = AdjustWindowRectEx(com_addr(want), UInt32(STYLE), c_int(0), UInt32(0))
 
-    var hwnd = CreateWindowExW(
-        UInt32(0),
-        class_name.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
-        title.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
-        UInt32(STYLE),
-        c_int(60), c_int(60),
-        c_int(Int(want.right - want.left)),
-        c_int(Int(want.bottom - want.top)),
-        0, 0, hInstance, 0,
+    var window = Window(klass, "Life", want.width(), want.height())
+    var hwnd = window.handle
+
+    # The shared class asks Windows for an arrow, because a class whose
+    # hCursor is zero is one Windows never sets a cursor for at all. This
+    # window is a drawing surface and wants a crosshair. The cursor is a
+    # property of the CLASS, and a class property is settable after
+    # registration as well as inside it -- GCLP_HCURSOR is that slot, and
+    # SetClassLongPtrW names the class through one of its windows.
+    _ = SetClassLongPtrW(
+        hwnd,
+        c_int(winkb_constant["GCLP_HCURSOR"]()),
+        LoadCursorW(0, winkb_constant["IDC_CROSS"]()),
     )
-    if hwnd == 0:
-        raise Error(
-            "CreateWindowExW failed, GetLastError = " + String(GetLastError())
-        )
-    # The class name and title buffers must outlive the calls that read them.
-    _ = class_name
-    _ = title
 
     # AdjustWindowRectEx answers for the SYSTEM dpi, which is not necessarily
     # this window's monitor's, and the frame also depends on the theme. So
     # measure what actually came out and correct it once, rather than trusting
     # the arithmetic -- that is what makes the blit exactly 1:1, and what lets
     # the self-test demand an exact pixel count instead of a plausible one.
-    var GetClientRect = win32[
-        def (Int, Pointer[RECT, MutAnyOrigin]) thin abi("C") -> c_int,
-        "GetClientRect",
-    ]()
+    #
+    # The same call places the window, because `Window` asks for
+    # CW_USEDEFAULT and this example would rather be at a known corner.
     var GetWindowRect = win32[
         def (Int, Pointer[RECT, MutAnyOrigin]) thin abi("C") -> c_int,
         "GetWindowRect",
@@ -1315,23 +1115,18 @@ def main() raises:
         ) thin abi("C") -> c_int,
         "SetWindowPos",
     ]()
-    var have = RECT()
-    _ = GetClientRect(hwnd, com_addr(have))
-    var dw = WIN_W - Int(have.right - have.left)
-    var dh = WIN_H - Int(have.bottom - have.top)
-    if dw != 0 or dh != 0:
-        var outer = RECT()
-        _ = GetWindowRect(hwnd, com_addr(outer))
-        _ = SetWindowPos(
-            hwnd, 0, c_int(0), c_int(0),
-            c_int(Int(outer.right - outer.left) + dw),
-            c_int(Int(outer.bottom - outer.top) + dh),
-            UInt32(
-                winkb_constant["SWP_NOMOVE"]()
-                | winkb_constant["SWP_NOZORDER"]()
-                | winkb_constant["SWP_NOACTIVATE"]()
-            ),
-        )
+    var have = window.client_size()
+    var outer = RECT()
+    _ = GetWindowRect(hwnd, com_addr(outer))
+    _ = SetWindowPos(
+        hwnd, 0, c_int(60), c_int(60),
+        c_int(outer.width() + WIN_W - have.width()),
+        c_int(outer.height() + WIN_H - have.height()),
+        UInt32(
+            winkb_constant["SWP_NOZORDER"]()
+            | winkb_constant["SWP_NOACTIVATE"]()
+        ),
+    )
 
     if selftest:
         var ticks = hold_ms // TICK_MS
@@ -1343,26 +1138,17 @@ def main() raises:
     _ = SetWindowLongPtrW(
         hwnd, c_int(winkb_constant["GWLP_USERDATA"]()), Int(store)
     )
-    _ = ShowWindow(hwnd, c_int(winkb_constant["SW_SHOW"]()))
-    _ = UpdateWindow(hwnd)
+    window.show()
     update_title(life, hwnd)
     _ = SetTimer(hwnd, TICK_TIMER_ID, UInt32(TICK_MS), 0)
 
     # ── The loop ─────────────────────────────────────────────────────────
-    # GetMessageW blocks, so a paused simulation costs nothing; the clock is
-    # the timer, and TranslateMessage is what turns WM_KEYDOWN into the
-    # WM_CHAR the key handling reads. Omit it and nothing typed arrives.
-    var msg = MSG()
-    while True:
-        var got = GetMessageW(com_addr(msg), 0, 0, 0)
-        if got == 0:
-            break
-        if got == -1:
-            raise Error(
-                "GetMessageW failed, GetLastError = " + String(GetLastError())
-            )
-        _ = TranslateMessage(com_addr(msg))
-        _ = DispatchMessageW(com_addr(msg))
+    # `gui.run` is the blocking loop: GetMessageW, TranslateMessage,
+    # DispatchMessageW, and the -1 case that a `while GetMessageW(...) != 0`
+    # spins on forever. Blocking is the right one here -- the clock is a
+    # WM_TIMER, so a paused simulation costs nothing -- and TranslateMessage
+    # is what turns WM_KEYDOWN into the WM_CHAR the key handling reads.
+    _ = run()
 
     _ = KillTimer(hwnd, TICK_TIMER_ID)
     print("generations", life[].gen, " frames painted", life[].painted)

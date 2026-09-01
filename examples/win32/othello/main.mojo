@@ -27,11 +27,17 @@
 # first -- a move generator that is subtly wrong plays a game that looks
 # entirely normal.
 #
-# The board is drawn into a BGRA buffer and pushed into the window's device
-# context by StretchDIBits, exactly as `life/` does: no swap chain, no D3D
-# device, no COM, nothing that can be lost and need recreating. The two status
-# lines are GDI text drawn on top of that blit, which is the one thing the
-# pixel buffer is a bad tool for.
+# The board is drawn into a BGRA buffer and handed to `present_bgra` from
+# `std.windows.gui`: no swap chain, no D3D device, no COM, nothing that can be
+# lost and need recreating. The two status lines are GDI text drawn on top of
+# that blit, which is the one thing the pixel buffer is a bad tool for.
+#
+# The window, the class, the loop and the four structures Windows passes by
+# pointer all come from `std.windows.gui`. What is left in this file is what
+# the example is actually about: the rules, the two players, the disc
+# rasteriser, and the three unusual things a board wants from a window --
+# a hand cursor, a frame that cannot be dragged, and a client area corrected
+# to exactly the buffer's size so the blit is 1:1.
 #
 # The loop is a hand-rolled PeekMessageW pump rather than the blocking
 # GetMessageW loop `life/` uses, for the reason `fluid/` gives: the pump owns
@@ -64,14 +70,24 @@ from std.python._cpython import _fn_ptr_as_opaque
 from std.sys import argv
 from std.sys.info import size_of
 from std.sys._com import com_addr
-from std.sys._win32 import Win32Module
 from std.sys._winkb import (
     winkb_constant,
     winkb_db_schema_version,
-    winkb_function_dll,
     winkb_struct_size,
 )
 from std.windows import performance_counter, performance_frequency
+from std.windows.core import WideString, raise_last_error
+from std.windows.gui import (
+    BITMAPINFOHEADER,
+    MSG,
+    RECT,
+    WNDCLASSEXW,
+    WndProc,
+    default_handler,
+    present_bgra,
+    quit,
+    win32,
+)
 
 from examples.win32.othello.board import (
     bit,
@@ -130,150 +146,20 @@ comptime CPU_PLAYOUTS = 512
 
 
 # ===----------------------------------------------------------------------=== #
-# Entry points, typed, from whichever DLL the metadata names.
+# What this file no longer contains
+#
+# `win32[Sig, name]`, `WNDCLASSEXW`, `MSG`, `RECT`, `BITMAPINFOHEADER`, a
+# hand-rolled `wide()`, and the StretchDIBits blit were all written out here.
+# They now come from `std.windows.gui` and `std.windows.core`, which assert
+# every layout against the same metadata this file queries -- and, in the case
+# of `WideString`, convert through MultiByteToWideChar rather than a loop over
+# bytes that quietly turned anything non-ASCII into Latin-1.
+#
+# What did NOT move is below: the disc rasteriser, the board evaluator, the
+# fixed status-line buffers the window procedure reads under Windows' timing,
+# and a pump that has to read WM_LBUTTONDOWN itself because the thread that
+# owns the CUDA context is the one that has to make the move.
 # ===----------------------------------------------------------------------=== #
-
-
-def win32[Sig: TrivialRegisterPassable, name: StaticString]() raises -> Sig:
-    """A Win32 entry point, typed, from whichever DLL the metadata names.
-
-    Parameters:
-        Sig: The full thin C-ABI signature. Spell every argument -- an
-            under-declared signature compiles and then corrupts the call.
-        name: The exported function, e.g. "CreateWindowExW".
-    """
-    return Win32Module(String(winkb_function_dll[name]())).function[Sig](
-        String(name)
-    )
-
-
-def wide(s: StaticString) -> List[UInt16]:
-    """A NUL-terminated UTF-16 buffer for the W-suffixed entry points."""
-    var out = List[UInt16]()
-    for byte in s.as_bytes():
-        out.append(UInt16(Int(byte)))
-    out.append(0)
-    return out^
-
-
-def wide_of(s: String) -> List[UInt16]:
-    """The same, for text built at run time.
-
-    One byte to one unit would be Latin-1 rather than UTF-8, so this walks
-    codepoints and encodes anything above the basic plane as a surrogate pair.
-    """
-    var out = List[UInt16]()
-    for c in s.codepoints():
-        var v = Int(c)
-        if v >= 0x10000:
-            var u = v - 0x10000
-            out.append(UInt16(0xD800 + (u >> 10)))
-            out.append(UInt16(0xDC00 + (u & 0x3FF)))
-        else:
-            out.append(UInt16(v))
-    out.append(0)
-    return out^
-
-
-# ===----------------------------------------------------------------------=== #
-# Structures. Layouts are asserted against Windows at compile time; claiming
-# TrivialRegisterPassable on any of these would not fail to compile, it would
-# silently write fields to the wrong places.
-# ===----------------------------------------------------------------------=== #
-
-
-@fieldwise_init
-struct WNDCLASSEXW(Defaultable, Copyable, Movable):
-    var cbSize: UInt32
-    var style: UInt32
-    var lpfnWndProc: Int
-    var cbClsExtra: Int32
-    var cbWndExtra: Int32
-    var hInstance: Int
-    var hIcon: Int
-    var hCursor: Int
-    var hbrBackground: Int
-    var lpszMenuName: Int
-    var lpszClassName: Int
-    var hIconSm: Int
-
-    def __init__(out self):
-        self.cbSize = 0
-        self.style = 0
-        self.lpfnWndProc = 0
-        self.cbClsExtra = 0
-        self.cbWndExtra = 0
-        self.hInstance = 0
-        self.hIcon = 0
-        self.hCursor = 0
-        self.hbrBackground = 0
-        self.lpszMenuName = 0
-        self.lpszClassName = 0
-        self.hIconSm = 0
-
-
-@fieldwise_init
-struct MSG(Defaultable, Copyable, Movable):
-    var hwnd: Int
-    var message: UInt32
-    var wParam: Int
-    var lParam: Int
-    var time: UInt32
-    var ptX: Int32
-    var ptY: Int32
-    var lPrivate: UInt32
-
-    def __init__(out self):
-        self.hwnd = 0
-        self.message = 0
-        self.wParam = 0
-        self.lParam = 0
-        self.time = 0
-        self.ptX = 0
-        self.ptY = 0
-        self.lPrivate = 0
-
-
-@fieldwise_init
-struct RECT(Defaultable, Copyable, Movable):
-    var left: Int32
-    var top: Int32
-    var right: Int32
-    var bottom: Int32
-
-    def __init__(out self):
-        self.left = 0
-        self.top = 0
-        self.right = 0
-        self.bottom = 0
-
-
-@fieldwise_init
-struct BITMAPINFOHEADER(Defaultable, Copyable, Movable):
-    var biSize: UInt32
-    var biWidth: Int32
-    var biHeight: Int32
-    var biPlanes: UInt16
-    var biBitCount: UInt16
-    var biCompression: UInt32
-    var biSizeImage: UInt32
-    var biXPelsPerMeter: Int32
-    var biYPelsPerMeter: Int32
-    var biClrUsed: UInt32
-    var biClrImportant: UInt32
-
-    def __init__(out self):
-        self.biSize = 0
-        self.biWidth = 0
-        self.biHeight = 0
-        self.biPlanes = 0
-        self.biBitCount = 0
-        self.biCompression = 0
-        self.biSizeImage = 0
-        self.biXPelsPerMeter = 0
-        self.biYPelsPerMeter = 0
-        self.biClrUsed = 0
-        self.biClrImportant = 0
 
 
 @fieldwise_init
@@ -612,78 +498,49 @@ def render(
                 )
 
 
-def store_line(dst: Int, text: String) -> Int:
+def store_line(dst: Int, text: String) raises -> Int:
     """Encode a status line into its fixed UTF-16 buffer.
 
     Fixed, and written in place, because the window procedure reads it during
     WM_PAINT and Windows decides when that happens: a `List` rebuilt on the
-    pump's side would move the storage under the painter.
+    pump's side would move the storage under the painter. That is why this is
+    a copy INTO a buffer rather than a `WideString` held in a variable -- the
+    conversion itself is `WideString`'s, which is Windows' own and handles
+    everything a loop over `codepoints()` here used to get wrong.
 
     Returns:
         The number of UTF-16 units, which is what TextOutW wants.
+
+    Raises:
+        If the text is not valid UTF-8.
     """
+    var units = WideString(text)
+    var src = units.unsafe_ptr()
+    var n = len(units)
+    if n > LINE_CAP - 1:
+        n = LINE_CAP - 1
+        # Never end on a lone high surrogate: half a character is not a
+        # character, and TextOutW draws the replacement box for it.
+        var last = Int(src[unsafe_offset = n - 1])
+        if last >= 0xD800 and last <= 0xDBFF:
+            n -= 1
     var p = words_at(dst)
-    var n = 0
-    for c in text.codepoints():
-        var v = Int(c)
-        if v >= 0x10000:
-            if n + 2 >= LINE_CAP:
-                break
-            var u = v - 0x10000
-            p[unsafe_offset=n] = UInt16(0xD800 + (u >> 10))
-            p[unsafe_offset = n + 1] = UInt16(0xDC00 + (u & 0x3FF))
-            n += 2
-        else:
-            if n + 1 >= LINE_CAP:
-                break
-            p[unsafe_offset=n] = UInt16(v)
-            n += 1
+    for i in range(n):
+        p[unsafe_offset=i] = src[unsafe_offset=i]
     p[unsafe_offset=n] = 0
+    _ = units^
     return n
 
 
 # ===----------------------------------------------------------------------=== #
 # Getting the buffer onto the window
+#
+# The blit is `present_bgra` from `std.windows.gui`: same top-down DIB, same
+# StretchDIBits, same scale-to-the-client-rectangle. There is nothing othello
+# about it, which is exactly why forty lines of it are gone from this file.
+#
+# The text on top is not the same story, and stays here.
 # ===----------------------------------------------------------------------=== #
-
-
-def blit(hdc: Int, pixels: Int, dest_w: Int, dest_h: Int) raises:
-    """Push the CPU buffer into a device context."""
-    var StretchDIBits = win32[
-        def (
-            Int,  # HDC
-            c_int, c_int, c_int, c_int,  # xDest, yDest, DestW, DestH
-            c_int, c_int, c_int, c_int,  # xSrc, ySrc, SrcW, SrcH
-            Pointer[UInt32, MutAnyOrigin],  # lpBits
-            Pointer[BITMAPINFOHEADER, MutAnyOrigin],  # lpbmi
-            UInt32,  # iUsage
-            UInt32,  # rop
-        ) thin abi("C") -> c_int,
-        "StretchDIBits",
-    ]()
-
-    var bmi = BITMAPINFOHEADER()
-    bmi.biSize = UInt32(size_of[BITMAPINFOHEADER]())
-    bmi.biWidth = Int32(WIN_W)
-    # A NEGATIVE height asks GDI for a top-down DIB: row 0 is the top row,
-    # which is the order the board is computed in. Positive means bottom-up,
-    # and the picture arrives upside down -- which for an 8x8 board that is
-    # nearly symmetric is a bug you can stare straight through.
-    bmi.biHeight = Int32(-WIN_H)
-    bmi.biPlanes = 1
-    bmi.biBitCount = 32
-    bmi.biCompression = UInt32(winkb_constant["BI_RGB"]())
-
-    _ = StretchDIBits(
-        hdc,
-        c_int(0), c_int(0), c_int(dest_w), c_int(dest_h),
-        c_int(0), c_int(0), c_int(WIN_W), c_int(WIN_H),
-        Pointer[UInt32, MutAnyOrigin](unsafe_from_address=pixels),
-        com_addr(bmi),
-        UInt32(winkb_constant["DIB_RGB_COLORS"]()),
-        UInt32(winkb_constant["SRCCOPY"]()),
-    )
-    _ = bmi
 
 
 def draw_status(hdc: Int, scene: ScenePtr, scale_x: Int, scale_y: Int) raises:
@@ -747,9 +604,6 @@ def draw_status(hdc: Int, scene: ScenePtr, scale_x: Int, scale_y: Int) raises:
 # keeps the CUDA context an ordinary local in `main`.
 # ===----------------------------------------------------------------------=== #
 
-comptime WndProcType = def (Int, UInt32, Int, Int) thin abi("C") -> Int
-
-
 @export("othello_wndproc")
 def othello_wndproc(
     hwnd: Int, message: UInt32, wparam: Int, lparam: Int
@@ -793,9 +647,20 @@ def othello_wndproc(
                 if scene[].pixels != 0:
                     var rc = RECT()
                     _ = GetClientRect(hwnd, com_addr(rc))
-                    var w = Int(rc.right - rc.left)
-                    var h = Int(rc.bottom - rc.top)
-                    blit(hdc, scene[].pixels, w, h)
+                    var w = rc.width()
+                    var h = rc.height()
+                    # A Span rather than the bare address, so a buffer that
+                    # is not WIN_W x WIN_H is refused here instead of being
+                    # read past the end of by the display driver.
+                    present_bgra(
+                        hwnd,
+                        Span(
+                            unsafe_ptr=dwords_at(scene[].pixels),
+                            length=PIXELS,
+                        ),
+                        WIN_W,
+                        WIN_H,
+                    )
                     draw_status(hdc, scene, w, h)
                     scene[].painted += 1
             # BeginPaint cleared the update region; EndPaint closes it. Skip
@@ -815,14 +680,10 @@ def othello_wndproc(
             # This is what puts WM_QUIT on the queue and ends the pump. A
             # window that closes but whose process hangs is always a missing
             # PostQuitMessage.
-            var PostQuitMessage = win32[
-                def (c_int) thin abi("C") -> NoneType, "PostQuitMessage"
-            ]()
-            _ = PostQuitMessage(c_int(0))
+            quit(0)
             return 0
 
-        var DefWindowProcW = win32[WndProcType, "DefWindowProcW"]()
-        return DefWindowProcW(hwnd, message, wparam, lparam)
+        return default_handler(hwnd, message, wparam, lparam)
     except:
         return 0
 
@@ -1197,8 +1058,8 @@ def readback(hwnd: Int, pixels: Int) raises:
 
     var rc = RECT()
     _ = GetClientRect(hwnd, com_addr(rc))
-    var w = Int(rc.right - rc.left)
-    var h = Int(rc.bottom - rc.top)
+    var w = rc.width()
+    var h = rc.height()
     if w <= 0 or h <= 0:
         print("readback: no client area")
         return
@@ -1287,6 +1148,11 @@ def readback(hwnd: Int, pixels: Int) raises:
 
 
 def main() raises:
+    # The four structures are the stdlib's now, but the asserts stay: the
+    # module's own checks live inside `WindowClass.__init__` and `pump()`,
+    # and this example calls neither -- it registers its own class and runs
+    # its own loop, for the two reasons given at each. A `comptime assert`
+    # in a function nobody elaborates is a check nobody makes.
     comptime assert (
         size_of[WNDCLASSEXW]() == winkb_struct_size["WNDCLASSEXW"]()
     ), "WNDCLASSEXW does not match Windows"
@@ -1371,7 +1237,6 @@ def main() raises:
     var GetModuleHandleW = win32[
         def (Int) thin abi("C") -> Int, "GetModuleHandleW"
     ]()
-    var GetLastError = win32[def () thin abi("C") -> UInt32, "GetLastError"]()
     var LoadCursorW = win32[def (Int, Int) thin abi("C") -> Int, "LoadCursorW"]()
     var RegisterClassExW = win32[
         def (Pointer[WNDCLASSEXW, MutAnyOrigin]) thin abi("C") -> UInt16,
@@ -1482,14 +1347,24 @@ def main() raises:
     )
 
     # ── The window ───────────────────────────────────────────────────────
+    # `std.windows.gui` has `WindowClass` and `Window`, and this example does
+    # not use them, which is the one place it deliberately stays low-level.
+    # They register an arrow cursor and create a WS_OVERLAPPEDWINDOW at
+    # CW_USEDEFAULT; a board wants a hand cursor, a frame that cannot be
+    # dragged, and a client area corrected below to exactly WIN_W x WIN_H --
+    # which is what makes the blit 1:1, the click mapping a division, and the
+    # readback able to demand an exact match rather than a plausible one.
+    # Widening the stdlib to take a cursor, a style and a position would make
+    # it the beginning of a widget library, which its own header says it is
+    # not. The structure and the entry-point lookup are still the shared ones.
     var hInstance = GetModuleHandleW(0)
-    var class_name = wide("MojoOthelloWindow")
-    var title = wide("Othello")
+    var class_name = WideString("MojoOthelloWindow")
+    var title = WideString("Othello")
 
     # A `def` cannot be handed to Windows directly: it goes through a thin
-    # C-ABI fn value first, and the named type is shared with DefWindowProcW
-    # so the two cannot drift.
-    var proc: WndProcType = othello_wndproc
+    # C-ABI fn value first, and `WndProc` is the stdlib's name for that type,
+    # so a class registration and the procedure it names cannot drift apart.
+    var proc: WndProc = othello_wndproc
 
     var wc = WNDCLASSEXW()
     wc.cbSize = UInt32(size_of[WNDCLASSEXW]())
@@ -1502,9 +1377,10 @@ def main() raises:
     wc.hCursor = LoadCursorW(0, winkb_constant["IDC_HAND"]())
     wc.lpszClassName = Int(class_name.unsafe_ptr())
     if RegisterClassExW(com_addr(wc)) == 0:
-        raise Error(
-            "RegisterClassExW failed, GetLastError = " + String(GetLastError())
-        )
+        # `raise_last_error` decodes the code through Windows' own message
+        # table, which is the difference between "error 1410" and "class
+        # already exists".
+        raise_last_error("RegisterClassExW")
 
     # Not resizable: the blit is 1:1, the click mapping is a division, and the
     # GDI text is placed in buffer coordinates. Take the thick frame and the
@@ -1517,18 +1393,16 @@ def main() raises:
 
     var hwnd = CreateWindowExW(
         UInt32(0),
-        class_name.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
-        title.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+        class_name.unsafe_ptr(),
+        title.unsafe_ptr(),
         UInt32(STYLE),
         c_int(90), c_int(60),
-        c_int(Int(want.right - want.left)),
-        c_int(Int(want.bottom - want.top)),
+        c_int(want.width()),
+        c_int(want.height()),
         0, 0, hInstance, 0,
     )
     if hwnd == 0:
-        raise Error(
-            "CreateWindowExW failed, GetLastError = " + String(GetLastError())
-        )
+        raise_last_error("CreateWindowExW")
     _ = class_name
     _ = title
 
@@ -1539,15 +1413,15 @@ def main() raises:
     # the readback demand an exact match instead of a plausible one.
     var have = RECT()
     _ = GetClientRect(hwnd, com_addr(have))
-    var dw = WIN_W - Int(have.right - have.left)
-    var dh = WIN_H - Int(have.bottom - have.top)
+    var dw = WIN_W - have.width()
+    var dh = WIN_H - have.height()
     if dw != 0 or dh != 0:
         var outer = RECT()
         _ = GetWindowRect(hwnd, com_addr(outer))
         _ = SetWindowPos(
             hwnd, 0, c_int(0), c_int(0),
-            c_int(Int(outer.right - outer.left) + dw),
-            c_int(Int(outer.bottom - outer.top) + dh),
+            c_int(outer.width() + dw),
+            c_int(outer.height() + dh),
             UInt32(
                 winkb_constant["SWP_NOMOVE"]()
                 | winkb_constant["SWP_NOZORDER"]()
@@ -1558,8 +1432,8 @@ def main() raises:
     # Two fonts, because the score and the commentary want different weights.
     # A negative height is a character height rather than a cell height, which
     # is the one everybody means.
-    var face = wide("Segoe UI")
-    var face_ptr = face.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin]()
+    var face = WideString("Segoe UI")
+    var face_ptr = face.unsafe_ptr()
     scene[].font1 = CreateFontW(
         Int32(-19), Int32(0), Int32(0), Int32(0),
         Int32(winkb_constant["FW_BOLD"]()),
@@ -1771,7 +1645,7 @@ def main() raises:
                     note += String(" (") + String(last_ms) + String(" ms)")
             scene[].count2 = store_line(Int(line2_buf), note)
 
-            var caption = wide_of(
+            var caption = WideString(
                 String("Othello - black ")
                 + String(b)
                 + String(" white ")
@@ -1780,10 +1654,8 @@ def main() raises:
                 + lvl
                 + String("   [N] new  [B I A M] level  [D] demo  [Esc] quit")
             )
-            _ = SetWindowTextW(
-                hwnd, caption.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin]()
-            )
-            _ = caption
+            _ = SetWindowTextW(hwnd, caption.unsafe_ptr())
+            _ = caption^
 
             # All painting funnels through WM_PAINT so that an uncovered
             # window repaints from the same code that animates it.

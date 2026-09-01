@@ -12,12 +12,21 @@
 # that puts a note-off before a note-on at the same instant -- is written
 # twice, so nothing about it can differ between them.
 #
+# The Windows underneath this is `std.windows`, not a private copy of it.
+# `std.windows.audio` opens the render stream and owns the ring; `RenderStream`
+# is the whole eight-step WASAPI open, and `abc_fill` below is this program's
+# only contribution to the audio deadline. `std.windows.gui` registers the
+# window class, and `std.windows.core` converts every string that crosses into
+# UTF-16. What is left in this directory is the ABC player: the parser, the
+# schedule, the chip, the MIDI stream and the panel.
+#
 # What the port had to change, and why, in one place:
 #
 #   * CoreAudio calls a render callback on a thread it owns. WASAPI hands you
-#     a ring buffer and an event and expects you to be the thread. So the
-#     callback becomes the body of the loop below -- and `render_scheduled`,
-#     which is the callback, did not change at all.
+#     a ring buffer and an event and expects you to be the thread. That is
+#     `RenderStream.write`, in the stdlib now; what survives here is the
+#     callback itself, as a `RenderFill` -- and `render_scheduled`, which is
+#     the callback, did not change at all.
 #   * `MusicDeviceMIDIEvent` takes a sample offset into the buffer being
 #     rendered, so the Mac's MIDI backend gets sample-exact timing out of the
 #     same callback. Windows' synthesiser is a device, not a unit we can pull
@@ -45,6 +54,7 @@
 #   the letter keys play, in Logic Pro's Musical Typing layout
 # ===----------------------------------------------------------------------=== #
 
+from std.collections.optional import Optional
 from std.ffi import c_int
 from std.memory import Pointer, MutUntrackedOrigin, OpaquePointer
 from std.memory.alloc import unsafe_alloc
@@ -60,6 +70,19 @@ from std.sys._winkb import (
 from std.sys.com import Apartment, Com, co_create
 from std.sys.info import size_of
 from std.windows import performance_counter, performance_frequency
+from std.windows.audio import (
+    RenderFill, RenderStream, default_render_meter,
+)
+from std.windows.core import WideString, from_wide, win32
+from std.windows.gui import (
+    MSG,
+    RECT,
+    WNDCLASSEXW,
+    WindowClass,
+    WndProc,
+    default_handler,
+    quit,
+)
 
 from chip import (
     P, chip_new, chip_free, get, put, route_filter, set_adsr, set_volume,
@@ -85,8 +108,8 @@ from ui import (
     ui_init, apply_params, all_notes_off, draw_screen, click, drag, release,
     key_down, key_up, make_font, semitone_for,
 )
-from win32 import win32, wide, wide_of, check_layouts, MSG, RECT, WNDCLASSEXW
 import wasapi
+from win32 import check_layouts
 import winmidi
 
 
@@ -94,8 +117,6 @@ import winmidi
 # on this same thread -- which takes a millisecond or two -- cannot starve the
 # speaker, and small enough that pressing pause is not heard a moment later.
 comptime BUFFER_MS = 120
-
-comptime WndProcType = def (Int, UInt32, Int, Int) thin abi("C") -> Int
 
 
 # ===----------------------------------------------------------------------===#
@@ -162,28 +183,26 @@ def scan_tunes(app: AppPtr, folder: String) raises:
     ]()
     var FindClose = win32[def (Int) thin abi("C") -> c_int, "FindClose"]()
 
-    var pattern = wide_of(folder + String("\\*.abc"))
+    var pattern = WideString(folder + String("\\*.abc"))
     var data = List[UInt8](
         length=winkb_struct_size["WIN32_FIND_DATAW"](), fill=0
     )
     var at = data.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin]()
-    var handle = FindFirstFileW(
-        pattern.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](), at
-    )
+    var handle = FindFirstFileW(pattern.unsafe_ptr(), at)
     _ = pattern
     if handle == 0 or handle == -1:
         return
-    # cFileName is 260 UTF-16 units at the offset the metadata records.
+    # cFileName is 260 UTF-16 units at the offset the metadata records, and
+    # `from_wide` is what turns them back into a Mojo string. A folk tune
+    # called `bourrée.abc` is not an edge case, and neither is one whose name
+    # a Windows user typed with an emoji in it -- both are one code unit per
+    # character exactly never.
     var name_at = winkb_field_offset["WIN32_FIND_DATAW", "cFileName"]()
+    var name_ptr = Pointer[UInt16, MutAnyOrigin](
+        unsafe_from_address=Int(at) + name_at
+    )
     while True:
-        var name = String("")
-        for i in range(260):
-            var lo = Int(data[name_at + i * 2])
-            var hi = Int(data[name_at + i * 2 + 1])
-            var unit = lo | (hi << 8)
-            if unit == 0:
-                break
-            name += chr(unit)
+        var name = from_wide(name_ptr)
         if len(name.as_bytes()) > 0:
             add_tune(app, folder + String("\\") + name)
         if FindNextFileW(handle, at) == c_int(0):
@@ -311,49 +330,46 @@ def play_tune(app: AppPtr, index: Int, mut midi: winmidi.MidiOut) raises:
 
 
 # ===----------------------------------------------------------------------===#
-# The fill loop: what used to be the render callback
+# The render callback
+#
+# This is the whole of what this program puts on the audio deadline, and it is
+# all that is left of a fill loop that used to be sixty lines. `RenderStream`
+# asks how much of the ring has drained, claims exactly that, calls this for
+# that many mono samples, fans them out into the engine's format and releases
+# -- so what remains here is the part that is about music.
+#
+# `RenderFill` is declared without `raises` and the compiler holds this to it:
+# nothing below can allocate, lock, do I/O or throw. The App pointer arrives
+# through `user`, which is the audio side's GWLP_USERDATA -- a C function
+# pointer is captureless and has nowhere else to keep anything.
 # ===----------------------------------------------------------------------===#
 
 
-def fill(app: AppPtr, a: wasapi.Audio, mono: Int) raises:
-    """One wake: write exactly what has drained, and not one frame more.
-
-    Everything here is what the Mac does inside CoreAudio's callback, with the
-    same no-allocation, no-locking contract -- the difference is only that
-    this function is called by a loop we own rather than by the system.
-    """
-    var pad = a.padding()
-    if pad == 0:
-        # The only reporter of starvation there is. Every call in this
-        # function returns S_OK through an underrun; the window shows this
-        # number so a hole in the sound has a name.
-        app[].starved += 1
-    var avail = a.frames - pad
-    if avail <= 0:
-        return
-    var address = a.get_buffer(avail)
-    if address == 0:
-        return
-
+@export("abc_fill")
+def abc_fill(
+    user: OpaquePointer[MutUntrackedOrigin],
+    dest: Pointer[Float32, MutUntrackedOrigin],
+    frames: Int,
+) abi("C") -> NoneType:
+    var app = AppPtr(unsafe_from_address=Int(user))
     var st = P(unsafe_from_address=app[].chip)
-    var buf = Pointer[Float32, MutUntrackedOrigin](unsafe_from_address=mono)
     if app[].paused != 0 or app[].backend == BACKEND_MIDI:
-        for i in range(avail):
-            buf[unsafe_offset=i] = Float32(0.0)
+        for i in range(frames):
+            dest[unsafe_offset=i] = Float32(0.0)
     else:
-        render_scheduled(st, buf, avail)
+        render_scheduled(st, dest, frames)
         # The loudest thing this program produced, which is a different claim
         # from the endpoint's meter: that one hears the whole machine, so a
         # run that made no sound at all can still meter whatever else is
         # playing. Both numbers together are the honest evidence.
-        for i in range(avail):
-            var v = Float64(buf[unsafe_offset=i])
+        var peak = app[].out_peak
+        for i in range(frames):
+            var v = Float64(dest[unsafe_offset=i])
             if v < 0.0:
                 v = -v
-            if v > app[].out_peak:
-                app[].out_peak = v
-    a.fan_out(address, mono, avail)
-    a.release_buffer(avail)
+            if v > peak:
+                peak = v
+        app[].out_peak = peak
 
     # A copy for the scope. Unsynchronised on purpose, and here there is not
     # even another thread to be unsynchronised with -- the window is painted
@@ -363,12 +379,13 @@ def fill(app: AppPtr, a: wasapi.Audio, mono: Int) raises:
             unsafe_from_address=app[].scope
         )
         var pos = app[].scope_pos
-        for i in range(avail):
-            scope[unsafe_offset=pos] = buf[unsafe_offset=i]
+        for i in range(frames):
+            scope[unsafe_offset=pos] = dest[unsafe_offset=i]
             pos += 1
             if pos >= SCOPE_LEN:
                 pos = 0
         app[].scope_pos = pos
+    return None
 
 
 # ===----------------------------------------------------------------------===#
@@ -466,8 +483,7 @@ def abc_wndproc(
         if stored == 0:
             # Messages arrive during CreateWindowExW, before there is anything
             # to point at.
-            var Def0 = win32[WndProcType, "DefWindowProcW"]()
-            return Def0(hwnd, message, wparam, lparam)
+            return default_handler(hwnd, message, wparam, lparam)
         var app = AppPtr(unsafe_from_address=stored)
 
         if message == UInt32(winkb_constant["WM_PAINT"]()):
@@ -533,14 +549,10 @@ def abc_wndproc(
             # This is what puts WM_QUIT on the queue and ends the loop. A
             # window that closes but whose process hangs is always a missing
             # PostQuitMessage.
-            var PostQuitMessage = win32[
-                def (c_int) thin abi("C") -> NoneType, "PostQuitMessage"
-            ]()
-            _ = PostQuitMessage(c_int(0))
+            quit(0)
             return 0
 
-        var DefWindowProcW = win32[WndProcType, "DefWindowProcW"]()
-        return DefWindowProcW(hwnd, message, wparam, lparam)
+        return default_handler(hwnd, message, wparam, lparam)
     except:
         return 0
 
@@ -722,7 +734,11 @@ comptime CLSID_FileOpenDialog = StaticString(
 )
 
 
-def open_panel(app: AppPtr, mut audio: wasapi.Audio) raises:
+def open_panel(
+    app: AppPtr,
+    mut speaker: Optional[RenderStream],
+    user: OpaquePointer[MutUntrackedOrigin],
+) raises:
     """The common file dialog, for a tune that is not in `tunes/`.
 
     The stream is STOPPED first and restarted after, and that is not tidiness.
@@ -738,27 +754,30 @@ def open_panel(app: AppPtr, mut audio: wasapi.Audio) raises:
         size_of[FilterSpec]() == winkb_struct_size["COMDLG_FILTERSPEC"]()
     ), "COMDLG_FILTERSPEC does not match Windows"
 
-    var was_running = audio.open
+    var was_running = False
+    if speaker:
+        was_running = speaker.value().running
     if was_running:
-        audio.stop()
+        speaker.value().stop()
         # Stop does not empty the ring, it stops draining it. Without the
-        # Reset, the prime below asks GetBuffer for the whole ring while most
-        # of it is still occupied, and the answer is
-        # AUDCLNT_E_BUFFER_TOO_LARGE -- which took the program with it before
-        # this line existed.
-        audio.reset()
+        # Reset, restarting asks GetBuffer for a ring that is still mostly
+        # occupied, and the answer is AUDCLNT_E_BUFFER_TOO_LARGE -- which took
+        # the program with it before this line existed. It is also the bug
+        # `std.windows.audio` records, and `spikes/win32/audio_smoke.mojo`
+        # reproduces it on purpose.
+        speaker.value().reset()
 
     var dialog = co_create[CLSID_FileOpenDialog, "IFileOpenDialog"]()
     var d = Com[StaticString("IFileOpenDialog")](of=dialog)
 
-    var label = wide_of(String("ABC tunes"))
-    var pattern = wide_of(String("*.abc"))
+    var label = WideString("ABC tunes")
+    var pattern = WideString("*.abc")
     var spec = FilterSpec(
         Int(label.unsafe_ptr()), Int(pattern.unsafe_ptr())
     )
     _ = d.SetFileTypes(UInt32(1), com_addr(spec))
-    var caption = wide_of(String("Add a tune"))
-    _ = d.SetTitle(caption.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin]())
+    var caption = WideString("Add a tune")
+    _ = d.SetTitle(caption.unsafe_ptr())
     _ = d.SetOptions(UInt32(winkb_constant["FOS_FORCEFILESYSTEM"]()))
 
     var chosen = String("")
@@ -777,13 +796,14 @@ def open_panel(app: AppPtr, mut audio: wasapi.Audio) raises:
                 com_addr(text_address),
             )
             if text_address != 0:
-                var w = OpaquePointer[MutUntrackedOrigin](
-                    unsafe_from_address=text_address
-                ).unsafe_bitcast[UInt16]()
-                var k = 0
-                while w[unsafe_offset=k] != UInt16(0) and k < 4096:
-                    chosen += chr(Int(w[unsafe_offset=k]))
-                    k += 1
+                # A path is exactly the string a `chr()` loop over code units
+                # gets wrong, and this one arrives from a file picker the user
+                # drove: `from_wide` is the boundary this library already owns.
+                chosen = from_wide(
+                    Pointer[UInt16, MutAnyOrigin](
+                        unsafe_from_address=text_address
+                    )
+                )
                 _ = win32[
                     def (Int) thin abi("C") -> NoneType, "CoTaskMemFree"
                 ]()(text_address)
@@ -802,21 +822,67 @@ def open_panel(app: AppPtr, mut audio: wasapi.Audio) raises:
         app[].status = String("added ") + basename(chosen)
 
     if was_running:
-        # Prime the ring again before restarting, for the same reason it was
-        # primed at start-up: the event is not signalled until the stream
-        # runs, so the first buffer is ours to fill.
-        var st2 = P(unsafe_from_address=app[].chip)
-        var buf = unsafe_alloc[Float32](audio.frames, alignment=64)
-        var pre = audio.get_buffer(audio.frames)
-        render_scheduled(
-            st2,
-            Pointer[Float32, MutUntrackedOrigin](unsafe_from_address=Int(buf)),
-            audio.frames,
+        # `start` primes the ring itself, filling only what is FREE, so the
+        # hand-written pre-roll that used to live here -- allocate, GetBuffer
+        # the whole ring, render, fan out, release -- is gone.
+        var fill = abc_fill
+        speaker.value().start(fill, user)
+
+
+def selftest_fill(app: AppPtr, a: wasapi.Audio, mono: Int) raises:
+    """One wake: write exactly what has drained, and not one frame more.
+
+    Everything here is what the Mac does inside CoreAudio's callback, with the
+    same no-allocation, no-locking contract -- the difference is only that
+    this function is called by a loop we own rather than by the system.
+    """
+    var pad = a.padding()
+    if pad == 0:
+        # The only reporter of starvation there is. Every call in this
+        # function returns S_OK through an underrun; the window shows this
+        # number so a hole in the sound has a name.
+        app[].starved += 1
+    var avail = a.frames - pad
+    if avail <= 0:
+        return
+    var address = a.get_buffer(avail)
+    if address == 0:
+        return
+
+    var st = P(unsafe_from_address=app[].chip)
+    var buf = Pointer[Float32, MutUntrackedOrigin](unsafe_from_address=mono)
+    if app[].paused != 0 or app[].backend == BACKEND_MIDI:
+        for i in range(avail):
+            buf[unsafe_offset=i] = Float32(0.0)
+    else:
+        render_scheduled(st, buf, avail)
+        # The loudest thing this program produced, which is a different claim
+        # from the endpoint's meter: that one hears the whole machine, so a
+        # run that made no sound at all can still meter whatever else is
+        # playing. Both numbers together are the honest evidence.
+        for i in range(avail):
+            var v = Float64(buf[unsafe_offset=i])
+            if v < 0.0:
+                v = -v
+            if v > app[].out_peak:
+                app[].out_peak = v
+    a.fan_out(address, mono, avail)
+    a.release_buffer(avail)
+
+    # A copy for the scope. Unsynchronised on purpose, and here there is not
+    # even another thread to be unsynchronised with -- the window is painted
+    # from the same loop, so the worst case is a sweep drawn one wake stale.
+    if app[].scope != 0:
+        var scope = Pointer[Float32, MutUntrackedOrigin](
+            unsafe_from_address=app[].scope
         )
-        audio.fan_out(pre, Int(buf), audio.frames)
-        audio.release_buffer(audio.frames)
-        buf.unsafe_free()
-        audio.start()
+        var pos = app[].scope_pos
+        for i in range(avail):
+            scope[unsafe_offset=pos] = buf[unsafe_offset=i]
+            pos += 1
+            if pos >= SCOPE_LEN:
+                pos = 0
+        app[].scope_pos = pos
 
 
 def selftest(
@@ -892,7 +958,7 @@ def selftest(
                 var p = a.peak()
                 if p > peak:
                     peak = p
-                fill(app, a, Int(mono))
+                selftest_fill(app, a, Int(mono))
             a.stop()
             print(
                 "  wakes", wakes, " underruns", app[].starved,
@@ -1123,13 +1189,13 @@ def main() raises:
     var DestroyWindow = win32[def (Int) thin abi("C") -> c_int, "DestroyWindow"]()
 
     var hInstance = GetModuleHandleW(0)
-    var class_name = wide("MojoAbcPlayerWindow")
-    var title = wide("ABC player")
+    var class_name = WideString("MojoAbcPlayerWindow")
+    var title = WideString("ABC player")
 
     # A `def` cannot be handed to Windows directly: it goes through a thin
     # C-ABI value first, and the named type is shared with DefWindowProcW so
     # the two cannot drift.
-    var proc: WndProcType = abc_wndproc
+    var proc: WndProc = abc_wndproc
 
     var wc = WNDCLASSEXW()
     wc.cbSize = UInt32(size_of[WNDCLASSEXW]())
@@ -1192,29 +1258,31 @@ def main() raises:
     # thread-agile -- and here the messages actually are pumped, which is the
     # thing an STA is owed.
     with Apartment(multithreaded=False):
-        var audio = wasapi.Audio()
+        var speaker: Optional[RenderStream] = None
+        var user = OpaquePointer[MutUntrackedOrigin](
+            unsafe_from_address=Int(store)
+        )
         if backend == BACKEND_CHIP:
-            audio = wasapi.open_output(BUFFER_MS)
-            print(wasapi.describe(audio))
-            if audio.rate != SAMPLE_RATE:
+            speaker = RenderStream(buffer_ms=BUFFER_MS)
+            var fmt = speaker.value().format.copy()
+            print(
+                "mix format:", fmt.rate, "Hz,", fmt.channels, "channels,",
+                fmt.bits, "bit,", "float" if fmt.is_float else "int16",
+            )
+            if fmt.rate != SAMPLE_RATE:
                 print(
-                    "NOTE: the engine runs at", audio.rate,
+                    "NOTE: the engine runs at", fmt.rate,
                     "and the chip at", SAMPLE_RATE,
                     "-- the tune will play at the wrong pitch",
                 )
             app[].home_subtitle = String(
                 "chip - three voices - "
-            ) + String(audio.rate) + String(" Hz")
+            ) + String(fmt.rate) + String(" Hz")
         else:
             app[].home_subtitle = String(
                 "General MIDI - "
             ) + winmidi.device_name()
         app[].subtitle = app[].home_subtitle
-
-        var mono_buf = unsafe_alloc[Float32](
-            audio.frames if audio.open else 1, alignment=64
-        )
-        var mono = Int(mono_buf)
 
         # The tune is loaded BEFORE the stream starts, not after. Reading and
         # parsing a file is tens of milliseconds of work in a build with no
@@ -1224,24 +1292,16 @@ def main() raises:
         if len(first.as_bytes()) > 0 and app[].sel >= 0:
             play_tune(app, app[].sel, midi)
 
-        if audio.open:
-            # Prime the whole ring before Start, with real samples rather than
-            # silence: the event is never signalled before the stream runs, so
-            # the first buffer has to be filled by hand, and starting on an
-            # unfilled ring is a guaranteed first-period underrun.
-            var pre = audio.get_buffer(audio.frames)
-            render_scheduled(
-                st,
-                Pointer[Float32, MutUntrackedOrigin](unsafe_from_address=mono),
-                audio.frames,
-            )
-            audio.fan_out(pre, mono, audio.frames)
-            audio.release_buffer(audio.frames)
-            audio.start()
+        var fill: RenderFill = abc_fill
+        if speaker:
+            # `start` fills the ring through the callback before the clock
+            # runs -- the pre-roll RenderStream insists on, preventing the
+            # same first-period underrun the hand-written prime used to.
+            speaker.value().start(fill, user)
 
         var handles = List[Int]()
-        if audio.open:
-            handles.append(audio.event)
+        if speaker:
+            handles.append(speaker.value().event)
         var nhandles = UInt32(len(handles))
         var handle_ptr = handles.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin]()
 
@@ -1260,8 +1320,10 @@ def main() raises:
                 nhandles, handle_ptr, c_int(0), UInt32(50),
                 UInt32(winkb_constant["QS_ALLINPUT"]()),
             )
-            if audio.open and got == UInt32(winkb_constant["WAIT_OBJECT_0"]()):
-                fill(app, audio, mono)
+            if speaker and got == UInt32(
+                winkb_constant["WAIT_OBJECT_0"]()
+            ):
+                _ = speaker.value().write(fill, user)
 
             while PeekMessageW(
                 com_addr(msg), 0, UInt32(0), UInt32(0),
@@ -1291,7 +1353,7 @@ def main() raises:
                     _ = DestroyWindow(hwnd)
                     continue
                 if want_add:
-                    open_panel(app, audio)
+                    open_panel(app, speaker, user)
                 if want_stop:
                     go_live(app, midi)
                     app[].title = String("ABC player")
@@ -1328,13 +1390,11 @@ def main() raises:
             if hold_ms > 0 and now - started > hold_ms * hz // 1000:
                 _ = DestroyWindow(hwnd)
 
-        if audio.open:
-            audio.stop()
-        mono_buf.unsafe_free()
-        audio.close()
-        # `audio` owns five COM pointers and must die inside this block: a
+        if speaker:
+            speaker.value().stop()
+        # The stream owns five COM pointers and must die inside this block: a
         # Release after CoUninitialize is a crash in ole32 with no stack.
-        _ = audio^
+        speaker = None
 
     winmidi.close(midi)
     print("underruns:", app[].starved)

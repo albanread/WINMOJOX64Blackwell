@@ -54,18 +54,27 @@ from std.gpu import global_idx
 from std.math import cos, sin
 from std.memory import Pointer, OpaquePointer, alloc
 from std.os import getenv
-from std.python._cpython import _fn_ptr_as_opaque
 from std.sys.info import size_of
 from std.sys._com import ComPtr, com_addr, _guid_bytes, com_method_of
-from std.sys._win32 import Win32Module
 from std.sys._winkb import (
     winkb_constant,
     winkb_field_offset,
-    winkb_function_dll,
     winkb_interface_iid,
     winkb_struct_size,
 )
 from std.windows import performance_counter, performance_frequency
+
+# The window, the class, the loop and the structures Windows passes by
+# pointer all come from here. What is left in this file is the meadow.
+from std.windows.gui import (
+    RECT,
+    Window,
+    WindowClass,
+    default_handler,
+    pump,
+    quit,
+    win32,
+)
 
 
 comptime W = 1024
@@ -120,99 +129,16 @@ comptime PROBE_GRID = (PROBE_THREADS + BLOCK - 1) // BLOCK
 
 
 # ===----------------------------------------------------------------------=== #
-# Win32: every entry point typed, and the DLL comes from the metadata rather
-# than from somebody's memory.
+# Direct3D 11 and DXGI structures. Everything a plain Win32 program needs --
+# the class, the message, the rectangle, the entry-point lookup -- now comes
+# from `std.windows.gui`; these three do not, because they belong to the
+# graphics stack rather than to having a window, and a module about windows
+# and message loops would be worse for carrying them.
+#
+# Flattened and never register-passable, and each size asserted in `main`
+# against the metadata: claiming register-passable does not fail to compile,
+# it silently writes the fields to the wrong places.
 # ===----------------------------------------------------------------------=== #
-
-
-def win32[
-    Sig: TrivialRegisterPassable, name: StaticString
-]() raises -> Sig:
-    """A Win32 entry point, typed, from whichever DLL the metadata names.
-
-    Parameters:
-        Sig: The full thin C-ABI signature. Spell every argument -- an
-            under-declared signature compiles and then corrupts the call.
-        name: The exported function, e.g. "CreateWindowExW".
-
-    Returns:
-        The entry point, callable.
-
-    Raises:
-        If the metadata does not name the function, or the DLL will not load.
-    """
-    return Win32Module(String(winkb_function_dll[name]())).function[Sig](
-        String(name)
-    )
-
-
-@fieldwise_init
-struct WNDCLASSEXW(Defaultable, Copyable, Movable):
-    """Not register-passable. Claiming otherwise does not fail to compile --
-    it silently writes the fields to the wrong places."""
-
-    var cbSize: UInt32
-    var style: UInt32
-    var lpfnWndProc: Int
-    var cbClsExtra: Int32
-    var cbWndExtra: Int32
-    var hInstance: Int
-    var hIcon: Int
-    var hCursor: Int
-    var hbrBackground: Int
-    var lpszMenuName: Int
-    var lpszClassName: Int
-    var hIconSm: Int
-
-    def __init__(out self):
-        self.cbSize = 0
-        self.style = 0
-        self.lpfnWndProc = 0
-        self.cbClsExtra = 0
-        self.cbWndExtra = 0
-        self.hInstance = 0
-        self.hIcon = 0
-        self.hCursor = 0
-        self.hbrBackground = 0
-        self.lpszMenuName = 0
-        self.lpszClassName = 0
-        self.hIconSm = 0
-
-
-@fieldwise_init
-struct MSG(Defaultable, Copyable, Movable):
-    var hwnd: Int
-    var message: UInt32
-    var wParam: Int
-    var lParam: Int
-    var time: UInt32
-    var ptX: Int32
-    var ptY: Int32
-    var lPrivate: UInt32
-
-    def __init__(out self):
-        self.hwnd = 0
-        self.message = 0
-        self.wParam = 0
-        self.lParam = 0
-        self.time = 0
-        self.ptX = 0
-        self.ptY = 0
-        self.lPrivate = 0
-
-
-@fieldwise_init
-struct RECT(Defaultable, Copyable, Movable):
-    var left: Int32
-    var top: Int32
-    var right: Int32
-    var bottom: Int32
-
-    def __init__(out self):
-        self.left = 0
-        self.top = 0
-        self.right = 0
-        self.bottom = 0
 
 
 @fieldwise_init
@@ -300,16 +226,14 @@ struct D3D11_VIEWPORT(Defaultable, Copyable, Movable):
         self.MaxDepth = 0
 
 
-def wide(s: StaticString) -> List[UInt16]:
-    """A NUL-terminated UTF-16 buffer for the W-suffixed entry points."""
-    var out = List[UInt16]()
-    for byte in s.as_bytes():
-        out.append(UInt16(Int(byte)))
-    out.append(0)
-    return out^
-
-
 def cstr(s: StaticString) -> List[UInt8]:
+    """A NUL-terminated ASCII buffer, for D3DCompile.
+
+    Not `WideString`: the HLSL compiler is one of the few pieces of Windows
+    with no W entry point at all, so this really is bytes. Anything that
+    names a window or a class goes through `std.windows.core.WideString`
+    instead.
+    """
     var out = List[UInt8]()
     for byte in s.as_bytes():
         out.append(byte)
@@ -346,9 +270,6 @@ struct Commands(Defaultable, Copyable, Movable):
         self.cmd = 0
         self.click_x = 0
         self.click_y = 0
-
-
-comptime WndProcType = def (Int, UInt32, Int, Int) thin abi("C") -> Int
 
 
 @export("fernwind_wndproc")
@@ -408,8 +329,8 @@ def fernwind_wndproc(
             ]()
             var rc = RECT()
             _ = GetClientRect(hwnd, com_addr(rc))
-            var cw = Int(rc.right - rc.left)
-            var ch = Int(rc.bottom - rc.top)
+            var cw = rc.width()
+            var ch = rc.height()
             if cw > 0 and ch > 0:
                 px = px * W // cw
                 py = py * H // ch
@@ -448,14 +369,10 @@ def fernwind_wndproc(
             return 0
 
         if message == UInt32(winkb_constant["WM_DESTROY"]()):
-            var PostQuitMessage = win32[
-                def (c_int) thin abi("C") -> NoneType, "PostQuitMessage"
-            ]()
-            _ = PostQuitMessage(c_int(0))
+            quit()
             return 0
 
-        var DefWindowProcW = win32[WndProcType, "DefWindowProcW"]()
-        return DefWindowProcW(hwnd, message, wparam, lparam)
+        return default_handler(hwnd, message, wparam, lparam)
     except:
         return 0
 
@@ -1022,16 +939,8 @@ def main() raises:
         pass
 
     # Windows describes its own structures. A disagreement is a build failure
-    # here rather than corruption at the first call.
-    comptime assert (
-        size_of[WNDCLASSEXW]() == winkb_struct_size["WNDCLASSEXW"]()
-    ), "WNDCLASSEXW does not match Windows"
-    comptime assert (
-        size_of[MSG]() == winkb_struct_size["MSG"]()
-    ), "MSG does not match Windows"
-    comptime assert (
-        size_of[RECT]() == winkb_struct_size["RECT"]()
-    ), "RECT does not match Windows"
+    # here rather than corruption at the first call. WNDCLASSEXW, MSG and RECT
+    # are asserted by `std.windows.gui` itself, where they now live.
     comptime assert (
         size_of[DXGI_SWAP_CHAIN_DESC]()
         == winkb_struct_size["DXGI_SWAP_CHAIN_DESC"]()
@@ -1091,102 +1000,42 @@ def main() raises:
     var back_ptr = back_host.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin]()
 
     # ---- the window ---------------------------------------------------------
-    var GetModuleHandleW = win32[
-        def (Int) thin abi("C") -> Int, "GetModuleHandleW"
-    ]()
-    var GetLastError = win32[def () thin abi("C") -> UInt32, "GetLastError"]()
-    var LoadCursorW = win32[def (Int, Int) thin abi("C") -> Int, "LoadCursorW"]()
-    var RegisterClassExW = win32[
-        def (Pointer[WNDCLASSEXW, MutAnyOrigin]) thin abi("C") -> UInt16,
-        "RegisterClassExW",
-    ]()
+    # `WindowClass` and `Window` do the registering, the creating and the
+    # showing. What stays here is the part a general window does not have: an
+    # exact client size, and a pointer the window procedure can find.
     var AdjustWindowRectEx = win32[
         def (
             Pointer[RECT, MutAnyOrigin], UInt32, c_int, UInt32
         ) thin abi("C") -> c_int,
         "AdjustWindowRectEx",
     ]()
-    var CreateWindowExW = win32[
-        def (
-            UInt32,
-            Pointer[UInt16, MutAnyOrigin],
-            Pointer[UInt16, MutAnyOrigin],
-            UInt32,
-            c_int, c_int, c_int, c_int,
-            Int, Int, Int, Int,
-        ) thin abi("C") -> Int,
-        "CreateWindowExW",
-    ]()
-    var ShowWindow = win32[
-        def (Int, c_int) thin abi("C") -> c_int, "ShowWindow"
-    ]()
-    var UpdateWindow = win32[def (Int) thin abi("C") -> c_int, "UpdateWindow"]()
     var SetWindowLongPtrW = win32[
         def (Int, c_int, Int) thin abi("C") -> Int, "SetWindowLongPtrW"
-    ]()
-    var PeekMessageW = win32[
-        def (
-            Pointer[MSG, MutAnyOrigin], Int, UInt32, UInt32, UInt32
-        ) thin abi("C") -> c_int,
-        "PeekMessageW",
-    ]()
-    var TranslateMessage = win32[
-        def (Pointer[MSG, MutAnyOrigin]) thin abi("C") -> c_int,
-        "TranslateMessage",
-    ]()
-    var DispatchMessageW = win32[
-        def (Pointer[MSG, MutAnyOrigin]) thin abi("C") -> Int,
-        "DispatchMessageW",
     ]()
     var DestroyWindow = win32[
         def (Int) thin abi("C") -> c_int, "DestroyWindow"
     ]()
 
-    var hInstance = GetModuleHandleW(0)
-    var class_name = wide("MojoFernwindWindow")
-    var title = wide(
-        "Fernwind - a GPU meadow swaying - click plants, space stills, r reseeds"
-    )
-    var proc: WndProcType = fernwind_wndproc
-
-    var wc = WNDCLASSEXW()
-    wc.cbSize = UInt32(size_of[WNDCLASSEXW]())
-    wc.style = UInt32(
-        winkb_constant["CS_HREDRAW"]() | winkb_constant["CS_VREDRAW"]()
-    )
-    wc.lpfnWndProc = Int(_fn_ptr_as_opaque(proc))
-    wc.hInstance = hInstance
-    wc.hCursor = LoadCursorW(0, winkb_constant["IDC_ARROW"]())
-    wc.lpszClassName = Int(class_name.unsafe_ptr())
-    if RegisterClassExW(com_addr(wc)) == 0:
-        raise Error(
-            "RegisterClassExW failed, GetLastError = " + String(GetLastError())
-        )
-
     # The client area must be exactly W x H, or the swap chain and the window
-    # disagree and DXGI stretches the meadow. AdjustWindowRectEx asks Windows
-    # how much frame this style needs rather than guessing at 16 and 39.
+    # disagree and DXGI stretches the meadow. `Window` takes the OUTER size --
+    # its docstring says so, and says not to assume the two are related --
+    # so Windows is asked how much frame WS_OVERLAPPEDWINDOW needs rather
+    # than being told 16 and 39.
     comptime STYLE = winkb_constant["WS_OVERLAPPEDWINDOW"]()
     var want = RECT(0, 0, Int32(W), Int32(H))
     _ = AdjustWindowRectEx(com_addr(want), UInt32(STYLE), c_int(0), UInt32(0))
-    var win_w = Int(want.right - want.left)
-    var win_h = Int(want.bottom - want.top)
 
-    var hwnd = CreateWindowExW(
-        UInt32(0),
-        class_name.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
-        title.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
-        UInt32(STYLE),
-        c_int(90), c_int(90), c_int(win_w), c_int(win_h),
-        0, 0, hInstance, 0,
+    var klass = WindowClass("MojoFernwindWindow", fernwind_wndproc)
+    var window = Window(
+        klass,
+        (
+            "Fernwind - a GPU meadow swaying - click plants, space stills, r"
+            " reseeds"
+        ),
+        want.width(),
+        want.height(),
     )
-    if hwnd == 0:
-        raise Error(
-            "CreateWindowExW failed, GetLastError = " + String(GetLastError())
-        )
-    # The class name and title buffers must outlive the calls that read them.
-    _ = class_name
-    _ = title
+    var hwnd = window.handle
 
     # Emplaced, not assigned: `store[] = value` destroys what was there first,
     # and what is there is whatever the allocator last had.
@@ -1196,8 +1045,7 @@ def main() raises:
         hwnd, c_int(winkb_constant["GWLP_USERDATA"]()), Int(store)
     )
 
-    _ = ShowWindow(hwnd, c_int(winkb_constant["SW_SHOW"]()))
-    _ = UpdateWindow(hwnd)
+    window.show()
 
     # ---- Direct3D 11 --------------------------------------------------------
     var create_device = win32[
@@ -1491,7 +1339,6 @@ def main() raises:
     if frame_limit != 0:
         print("FERNWIND_FRAMES =", frame_limit, "— will close itself")
 
-    var msg = MSG()
     var frames = 0
     var running = True
     var still = False
@@ -1501,18 +1348,10 @@ def main() raises:
     var last_tick = loop_start
 
     while running:
-        while (
-            PeekMessageW(com_addr(msg), 0, UInt32(0), UInt32(0), UInt32(1))
-            != 0
-        ):
-            # PeekMessageW REMOVES WM_QUIT from the queue, so the loop has to
-            # test for it: DispatchMessageW will not do it for you.
-            if msg.message == UInt32(winkb_constant["WM_QUIT"]()):
-                running = False
-            else:
-                _ = TranslateMessage(com_addr(msg))
-                _ = DispatchMessageW(com_addr(msg))
-        if not running:
+        # `pump` is the non-blocking loop: it clears the queue and comes
+        # straight back, which is what a program with a frame to compute
+        # needs. It answers False on WM_QUIT.
+        if not pump():
             break
 
         var pending = store[].cmd

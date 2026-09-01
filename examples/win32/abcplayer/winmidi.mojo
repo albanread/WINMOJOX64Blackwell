@@ -36,10 +36,10 @@ from std.sys._winkb import (
     winkb_struct_size,
 )
 from std.sys.info import size_of
+from std.windows.core import from_wide, win32
 
 from model import Tune, TICKS_PER_QUARTER
 from schedule import Step, SE_NOTE_ON, SE_NOTE_OFF, SE_CHIP
-from win32 import win32, wide_of
 
 
 # A MIDIEVENT is three DWORDs followed by a flexible array of parameter
@@ -173,16 +173,18 @@ def device_name() raises -> String:
     )
     if rc != UInt32(MMSYSERR_NOERROR):
         return String("")
-    # szPname is 32 UTF-16 units at the offset the metadata records.
+    # szPname is 32 UTF-16 units at the offset the metadata records, and it is
+    # decoded by `std.windows.core.from_wide` rather than by a `chr()` loop
+    # over code units. A device called "Roland SC-8850 <something outside the
+    # BMP>" is not hypothetical on a machine with a driver written in Japan,
+    # and one code unit is not one character there.
     var at = winkb_field_offset["MIDIOUTCAPSW", "szPname"]()
-    var name = String("")
-    for i in range(32):
-        var lo = Int(caps[at + i * 2])
-        var hi = Int(caps[at + i * 2 + 1])
-        var unit = lo | (hi << 8)
-        if unit == 0:
-            break
-        name += chr(unit)
+    var name = from_wide(
+        Pointer[UInt16, MutAnyOrigin](
+            unsafe_from_address=Int(caps.unsafe_ptr()) + at
+        )
+    )
+    _ = caps
     return name^
 
 

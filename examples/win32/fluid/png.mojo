@@ -13,33 +13,14 @@
 # CRC-32 (reflected, polynomial 0xEDB88320) over each chunk's type and data,
 # and Adler-32 over the uncompressed stream, as zlib requires.
 #
-# The file itself is written with CreateFileW and WriteFile through the
-# metadata, like everything else in this tree.
+# The file itself goes out through `std.windows.write_file`, which is
+# CreateFileW / WriteFile / CloseHandle done once, properly, with the short
+# write a real WriteFile is allowed to do already handled. There is no Windows
+# in this file at all beyond that one call: what is left is PNG.
 # ===----------------------------------------------------------------------=== #
 
-from std.ffi import c_int
-from std.memory import Pointer
-from std.sys._win32 import Win32Module
-from std.sys._winkb import winkb_constant, winkb_function_dll
-
-
-def win32[Sig: TrivialRegisterPassable, name: StaticString]() raises -> Sig:
-    """A Win32 entry point, typed, from whichever DLL the metadata names.
-
-    Parameters:
-        Sig: The full thin C-ABI signature. Spell every argument -- an
-            under-declared signature compiles and then corrupts the call.
-        name: The exported function, e.g. "CreateFileW".
-
-    Returns:
-        The entry point, callable.
-
-    Raises:
-        If the module or the export cannot be found.
-    """
-    return Win32Module(String(winkb_function_dll[name]())).function[Sig](
-        String(name)
-    )
+from std.memory import Pointer, Span
+from std.windows import write_file
 
 
 comptime U8 = Pointer[UInt8, MutAnyOrigin]
@@ -217,60 +198,17 @@ def write_png(
     _put32be(out, at + 8, _crc32(table, out.unsafe_offset(at + 4), 4))
     at += 12
 
-    # --- CreateFileW / WriteFile / CloseHandle ------------------------------
-    var CreateFileW = win32[
-        def (
-            Pointer[UInt16, MutAnyOrigin],
-            UInt32,
-            UInt32,
-            Int,
-            UInt32,
-            UInt32,
-            Int,
-        ) thin abi("C") -> Int,
-        "CreateFileW",
-    ]()
-    var WriteFile = win32[
-        def (
-            Int,
-            Pointer[UInt8, MutAnyOrigin],
-            UInt32,
-            Pointer[UInt32, MutAnyOrigin],
-            Int,
-        ) thin abi("C") -> c_int,
-        "WriteFile",
-    ]()
-    var CloseHandle = win32[def (Int) thin abi("C") -> c_int, "CloseHandle"]()
-
-    var wpath = List[UInt16]()
-    for byte in path.as_bytes():
-        wpath.append(UInt16(Int(byte)))
-    wpath.append(0)
-
-    var handle = CreateFileW(
-        wpath.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
-        UInt32(winkb_constant["GENERIC_WRITE"]()),
-        UInt32(0),
-        0,
-        UInt32(winkb_constant["CREATE_ALWAYS"]()),
-        UInt32(winkb_constant["FILE_ATTRIBUTE_NORMAL"]()),
-        0,
-    )
-    _ = wpath
-    if handle == winkb_constant["INVALID_HANDLE_VALUE"]() or handle == 0:
-        return False
-
-    var written = UInt32(0)
-    var ok = WriteFile(
-        handle,
-        out,
-        UInt32(at),
-        Pointer(to=written).unsafe_origin_cast[MutAnyOrigin](),
-        0,
-    )
-    _ = CloseHandle(handle)
+    # --- the file -----------------------------------------------------------
+    # `at` and not `len(out_store)`: they are equal, and saying which one is
+    # meant costs nothing. The failure is swallowed rather than raised because
+    # a screenshot that cannot be saved must not take the demo down mid-drag.
+    var ok = True
+    try:
+        write_file(path, Span[UInt8, MutAnyOrigin](unsafe_ptr=out, length=at))
+    except:
+        ok = False
     # Keep the backing stores alive across every use above.
     _ = raw_store
     _ = z_store
     _ = out_store
-    return ok != 0 and Int(written) == at
+    return ok

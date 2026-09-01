@@ -19,7 +19,7 @@ from std.sys._winkb import winkb_constant
 from model import (
     Tune, Event, EV_NOTE, TICKS_PER_QUARTER, F_GCHORD,
 )
-from win32 import win32, wide_of
+from std.windows.core import WideString, win32
 
 
 def put_byte(mut buf: List[UInt8], value: Int):
@@ -233,9 +233,9 @@ def write_midi(tune: Tune, path: String) raises -> Bool:
     ]()
     var CloseHandle = win32[def (Int) thin abi("C") -> c_int, "CloseHandle"]()
 
-    var wpath = wide_of(path)
+    var wpath = WideString(path)
     var handle = CreateFileW(
-        wpath.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+        wpath.unsafe_ptr(),
         UInt32(winkb_constant["GENERIC_WRITE"]()),
         UInt32(0),
         0,

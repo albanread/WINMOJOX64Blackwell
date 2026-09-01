@@ -23,12 +23,19 @@
 #   r        clear the ground and reseed
 #   q / esc  quit, as does closing the window
 #
-# Nothing Windows-shaped is written by hand. Which DLL exports each entry
-# point, every constant, and the size of every structure comes from
-# windows_api.db; PAINTSTRUCT is never declared at all, only sized. The four
-# structures that ARE declared assert their own size against the metadata at
-# compile time, so a layout that drifts from Windows fails the build rather
-# than the picture.
+# Nothing Windows-shaped is written by hand, and almost none of it is written
+# here. The window, its class, the structures Windows passes by pointer, and
+# the typed entry-point lookup all come from `std.windows.gui`; which DLL
+# exports each function and every constant comes from windows_api.db, and
+# PAINTSTRUCT is never declared at all, only sized. The three shared structs
+# this program hands to Windows on its own -- MSG, RECT, BITMAPINFOHEADER --
+# are re-asserted against the metadata in main(), so a stdlib layout that has
+# drifted from this SDK fails the build here rather than the picture.
+#
+# What stays local is what the example is about: the chaos game and the
+# ferns, the lawn and the noise sky, the WM_TIMER frame clock that is not an
+# ordinary message loop, and a blit that asks GDI to HALFTONE a resized fern
+# rather than throw fronds away.
 #
 # FERNS_FRAMES=N grows for N frames, reads the window's own client area back
 # out to prove the pixels landed, and exits -- what an unattended harness (or
@@ -39,17 +46,29 @@
 from std.ffi import c_int
 from std.memory import Pointer, Span, alloc
 from std.os import getenv
-from std.python._cpython import _fn_ptr_as_opaque
 from std.sys._com import com_addr
-from std.sys._win32 import Win32Module
 from std.sys._winkb import (
     winkb_constant,
     winkb_db_schema_version,
-    winkb_function_dll,
     winkb_struct_size,
 )
 from std.sys.info import size_of
-from std.windows import performance_counter, performance_frequency
+from std.windows import (
+    WideString,
+    performance_counter,
+    performance_frequency,
+    raise_last_error,
+)
+from std.windows.gui import (
+    BITMAPINFOHEADER,
+    MSG,
+    RECT,
+    Window,
+    WindowClass,
+    default_handler,
+    quit,
+    win32,
+)
 
 
 comptime W = 1024
@@ -90,131 +109,11 @@ comptime CMD_QUIT = 8
 
 
 # ===----------------------------------------------------------------------===#
-# Entry points, typed, from whichever DLL the metadata names.
+# The one structure this program declares. `WNDCLASSEXW`, `MSG`, `RECT` and
+# `BITMAPINFOHEADER` used to be written out here too; they are the same four
+# structures in every Win32 program, so they live in `std.windows.gui` now and
+# are imported above.
 # ===----------------------------------------------------------------------===#
-
-
-def win32[Sig: TrivialRegisterPassable, name: StaticString]() raises -> Sig:
-    """A Win32 entry point, typed, from whichever DLL the metadata names.
-
-    Parameters:
-        Sig: The full thin C-ABI signature. Spell every argument -- an
-            under-declared signature compiles and then corrupts the call.
-        name: The exported function, e.g. "CreateWindowExW".
-    """
-    return Win32Module(String(winkb_function_dll[name]())).function[Sig](
-        String(name)
-    )
-
-
-def wide(s: StaticString) -> List[UInt16]:
-    """A NUL-terminated UTF-16 buffer for the W-suffixed entry points."""
-    var out = List[UInt16]()
-    for byte in s.as_bytes():
-        out.append(UInt16(Int(byte)))
-    out.append(0)
-    return out^
-
-
-# ===----------------------------------------------------------------------===#
-# Structures. Big structs are NOT register-passable: claiming otherwise does
-# not fail to compile, it silently writes fields to the wrong places. Each one
-# asserts its own size against the metadata below, in main().
-# ===----------------------------------------------------------------------===#
-
-
-@fieldwise_init
-struct WNDCLASSEXW(Defaultable, Copyable, Movable):
-    var cbSize: UInt32
-    var style: UInt32
-    var lpfnWndProc: Int
-    var cbClsExtra: Int32
-    var cbWndExtra: Int32
-    var hInstance: Int
-    var hIcon: Int
-    var hCursor: Int
-    var hbrBackground: Int
-    var lpszMenuName: Int
-    var lpszClassName: Int
-    var hIconSm: Int
-
-    def __init__(out self):
-        self.cbSize = 0
-        self.style = 0
-        self.lpfnWndProc = 0
-        self.cbClsExtra = 0
-        self.cbWndExtra = 0
-        self.hInstance = 0
-        self.hIcon = 0
-        self.hCursor = 0
-        self.hbrBackground = 0
-        self.lpszMenuName = 0
-        self.lpszClassName = 0
-        self.hIconSm = 0
-
-
-@fieldwise_init
-struct MSG(Defaultable, Copyable, Movable):
-    var hwnd: Int
-    var message: UInt32
-    var wParam: Int
-    var lParam: Int
-    var time: UInt32
-    var ptX: Int32
-    var ptY: Int32
-    var lPrivate: UInt32
-
-    def __init__(out self):
-        self.hwnd = 0
-        self.message = 0
-        self.wParam = 0
-        self.lParam = 0
-        self.time = 0
-        self.ptX = 0
-        self.ptY = 0
-        self.lPrivate = 0
-
-
-@fieldwise_init
-struct RECT(Defaultable, Copyable, Movable):
-    var left: Int32
-    var top: Int32
-    var right: Int32
-    var bottom: Int32
-
-    def __init__(out self):
-        self.left = 0
-        self.top = 0
-        self.right = 0
-        self.bottom = 0
-
-
-@fieldwise_init
-struct BITMAPINFOHEADER(Defaultable, Copyable, Movable):
-    var biSize: UInt32
-    var biWidth: Int32
-    var biHeight: Int32
-    var biPlanes: UInt16
-    var biBitCount: UInt16
-    var biCompression: UInt32
-    var biSizeImage: UInt32
-    var biXPelsPerMeter: Int32
-    var biYPelsPerMeter: Int32
-    var biClrUsed: UInt32
-    var biClrImportant: UInt32
-
-    def __init__(out self):
-        self.biSize = 0
-        self.biWidth = 0
-        self.biHeight = 0
-        self.biPlanes = 0
-        self.biBitCount = 0
-        self.biCompression = 0
-        self.biSizeImage = 0
-        self.biXPelsPerMeter = 0
-        self.biYPelsPerMeter = 0
-        self.biClrUsed = 0
-        self.biClrImportant = 0
 
 
 @fieldwise_init
@@ -595,6 +494,20 @@ def plot(
 
 # ===----------------------------------------------------------------------===#
 # Presentation: one top-down DIB, one StretchDIBits.
+#
+# `std.windows.gui.present_bgra` does the same DIB in three fewer lines and is
+# what a program with nothing to say about scaling should call. This is not
+# that program, and the two differences are the reason it stays here:
+#
+#   * It takes the HDC BeginPaint handed it, rather than opening a second
+#     device context on a window that is already inside a paint.
+#   * It asks for STRETCH_HALFTONE. A stretch mode belongs to the DC, so it
+#     cannot be set from outside on a DC the callee opens and closes; and the
+#     default mode drops rows and columns, which on a fern means whole fronds.
+#
+# At the size the window opens with, source and destination are equal and no
+# stretching happens at all -- so this differs from `present_bgra` only once
+# somebody drags the corner, which is exactly when it matters.
 # ===----------------------------------------------------------------------===#
 
 
@@ -666,9 +579,6 @@ def blit(hdc: Int, pixels: Int, dest_w: Int, dest_h: Int) raises:
 # the frame loop, which owns the landscape, is what acts on them.
 # ===----------------------------------------------------------------------===#
 
-comptime WndProcType = def (Int, UInt32, Int, Int) thin abi("C") -> Int
-
-
 def _scene_of(hwnd: Int) raises -> Int:
     var GetWindowLongPtrW = win32[
         def (Int, c_int) thin abi("C") -> Int, "GetWindowLongPtrW"
@@ -714,12 +624,7 @@ def ferns_wndproc(
                 ]()
                 var rc = RECT()
                 _ = GetClientRect(hwnd, com_addr(rc))
-                blit(
-                    hdc,
-                    scene[].pixels,
-                    Int(rc.right - rc.left),
-                    Int(rc.bottom - rc.top),
-                )
+                blit(hdc, scene[].pixels, rc.width(), rc.height())
                 scene[].painted += 1
             _ = EndPaint(hwnd, ps_ptr)
             _ = ps
@@ -744,8 +649,8 @@ def ferns_wndproc(
             ]()
             var rc = RECT()
             _ = GetClientRect(hwnd, com_addr(rc))
-            var cw = Int(rc.right - rc.left)
-            var ch = Int(rc.bottom - rc.top)
+            var cw = rc.width()
+            var ch = rc.height()
             var stored = _scene_of(hwnd)
             if stored != 0 and cw > 0 and ch > 0:
                 var scene = Pointer[Scene, MutAnyOrigin](
@@ -795,14 +700,10 @@ def ferns_wndproc(
             return 0
 
         if message == UInt32(winkb_constant["WM_DESTROY"]()):
-            var PostQuitMessage = win32[
-                def (c_int) thin abi("C") -> NoneType, "PostQuitMessage"
-            ]()
-            _ = PostQuitMessage(c_int(0))
+            quit(0)
             return 0
 
-        var DefWindowProcW = win32[WndProcType, "DefWindowProcW"]()
-        return DefWindowProcW(hwnd, message, wparam, lparam)
+        return default_handler(hwnd, message, wparam, lparam)
     except:
         return 0
 
@@ -853,8 +754,8 @@ def readback(hwnd: Int) raises:
 
     var rc = RECT()
     _ = GetClientRect(hwnd, com_addr(rc))
-    var w = Int(rc.right - rc.left)
-    var h = Int(rc.bottom - rc.top)
+    var w = rc.width()
+    var h = rc.height()
     if w <= 0 or h <= 0:
         print("readback: no client area")
         return
@@ -931,9 +832,11 @@ def one_dp(v: Float64) -> String:
 
 
 def main() raises:
-    comptime assert (
-        size_of[WNDCLASSEXW]() == winkb_struct_size["WNDCLASSEXW"]()
-    ), "WNDCLASSEXW does not match Windows"
+    # `std.windows.gui` declares these and checks the two it uses itself. This
+    # program hands all three to Windows on its own -- MSG to its own message
+    # loop, RECT to GetClientRect and AdjustWindowRectEx, BITMAPINFOHEADER to
+    # StretchDIBits and CreateDIBSection -- so it checks them here as well. A
+    # struct that has drifted from this SDK then fails THIS build.
     comptime assert (
         size_of[MSG]() == winkb_struct_size["MSG"]()
     ), "MSG does not match Windows"
@@ -950,17 +853,8 @@ def main() raises:
     if door != "":
         frame_limit = Int(door)
 
-    var GetModuleHandleW = win32[
-        def (Int) thin abi("C") -> Int, "GetModuleHandleW"
-    ]()
-    var GetLastError = win32[def () thin abi("C") -> UInt32, "GetLastError"]()
     var SetProcessDPIAware = win32[
         def () thin abi("C") -> c_int, "SetProcessDPIAware"
-    ]()
-    var LoadCursorW = win32[def (Int, Int) thin abi("C") -> Int, "LoadCursorW"]()
-    var RegisterClassExW = win32[
-        def (Pointer[WNDCLASSEXW, MutAnyOrigin]) thin abi("C") -> UInt16,
-        "RegisterClassExW",
     ]()
     var AdjustWindowRectEx = win32[
         def (
@@ -968,19 +862,12 @@ def main() raises:
         ) thin abi("C") -> c_int,
         "AdjustWindowRectEx",
     ]()
-    var CreateWindowExW = win32[
+    var SetWindowPos = win32[
         def (
-            UInt32,
-            Pointer[UInt16, MutAnyOrigin],
-            Pointer[UInt16, MutAnyOrigin],
-            UInt32,
-            c_int, c_int, c_int, c_int,
-            Int, Int, Int, Int,
-        ) thin abi("C") -> Int,
-        "CreateWindowExW",
+            Int, Int, c_int, c_int, c_int, c_int, UInt32
+        ) thin abi("C") -> c_int,
+        "SetWindowPos",
     ]()
-    var ShowWindow = win32[def (Int, c_int) thin abi("C") -> c_int, "ShowWindow"]()
-    var UpdateWindow = win32[def (Int) thin abi("C") -> c_int, "UpdateWindow"]()
     var SetWindowTextW = win32[
         def (Int, Pointer[UInt16, MutAnyOrigin]) thin abi("C") -> c_int,
         "SetWindowTextW",
@@ -1010,60 +897,53 @@ def main() raises:
     var DestroyWindow = win32[def (Int) thin abi("C") -> c_int, "DestroyWindow"]()
 
     # Before any window exists: ask for real pixels rather than a blurry
-    # upscale of logical ones. This display runs at 144 DPI.
+    # upscale of logical ones. This display runs at 144 DPI. Deliberately not
+    # in `std.windows.gui`: it is process-wide and irreversible, and a library
+    # that changed it out from under a program would be doing harm.
     _ = SetProcessDPIAware()
 
-    var hInstance = GetModuleHandleW(0)
-    var class_name = wide("MojoFernsWindow")
-    var title = wide("Ferns - click to plant, space pauses, r reseeds")
-    var title_paused = wide("Ferns - PAUSED (space to resume)")
+    # `WindowClass` fills in and registers WNDCLASSEXW: the same style bits,
+    # the same instance handle, the same arrow cursor this file used to spell
+    # out, and it raises rather than returning zero.
+    var klass = WindowClass("MojoFernsWindow", ferns_wndproc)
 
-    # The window procedure's address. A `def` cannot be handed to Windows
-    # directly: it goes through a thin C-ABI fn value first.
-    var proc: WndProcType = ferns_wndproc
-
-    var wc = WNDCLASSEXW()
-    wc.cbSize = UInt32(size_of[WNDCLASSEXW]())
-    wc.style = UInt32(
-        winkb_constant["CS_HREDRAW"]() | winkb_constant["CS_VREDRAW"]()
-    )
-    wc.lpfnWndProc = Int(_fn_ptr_as_opaque(proc))
-    wc.hInstance = hInstance
-    wc.hCursor = LoadCursorW(0, winkb_constant["IDC_ARROW"]())
-    wc.lpszClassName = Int(class_name.unsafe_ptr())
-
-    if RegisterClassExW(Pointer(to=wc).unsafe_origin_cast[MutAnyOrigin]()) == 0:
-        raise Error(
-            "RegisterClassExW failed, GetLastError = " + String(GetLastError())
-        )
-
-    # The frame the style wants around a W x H client area, rather than a
-    # guess at how thick a border is.
+    # `Window` takes the OUTER size, because `CreateWindowExW` does. What this
+    # program wants is an exact W x H CLIENT area, so the blit is one-to-one
+    # and no scaling is in the way of the picture -- so ask Windows what frame
+    # the style puts around one, rather than guessing how thick a border is.
     var want = RECT()
-    want.left = 0
-    want.top = 0
     want.right = Int32(W)
     want.bottom = Int32(H)
-    var style = UInt32(winkb_constant["WS_OVERLAPPEDWINDOW"]())
-    _ = AdjustWindowRectEx(com_addr(want), style, c_int(0), UInt32(0))
-    var win_w = Int(want.right - want.left)
-    var win_h = Int(want.bottom - want.top)
-
-    var hwnd = CreateWindowExW(
+    _ = AdjustWindowRectEx(
+        com_addr(want),
+        UInt32(winkb_constant["WS_OVERLAPPEDWINDOW"]()),
+        c_int(0),
         UInt32(0),
-        class_name.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
-        title.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
-        style,
-        c_int(80), c_int(80), c_int(win_w), c_int(win_h),
-        0, 0, hInstance, 0,
     )
-    if hwnd == 0:
-        raise Error(
-            "CreateWindowExW failed, GetLastError = " + String(GetLastError())
-        )
-    # The class name and title buffers must outlive the calls that read them.
-    _ = class_name
-    _ = title
+
+    var window = Window(
+        klass,
+        "Ferns - click to plant, space pauses, r reseeds",
+        want.width(),
+        want.height(),
+    )
+    var hwnd = window.handle
+    # `Window` opens at CW_USEDEFAULT, which cascades; this one is placed, so
+    # the readback below is never sampling a window half off the screen.
+    _ = SetWindowPos(
+        hwnd,
+        0,
+        c_int(80),
+        c_int(80),
+        c_int(0),
+        c_int(0),
+        UInt32(
+            winkb_constant["SWP_NOSIZE"]() | winkb_constant["SWP_NOZORDER"]()
+        ),
+    )
+    # The window owns its own title; only the paused one is extra. A real
+    # UTF-16 conversion, not a byte-per-character cast of ASCII.
+    var title_paused = WideString("Ferns - PAUSED (space to resume)")
 
     # The pixels, on the heap: the window procedure reaches them through the
     # one pointer Windows keeps for us, and a local in main would be a local
@@ -1100,10 +980,15 @@ def main() raises:
     var seed_us = (performance_counter() - seed_start) * 1000000 // hz
     print("backdrop painted in", seed_us, "us")
 
-    _ = ShowWindow(hwnd, c_int(winkb_constant["SW_SHOW"]()))
-    _ = UpdateWindow(hwnd)
+    window.show()
     _ = SetTimer(hwnd, TICK_ID, UInt32(TICK_MS), 0)
 
+    # Not `std.windows.gui.run()` and not `pump()`. `run()` blocks on
+    # GetMessageW and hands every message straight to Windows, which leaves
+    # nowhere to grow a frame; `pump()` never blocks, so the ferns would grow
+    # as fast as the CPU allows and the fps line would measure the CPU rather
+    # than the animation. This loop blocks like `run()` and then does its
+    # frame work on its own WM_TIMER -- which is the example, so it stays.
     var loop_start = performance_counter()
     var msg = MSG()
     var sampled = False
@@ -1113,9 +998,7 @@ def main() raises:
         if got == 0:
             break
         if got == -1:
-            raise Error(
-                "GetMessageW failed, GetLastError = " + String(GetLastError())
-            )
+            raise_last_error("GetMessageW")
 
         # The runtime posts thread-level timers (WM_TIMER with a null hwnd) all
         # by itself, so the identity check is required, not defensive padding.
@@ -1148,17 +1031,9 @@ def main() raises:
             if (pending & CMD_PAUSE) != 0:
                 paused = not paused
                 if paused:
-                    _ = SetWindowTextW(
-                        hwnd,
-                        title_paused.unsafe_ptr().unsafe_origin_cast[
-                            MutAnyOrigin
-                        ](),
-                    )
+                    _ = SetWindowTextW(hwnd, title_paused.unsafe_ptr())
                 else:
-                    _ = SetWindowTextW(
-                        hwnd,
-                        title.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
-                    )
+                    _ = SetWindowTextW(hwnd, window.title.unsafe_ptr())
             if (pending & CMD_RESET) != 0:
                 need_seed = True
             if (pending & CMD_QUIT) != 0:
@@ -1288,8 +1163,8 @@ def main() raises:
         f.close()
         print("dumped", W, "x", H, "BGRA to", dump)
 
-    _ = title
     _ = title_paused
+    _ = window^
     ferns.unsafe_free()
     pixels.unsafe_free()
     scene.unsafe_free()
