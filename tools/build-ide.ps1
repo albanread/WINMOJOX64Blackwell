@@ -116,8 +116,15 @@ $img = [System.IO.File]::ReadAllBytes((Resolve-Path $Out).Path)
 $pe = [BitConverter]::ToInt32($img, 0x3C)
 if ([BitConverter]::ToUInt16($img, $pe + 24) -eq 0x20B) {
     [BitConverter]::GetBytes([UInt64]8388608).CopyTo($img, $pe + 24 + 72)
+    # And the subsystem: an editor is a GUI program, and a console-subsystem
+    # editor drags a console window into every launch from a shortcut or the
+    # installer. Redirected output still works -- a pipe handle is inherited
+    # regardless of subsystem, which is how the check suites keep reading
+    # what the agent says -- only an unredirected console launch loses its
+    # prints, and those runs are what pipes were invented for.
+    [BitConverter]::GetBytes([UInt16]2).CopyTo($img, $pe + 24 + 68)
     [System.IO.File]::WriteAllBytes((Resolve-Path $Out).Path, $img)
-    Write-Host "  stack reserve set to 8MB"
+    Write-Host "  stack reserve set to 8MB, subsystem set to GUI"
 }
 
 Write-Host "staged the runtime beside it; $Out runs on its own"
