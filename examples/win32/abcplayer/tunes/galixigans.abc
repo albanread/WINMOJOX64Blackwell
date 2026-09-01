@@ -1,0 +1,51 @@
+X:1
+T:Galixigans
+T:(and the aliens win)
+C:for three chip voices
+N:Not a typo, and not being sued.
+N:The tune is in A minor throughout the defence and ends in A MAJOR. The
+N:picardy third is the joke: it is a triumphant ending, and the triumph is
+N:not ours.
+M:4/4
+L:1/16
+Q:1/4=168
+K:Am
+%
+% ── V:1  the lead. Dive formation, a power-up climb, then the fanfare.
+V:1
+[I:chip v=1 wave=pulse pw=1100 a=0 d=6 s=9 r=3 cutoff=1200 res=7 vol=11]ACEA cAec ACEA cAec | ACEA cAec dcAG ECA,C |
+ACEA cAec ACEA cAec | edcB AGEC A,CEA cAec |
+% the dive: pulse width narrows and the filter shuts down as they come at you
+[I:chip v=1 pw=600 cutoff=700]aged cAEC aged cAEC | [I:chip v=1 pw=350 cutoff=450]aged cAEC A,CEA GECA, |
+% ── the power-up. Four steps, and the filter opens on every one.
+[I:chip v=1 wave=pulse+saw pw=2048 cutoff=300 res=8 d=9 s=11 vol=10]A,B,CD EFGA | [I:chip v=1 cutoff=800]BcdE FGAB |
+[I:chip v=1 cutoff=1300]cdef gabc' | [I:chip v=1 cutoff=1700 res=5]d'c'ba gfed |
+% ── they win. A major, wide open, and loud.
+[I:chip v=1 wave=pulse pw=1500 a=0 d=10 s=13 r=8 cutoff=1800 res=4 vol=12]A4 c4 e4 a4 | g4 e4 c4 A4 |
+A4 c4 e4 a4 | e8 a8 |
+a16 | z16 |]
+%
+% ── V:2  the bass. Steady under the attack, then the fanfare's root.
+V:2
+[I:chip v=2 wave=saw a=0 d=8 s=10 r=4]A,,4 A,,4 G,,4 G,,4 | F,,4 F,,4 E,,4 E,,4 |
+A,,4 A,,4 G,,4 G,,4 | F,,4 E,,4 A,,8 |
+A,,2A,,2 A,,2A,,2 A,,2A,,2 A,,2A,,2 | A,,2A,,2 A,,2A,,2 E,,2E,,2 E,,2E,,2 |
+[I:chip v=2 wave=saw+tri]A,,4 B,,4 C,4 D,4 | E,4 F,4 G,4 A,4 |
+[I:chip v=2 wave=saw d=10 s=13 r=8]A,,8 E,,8 | A,,8 E,,8 |
+A,,8 E,,8 | A,,8 E,,8 |
+A,,16 | z16 |]
+%
+% ── V:3  percussion and the alien voices, all noise.
+V:3
+[I:chip v=3 wave=noise a=0 d=3 s=0 r=2 filt=off]C4 z4 C4 z4 | C4 z4 C2C2 C4 |
+C4 z4 C4 z4 | C2C2 C2C2 C4 C4 |
+% the dive is a noise sweep too, done with the shared filter
+[I:chip v=3 filt=on][I:chip cutoff=1800]C2C2 C2C2 [I:chip cutoff=1100]C2C2 C2C2 | [I:chip cutoff=600]C2C2 C2C2 [I:chip cutoff=300]C2C2 C2C2 |
+[I:chip v=3 filt=off d=2]z16 | z16 |
+z16 | [I:chip v=3 d=6 s=4]C2C2 C2C2 C2C2 C2C2 |
+% The fanfare's crashes. Sustain 0 on purpose: a noise voice with sustain is
+% not a crash, it is a buzz, and holding one for the last two bars is how this
+% tune used to end.
+[I:chip v=3 d=11 s=0 r=6]C2 z14 | C2 z14 |
+C2 z14 | C2 z6 C2 z6 |
+C2 z14 | z16 |]
