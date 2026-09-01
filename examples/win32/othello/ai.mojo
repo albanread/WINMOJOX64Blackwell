@@ -24,7 +24,7 @@ from max.gpu.host import DeviceBuffer, DeviceContext, HostBuffer
 from std.gpu import global_idx
 from std.memory import Pointer
 
-from examples.win32.othello.board import (
+from board import (
     apply,
     bit,
     flips_for,

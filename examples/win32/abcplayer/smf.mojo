@@ -12,7 +12,7 @@
 # coincidence; it is why 480 was chosen in the model.
 
 from std.ffi import c_int
-from std.memory import Pointer, MutUntrackedOrigin
+from std.memory import Pointer
 from std.sys._com import com_addr
 from std.sys._winkb import winkb_constant
 

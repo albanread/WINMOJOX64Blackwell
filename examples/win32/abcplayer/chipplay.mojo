@@ -23,7 +23,7 @@
 # of memory rather than a List: allocated once, before the unit starts, and
 # never resized.
 
-from std.memory import Pointer, MutUntrackedOrigin, OpaquePointer
+from std.memory import Pointer, OpaquePointer
 from std.memory.alloc import unsafe_alloc
 
 from chip import (

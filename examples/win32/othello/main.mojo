@@ -89,7 +89,7 @@ from std.windows.gui import (
     win32,
 )
 
-from examples.win32.othello.board import (
+from board import (
     bit,
     flips_for,
     legal_moves,
@@ -101,7 +101,7 @@ from examples.win32.othello.board import (
     start_black,
     start_white,
 )
-from examples.win32.othello.ai import (
+from ai import (
     GpuPlayouts,
     LEVEL_ADVANCED,
     LEVEL_BEGINNER,

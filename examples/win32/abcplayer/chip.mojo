@@ -36,7 +36,7 @@
 # callback through CoreAudio's inRefCon, so nothing here needs a global and
 # two chips could run at once.
 
-from std.memory import Pointer, MutUntrackedOrigin, OpaquePointer
+from std.memory import Pointer, OpaquePointer
 from std.memory.alloc import unsafe_alloc
 
 comptime P = OpaquePointer[MutUntrackedOrigin]

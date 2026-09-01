@@ -47,7 +47,8 @@
 # ===----------------------------------------------------------------------=== #
 
 from std.ffi import c_int, external_call
-from std.memory import Pointer, OpaquePointer, Span
+from std.collections import Span
+from std.memory import Pointer, OpaquePointer
 from std.memory.alloc import unsafe_alloc
 from std.python._cpython import _fn_ptr_as_opaque
 from std.sys import argv

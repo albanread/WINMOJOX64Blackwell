@@ -31,8 +31,8 @@
 #      as a black window, which looks exactly like a dead solver.
 # ===----------------------------------------------------------------------=== #
 
-from examples.win32.fluid.png import write_png
-from examples.win32.fluid.solver import (
+from png import write_png
+from solver import (
     BLOCK,
     GRID,
     H,

@@ -27,7 +27,7 @@
 # exactly-one-sample.
 
 from std.ffi import c_int
-from std.memory import Pointer, MutUntrackedOrigin
+from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc
 from std.sys._com import com_addr
 from std.sys._winkb import (

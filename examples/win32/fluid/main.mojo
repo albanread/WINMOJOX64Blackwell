@@ -33,8 +33,8 @@
 # [space] pause  [c] clear  [r] rain  [s] save a shot  [Esc] quit
 # ===----------------------------------------------------------------------=== #
 
-from examples.win32.fluid.png import write_png
-from examples.win32.fluid.solver import (
+from png import write_png
+from solver import (
     BLOCK,
     DYE_FADE,
     H,
@@ -54,7 +54,8 @@ from examples.win32.fluid.solver import (
 )
 from max.gpu.host import DeviceContext
 from std.ffi import c_int
-from std.memory import Pointer, Span
+from std.collections import Span
+from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc
 from std.sys.info import size_of
 from std.sys._com import com_addr

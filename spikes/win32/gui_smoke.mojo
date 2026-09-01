@@ -19,7 +19,8 @@ pixels carrying the gradient.
 """
 
 from std.ffi import c_int
-from std.memory import Pointer, Span, alloc
+from std.collections import Span
+from std.memory import Pointer, alloc
 from std.os import getenv
 from std.sys._winkb import winkb_constant
 from std.windows.gui import (

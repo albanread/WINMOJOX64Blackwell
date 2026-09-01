@@ -19,7 +19,8 @@
 # in this file at all beyond that one call: what is left is PNG.
 # ===----------------------------------------------------------------------=== #
 
-from std.memory import Pointer, Span
+from std.collections import Span
+from std.memory import Pointer
 from std.windows import write_file
 
 

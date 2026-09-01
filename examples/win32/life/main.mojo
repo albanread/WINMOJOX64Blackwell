@@ -36,7 +36,8 @@
 # ===----------------------------------------------------------------------=== #
 
 from std.ffi import c_int
-from std.memory import Pointer, Span
+from std.collections import Span
+from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc
 from std.random import random_ui64, seed
 from std.sys import argv

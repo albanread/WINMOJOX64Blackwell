@@ -29,7 +29,7 @@
 # place -- is gone, and every rectangle below is written the way it is read.
 
 from std.ffi import c_int
-from std.memory import Pointer, MutUntrackedOrigin, OpaquePointer
+from std.memory import Pointer, OpaquePointer
 from std.sys._com import com_addr
 from std.sys._winkb import winkb_constant
 
