@@ -1225,7 +1225,7 @@ def start_server(hwnd: Int, exe: String, stdlib: String) raises -> String:
     if not start_with_environment(
         exe,
         root,
-        stdlib,
+        import_roots(stdlib),
         python_variables(
             project_location(project_root(), document_path(hwnd))
         ),
@@ -5434,3 +5434,74 @@ def _layout(hwnd: Int) raises -> Layout:
     return Layout(
         Int(rc.right - rc.left), Int(rc.bottom - rc.top), dpi_scale(hwnd)
     )
+
+
+def import_roots(stdlib: String) raises -> String:
+    """Every directory the language server must search, as it wants them.
+
+    The server was being given one path -- the standard library -- while every
+    build was given three. So a file that compiled was underlined in red:
+    `ide/doc.mojo` imports `ide.rope`, `-I .` is what makes that resolve for
+    the compiler, and the server had never been told. A diagnostic that is
+    wrong about working code is worse than no diagnostic, because it teaches
+    people to stop reading them.
+
+    The three, in the order a build passes them:
+
+    The standard library, when there is one. An installed toolchain has no
+    stdlib directory -- it ships a compiled `std.mojoc` on its import path --
+    so this is empty there and the entry is left out rather than pointing at
+    nothing.
+
+    The current directory, which is what `-I .` means. This is the one that
+    was missing. It is the directory Griddle was started in, which is the same
+    directory its builds run in, so the server and the compiler resolve an
+    import the same way by construction.
+
+    The project root, when it differs, so that opening a file from a folder
+    somewhere else still resolves that folder's own modules.
+
+    And `max/mojo` when it is there, because `ide/build.mojo` passes it and
+    the GPU examples do not parse without it.
+
+    Comma-separated: `KGEN/lib/Support/Configuration.cpp` splits
+    `mojo-max.import_path` on commas, which is what makes one environment
+    variable able to carry all of them.
+
+    Args:
+        stdlib: The standard library directory, or empty.
+
+    Returns:
+        The roots, comma-separated, in build order.
+
+    Raises:
+        If a path cannot be made absolute.
+    """
+    var roots = List[String]()
+
+    fn already(mut have: List[String], want: String) -> Bool:
+        for one in have:
+            if one.lower() == want.lower():
+                return True
+        return False
+
+    if stdlib != "":
+        roots.append(stdlib)
+    var here = absolute(String("."))
+    if not already(roots, here):
+        roots.append(here)
+    var project = project_root()
+    if project != "" and not already(roots, project):
+        roots.append(project)
+    var max_package = absolute(String("max") + chr(0x5C) + "mojo")
+    if _file_exists(
+        max_package + chr(0x5C) + "max" + chr(0x5C) + "__init__.mojo"
+    ) and not already(roots, max_package):
+        roots.append(max_package)
+
+    var out = String("")
+    for i in range(len(roots)):
+        if i > 0:
+            out += ","
+        out += roots[i]
+    return out^
