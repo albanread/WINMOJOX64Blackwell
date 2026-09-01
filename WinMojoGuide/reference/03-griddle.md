@@ -146,6 +146,7 @@ console [<command>]              the output pane, or run a command in it
 debug [launch|wait|step|stop]    the debugger
 break [N|list|clear]             breakpoints
 toolchain [refresh|gaps|<part>]  which compiler this is
+project [<folder>]               open a folder as the project, closing the last one
 samples [<name>]                 the shipped examples; open one as a project
 python [create|install|clear]    this project's Python environment
 prompt [find|goto|symbol|package|open|type <t>|accept|cancel]

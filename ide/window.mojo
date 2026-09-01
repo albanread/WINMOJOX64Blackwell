@@ -5013,6 +5013,8 @@ def open_sample(hwnd: Int, which: Int) raises -> String:
         return String("no such example")
 
     _ = set_root(folder)
+    if not close_all_tabs(hwnd):
+        return String("kept the open files; the example was not opened")
     var files = sample_files(which)
     var opened = 0
     # Backwards, so that the first one -- `main.mojo` -- is opened last and is
@@ -5021,11 +5023,14 @@ def open_sample(hwnd: Int, which: Int) raises -> String:
         var said = open_path(hwnd, files[i])
         if not said.startswith("cannot open"):
             opened += 1
+    if tab_count() == 0:
+        _ = new_tab(hwnd)
     _touch(hwnd)
-    return (
+    var out = (
         String("opened ") + sample_name(which) + ": " + String(opened)
         + (" file" if opened == 1 else " files") + " from " + folder
     )
+    return out^
 
 
 def open_sample_named(hwnd: Int, name: String) raises -> String:
@@ -5116,3 +5121,89 @@ def entry_point(hwnd: Int) raises -> String:
         if _file_exists(main):
             return main^
     return document_path(hwnd)
+
+
+def close_all_tabs(hwnd: Int) raises -> Bool:
+    """Close every open document, asking about anything unsaved first.
+
+    The first half of opening a project. Arriving somewhere new should look
+    like arriving: one sidebar, one project's tabs, and nothing left over
+    from the last place. Clicking through four examples used to leave twelve
+    tabs from four folders with the sidebar showing one of them.
+
+    The question comes first, and it is the one closing the window asks --
+    each unsaved document brought to the front before it is asked about, so
+    nobody is asked about a file they cannot see. Cancelling any of them
+    calls the whole thing off, and the caller must not go on to open
+    anything: the answer was no to losing that work, not no to this project.
+
+    The strip is left EMPTY, which nothing else in the editor does. That is
+    safe only because both callers open something immediately afterwards, and
+    it is why this is not a verb of its own.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        True when the tabs are closed and the new ones can be opened.
+
+    Raises:
+        If the window has no chrome.
+    """
+    if tab_count() == 0:
+        return True
+    if not confirm_close_all(hwnd):
+        return False
+    var tabs = g_tabs()
+    while len(tabs[]) > 0:
+        _ = tabs[].pop()
+    g_tab()[] = 0
+    return True
+
+
+def open_project(hwnd: Int, folder: String) raises -> String:
+    """Open a folder as the project: arrive, and put the last place away.
+
+    What "opening a project" means here, in order, and the order is the whole
+    of it. The root moves first, because Build and Run resolve their entry
+    point against it and the tabs opened next belong to the new place. Then
+    the old tabs go. Then the new project's own entry point comes up, so a
+    project opens looking like something rather than like an empty editor
+    with a full sidebar.
+
+    Args:
+        hwnd: The window.
+        folder: The directory to work in.
+
+    Returns:
+        What happened.
+
+    Raises:
+        If the window has no document.
+    """
+    var where = absolute(folder)
+    var said = set_root(where)
+    if said.startswith("no such") or said.startswith("cannot"):
+        return said^
+
+    if not close_all_tabs(hwnd):
+        return String("kept the open files; the project was not changed")
+
+    # Its main.mojo, if it has one, because that is what the project builds
+    # and therefore what somebody opening it came to see.
+    var opened = String("")
+    var entry = where + chr(0x5C) + "main.mojo"
+    if _file_exists(entry):
+        opened = open_path(hwnd, entry)
+    if tab_count() == 0:
+        # A project with no main.mojo still needs a document: the editor has
+        # to have something to draw and somewhere for the next keystroke to
+        # go. An empty one is the honest answer -- better than opening a file
+        # at random out of the folder.
+        _ = new_tab(hwnd)
+    _touch(hwnd)
+
+    var out = String("project ") + where
+    if opened.startswith("opened") or opened.startswith("switched"):
+        out += ", showing main.mojo"
+    return out^

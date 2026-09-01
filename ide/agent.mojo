@@ -59,6 +59,7 @@ from ide.window import (
     prompt_package,
     prompt_replace,
     prompt_symbol,
+    open_project,
     open_sample_named,
     prompt_type,
     python_create,
@@ -309,6 +310,7 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             "debug [launch|wait|step|stop]    the debugger\n"
             "break [N|list|clear]             breakpoints\n"
             "toolchain [refresh|gaps|<part>]  which compiler this is\n"
+            "project [<folder>]               open a folder as the project, closing the last one\n"
             "samples [<name>]                 the shipped examples; open one as a project\n"
             "python [create|install|clear]    this project's Python environment\n"
             "prompt [find|goto|symbol|package|open|type <t>|accept|cancel]\n"
@@ -854,7 +856,14 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             var sp = rest.find(" ")
             if sp < 0:
                 return String("usage: tree root <path>")
-            return set_root(String(String(rest[byte=sp + 1 :]).strip()))
+            # Through `open_project`, because pointing the tree somewhere else
+            # IS opening a project as far as anybody using it is concerned:
+            # the sidebar, what Build compiles and which tabs are open all
+            # belong to one place, and moving one of them alone leaves the
+            # other two describing the last one.
+            return open_project(
+                hwnd, String(String(rest[byte=sp + 1 :]).strip())
+            )
         if rest.byte_length() > 0:
             return toggle(Int(rest) - 1)
         return tree_report()
@@ -1079,6 +1088,11 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
 
     # The shipped examples. `samples` lists them, `samples <name>` opens one,
     # which is what the Examples menu does with a click.
+    if verb == "project":
+        if rest.byte_length() == 0:
+            return String("project ") + project_root()
+        return open_project(hwnd, String(String(rest).strip()))
+
     if verb == "samples" or verb == "examples":
         if rest == "" or rest == "show":
             return samples_report()
