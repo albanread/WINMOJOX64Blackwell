@@ -32,9 +32,31 @@ $env:PATH = "$linkDir;" + $env:PATH
 $env:MODULAR_MOJO_MAX_WINKB_PATH = (Resolve-Path 'F:\bzs\external\+http_archive+winkb\windows_api.db' -EA SilentlyContinue)
 
 New-Item -ItemType Directory -Force -Path (Split-Path $Out) | Out-Null
+
+# The icon, compiled to a .res and handed to the linker. An icon in the
+# executable is the only kind Explorer, the taskbar and Alt+Tab all read --
+# LoadImage at run time can dress a window but cannot put a picture on a
+# file. rc.exe comes with the Windows SDK, found the same way mt.exe is
+# found below; without it the build carries on and the binary simply has no
+# icon, which is a cosmetic loss rather than a reason to fail.
+$res = Join-Path (Split-Path $Out) 'griddle.res'
+$iconArg = ''
+$rcKits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+$rc = @(Get-ChildItem (Join-Path $rcKits '*\x64\rc.exe') `
+        -ErrorAction SilentlyContinue | Sort-Object FullName)
+if ($rc.Count -gt 0) {
+    # rc.exe resolves the ICON's own path relative to the .rc file, so it
+    # is run from the directory holding both.
+    & $rc[-1].FullName /nologo /fo $res (Join-Path $repo 'ide\griddle.rc') 2>&1 | Out-Null
+    if (Test-Path $res) {
+        $iconArg = "-Xlinker `"$((Resolve-Path $res).Path)`" "
+    }
+}
+if (-not $iconArg) { Write-Host '  (no rc.exe found; building without an icon)' }
+
 $opt = if ($Optimized) { '' } else { '--no-optimization ' }
 Write-Host "building $Out$(if ($Optimized) { ' (optimized)' })"
-cmd /c "`"$mojo`" build $opt-I mojo/stdlib -I . -o `"$Out`" ide\griddle.mojo 2>&1"
+cmd /c "`"$mojo`" build $opt-I mojo/stdlib -I . $iconArg-o `"$Out`" ide\griddle.mojo 2>&1"
 if (-not (Test-Path $Out)) { throw "griddle did not link" }
 
 foreach ($dll in @(

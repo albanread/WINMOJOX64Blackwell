@@ -1271,6 +1271,40 @@ def main() raises:
     wc.hInstance = hInstance
     wc.lpszClassName = Int(class_name.unsafe_ptr())
 
+    # The icon, out of this executable's own resources. Resource 1, which is
+    # what `ide/griddle.rc` names it and what the shell shows as the file's
+    # icon; loading it here is what puts the same picture in the title bar,
+    # on the taskbar button and in Alt+Tab. Both sizes are asked for
+    # separately: Windows will shrink the large one for the small slot, and
+    # the result is a smudge next to a 16-pixel icon drawn as 16 pixels.
+    var LoadImageW = win32[
+        def (Int, Int, UInt32, c_int, c_int, UInt32) thin abi("C") -> Int,
+        "LoadImageW",
+    ]()
+    var image_icon = UInt32(winkb_constant["IMAGE_ICON"]())
+    var shared = UInt32(winkb_constant["LR_SHARED"]())
+    var big = winkb_constant["SM_CXICON"]()
+    var small = winkb_constant["SM_CXSMICON"]()
+    var GetSystemMetrics = win32[
+        def (c_int) thin abi("C") -> c_int, "GetSystemMetrics"
+    ]()
+    wc.hIcon = LoadImageW(
+        hInstance,
+        1,
+        image_icon,
+        GetSystemMetrics(c_int(big)),
+        GetSystemMetrics(c_int(big)),
+        shared,
+    )
+    wc.hIconSm = LoadImageW(
+        hInstance,
+        1,
+        image_icon,
+        GetSystemMetrics(c_int(small)),
+        GetSystemMetrics(c_int(small)),
+        shared,
+    )
+
     if RegisterClassExW(Pointer(to=wc).unsafe_origin_cast[MutAnyOrigin]()) == 0:
         raise Error(
             "RegisterClassExW failed, GetLastError = " + String(GetLastError())

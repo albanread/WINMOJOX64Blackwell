@@ -1,0 +1,11 @@
+// Griddle's resources.
+//
+// Compiled by tools/build-griddle.ps1 with the Windows SDK's rc.exe and
+// handed to the linker as a .res. An icon in the executable is the only kind
+// Explorer, the taskbar and Alt+Tab all read: LoadImage at run time can dress
+// the window, but it cannot put a picture on the file.
+//
+// 1 is deliberate. The shell shows the lowest-numbered icon resource as the
+// file's icon, so the application icon is always 1 by convention.
+
+1 ICON "griddle.ico"
