@@ -43,10 +43,14 @@ from ide.chrome import (
     bring_up,
     draw,
     finish,
+    hot_rail,
     hot_splitter,
     pane_height,
+    rail_item,
     release,
+    set_hot_rail,
     set_hot_splitter,
+    set_rail_active,
     sidebar_width,
 )
 from ide.drop import register as register_drop, revoke as revoke_drop
@@ -378,11 +382,19 @@ def griddle_wndproc(
                     # the document it describes.
                     var status = String("Ln 1, Col 1    UTF-8")
                     if chrome[].doc != 0:
-                        status = status_line(
-                            Pointer[Doc, MutAnyOrigin](
-                                unsafe_from_address=chrome[].doc
-                            )[]
+                        var told = Pointer[Doc, MutAnyOrigin](
+                            unsafe_from_address=chrome[].doc
                         )
+                        status = status_line(told[])
+                        # Which rail cell carries the ember bar. Derived from
+                        # the pane rather than stored twice, so the menu, the
+                        # verb and the rail can never disagree about it.
+                        var showing = 1
+                        if told[].pane_mode == PANE_PYTHON:
+                            showing = 2
+                        elif told[].pane_mode == PANE_TOOLCHAIN:
+                            showing = 4
+                        set_rail_active(showing)
                     # The strip's labels are gathered here because this
                     # is where a document's name is known; gridview draws a
                     # row of tabs and does not know what a Doc is.
@@ -519,6 +531,65 @@ def griddle_wndproc(
             var SetFocus = win32[def (Int) thin abi("C") -> Int, "SetFocus"]()
             _ = SetFocus(hwnd)
 
+            # The rail before anything: its cells sit at the window's edge
+            # where nothing else lives. Three of the four are the same
+            # views the View menu reaches; EX pops the Examples menu at the
+            # pointer, because examples are a list to choose from rather
+            # than a place to be.
+            var railed = rail_item(px, py, dpi_scale(hwnd))
+            if railed != 0:
+                if railed == 1:
+                    try:
+                        _ = pane_problems(hwnd)
+                    except:
+                        pass
+                elif railed == 2:
+                    try:
+                        _ = pane_python(hwnd)
+                    except:
+                        pass
+                elif railed == 3:
+                    var GetMenu = win32[
+                        def (Int) thin abi("C") -> Int, "GetMenu"
+                    ]()
+                    var GetSubMenu = win32[
+                        def (Int, c_int) thin abi("C") -> Int, "GetSubMenu"
+                    ]()
+                    var TrackPopupMenu = win32[
+                        def (
+                            Int, UInt32, c_int, c_int, c_int, Int, Int
+                        ) thin abi("C") -> c_int,
+                        "TrackPopupMenu",
+                    ]()
+                    var ClientToScreen = win32[
+                        def (
+                            Int, Pointer[POINT, MutAnyOrigin]
+                        ) thin abi("C") -> c_int,
+                        "ClientToScreen",
+                    ]()
+                    var at = POINT(Int32(px), Int32(py))
+                    _ = ClientToScreen(
+                        hwnd,
+                        Pointer(to=at).unsafe_origin_cast[MutAnyOrigin](),
+                    )
+                    # Examples is the seventh menu on the bar; a chosen item
+                    # arrives as the same WM_COMMAND the menu bar sends.
+                    _ = TrackPopupMenu(
+                        GetSubMenu(GetMenu(hwnd), c_int(6)),
+                        UInt32(0),
+                        c_int(Int(at.x)),
+                        c_int(Int(at.y)),
+                        c_int(0),
+                        hwnd,
+                        0,
+                    )
+                elif railed == 4:
+                    try:
+                        _ = pane_toolchain(hwnd)
+                    except:
+                        pass
+                return 0
+
             # A splitter first. It sits over the edge of two regions, so a
             # click there means "move this edge" and never "put the caret at
             # the first column" -- which is what the editor would otherwise
@@ -585,6 +656,10 @@ def griddle_wndproc(
                 shape = winkb_constant["IDC_SIZEWE"]()
             elif on == 2:
                 shape = winkb_constant["IDC_SIZENS"]()
+            elif rail_item(
+                Int(where.x), Int(where.y), dpi_scale(hwnd)
+            ) != 0:
+                shape = winkb_constant["IDC_HAND"]()
             _ = SetCursor2(LoadCursorW2(0, shape))
             # TRUE: the cursor has been dealt with, so Windows must not go on
             # to set the class one over the top of it.
@@ -602,6 +677,17 @@ def griddle_wndproc(
                 _ = drag_splitter(hwnd, g_dragging()[], mx, my)
                 return 0
 
+
+            # Which rail cell the pointer is over, so its background can
+            # lift the way the mockup's does.
+            var cell = rail_item(mx, my, dpi_scale(hwnd))
+            if cell != hot_rail():
+                set_hot_rail(cell)
+                var InvalidateCell = win32[
+                    def (Int, Int, c_int) thin abi("C") -> c_int,
+                    "InvalidateRect",
+                ]()
+                _ = InvalidateCell(hwnd, 0, c_int(0))
 
             # Which splitter the pointer is over, so the paint can light it
             # up. The cursor is not set here: WM_SETCURSOR above owns that,

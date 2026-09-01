@@ -56,6 +56,8 @@ comptime SIDEBAR = 0x1A1D23  # file tree
 comptime BAR = 0x191C21  # status bar
 comptime LINE = 0x31353F  # hairline separators
 comptime EMBER = 0xFF8C37  # the one accent
+comptime PANEL2 = 0x23262E  # raised surfaces: a hovered or active rail cell
+comptime FAINT = 0x5D6470  # idle iconography
 comptime INK = 0xDFE3EA  # primary text
 comptime DIM = 0x8B93A1  # secondary text
 comptime SELECT = 0x2A3A55  # selected text, behind the glyphs
@@ -240,6 +242,78 @@ def set_hot_splitter(which: Int):
     g_hot_splitter()[] = which
 
 
+# Which rail cell the pointer is over, and which view the pane is showing.
+# Globals for the same reason the splitters' are: paint and the mouse live
+# in different modules with one captureless procedure between them.
+comptime g_hot_rail = named_global["chrome.hotrail", Int]
+comptime g_rail_active = named_global["chrome.railactive", Int]
+
+# The rail's geometry, shared by the draw and the hit test so they cannot
+# disagree: cells start under a small margin and repeat on a fixed pitch,
+# a 40px button with its label riding underneath.
+comptime RAIL_TOP = 10
+comptime RAIL_PITCH = 57
+comptime RAIL_CELL = 52
+
+
+def hot_rail() -> Int:
+    """Which rail cell is under the pointer.
+
+    Returns:
+        1 to 4, or 0 for none.
+    """
+    return g_hot_rail()[]
+
+
+def set_hot_rail(which: Int):
+    """Say which rail cell the pointer is on.
+
+    Args:
+        which: 1 to 4, or 0 for none.
+    """
+    g_hot_rail()[] = which
+
+
+def rail_active() -> Int:
+    """The view the ember bar marks.
+
+    Returns:
+        1 editor, 2 Python, 4 toolchain. 3 is the Examples menu, which is
+        a door rather than a place, so it is never the active view.
+    """
+    var it = g_rail_active()[]
+    return 1 if it == 0 else it
+
+
+def set_rail_active(which: Int):
+    """Say which view the pane is showing.
+
+    Args:
+        which: 1 editor, 2 Python, 4 toolchain.
+    """
+    g_rail_active()[] = which
+
+
+def rail_item(x: Int, y: Int, scale: Float32) -> Int:
+    """Which rail cell a client point is in.
+
+    Args:
+        x: Client x.
+        y: Client y.
+        scale: Device pixels per design pixel.
+
+    Returns:
+        1 to 4, or 0 for none.
+    """
+    if Float32(x) >= scaled(RAIL_W, scale):
+        return 0
+    for i in range(4):
+        var top = scaled(RAIL_TOP + i * RAIL_PITCH, scale)
+        if Float32(y) >= top and Float32(y) < top + scaled(RAIL_CELL, scale):
+            return i + 1
+    return 0
+
+
 comptime g_sidebar_w = named_global["chrome.sidebar.w", Int]
 comptime g_pane_h = named_global["chrome.pane.h", Int]
 
@@ -422,6 +496,11 @@ struct Chrome(ImplicitlyCopyable, Movable):
     var target: Int
     var dwrite: Int
     var text_format: Int
+    # Two more faces at other sizes: the rail's glyphs draw larger than
+    # the text and its labels smaller, and a text format bakes its size
+    # in at creation.
+    var icon_format: Int
+    var tiny_format: Int
     # The drop target's interface pointer. It lives here because this struct
     # is what the window keeps, and a captureless procedure has exactly one
     # place to look for anything.
@@ -461,6 +540,8 @@ struct Chrome(ImplicitlyCopyable, Movable):
         self.target = 0
         self.dwrite = 0
         self.text_format = 0
+        self.icon_format = 0
+        self.tiny_format = 0
         self.drop_target = 0
         self.doc = 0
         self.immediate = False
@@ -594,6 +675,56 @@ def bring_up(
     _ = locale
     if chrome.text_format == 0:
         raise Error("CreateTextFormat produced nothing")
+
+    # The rail's two sizes, same family -- DirectWrite finds the symbol
+    # glyphs by fallback on its own -- and centred both ways, because a
+    # glyph in a button is centred or it is visibly not.
+    var rail_family = utf16("Cascadia Mono")
+    var rail_locale = utf16("en-us")
+    _ = dwrite.CreateTextFormat(
+        Int(rail_family.unsafe_ptr()),
+        Int(0),
+        UInt32(400),
+        UInt32(0),
+        UInt32(5),
+        Float32(16.0) * chrome.scale,
+        Int(rail_locale.unsafe_ptr()),
+        com_addr(chrome.icon_format),
+    )
+    _ = dwrite.CreateTextFormat(
+        Int(rail_family.unsafe_ptr()),
+        Int(0),
+        UInt32(400),
+        UInt32(0),
+        UInt32(5),
+        Float32(8.5) * chrome.scale,
+        Int(rail_locale.unsafe_ptr()),
+        com_addr(chrome.tiny_format),
+    )
+    _ = rail_family
+    _ = rail_locale
+    for centred in [chrome.icon_format, chrome.tiny_format]:
+        if centred == 0:
+            continue
+        var fmt = OpaquePointer[MutUntrackedOrigin](
+            unsafe_from_address=centred
+        )
+        # DWRITE_TEXT_ALIGNMENT_CENTER and DWRITE_PARAGRAPH_ALIGNMENT_CENTER
+        # are both 2, which is a coincidence and not a shared meaning.
+        _ = com_method_of[
+            def (
+                OpaquePointer[MutUntrackedOrigin], c_int
+            ) thin abi("C") -> Int32,
+            "IDWriteTextFormat",
+            "SetTextAlignment",
+        ](fmt)(fmt, c_int(2))
+        _ = com_method_of[
+            def (
+                OpaquePointer[MutUntrackedOrigin], c_int
+            ) thin abi("C") -> Int32,
+            "IDWriteTextFormat",
+            "SetParagraphAlignment",
+        ](fmt)(fmt, c_int(2))
 
     # The syntax brushes, now that there is a target to make them on.
     chrome.brush_comment = _solid(chrome.target, SYN_COMMENT)
@@ -750,15 +881,63 @@ def draw(
         SPLITTER_HOT if hot == 2 else LINE,
     )
 
-    # The rail's selected item, as the one piece of accent on screen.
-    _fill(
-        chrome.target,
-        D2D_RECT_F(
-            0, scaled(12, chrome.scale), scaled(3, chrome.scale),
-            scaled(44, chrome.scale),
-        ),
-        EMBER,
-    )
+    # The rail's four views, as the design drew them: a glyph in a 40px
+    # cell, a tiny label under it, hover lifting the cell, and the ember
+    # bar beside whichever view the pane is showing. Geometry comes from
+    # the same constants the hit test reads, so a click lands where the
+    # eye says it will.
+    var glyphs = List[String]()
+    glyphs.append(chr(0x2317))   # EDIT
+    glyphs.append(chr(0x1F40D))  # PY
+    glyphs.append(chr(0x25A6))   # EX
+    glyphs.append(chr(0x2692))   # TOOL
+    var titles = List[String]()
+    titles.append(String("EDIT"))
+    titles.append(String("PY"))
+    titles.append(String("EX"))
+    titles.append(String("TOOL"))
+    var active = rail_active()
+    var pointer_on = hot_rail()
+    for i in range(4):
+        var which = i + 1
+        var top = scaled(RAIL_TOP + i * RAIL_PITCH, chrome.scale)
+        var button = D2D_RECT_F(
+            scaled(6, chrome.scale),
+            top,
+            scaled(46, chrome.scale),
+            top + scaled(40, chrome.scale),
+        )
+        if which == active or which == pointer_on:
+            _fill(chrome.target, button, PANEL2)
+        if which == active:
+            _fill(
+                chrome.target,
+                D2D_RECT_F(
+                    0,
+                    top + scaled(9, chrome.scale),
+                    scaled(3, chrome.scale),
+                    top + scaled(31, chrome.scale),
+                ),
+                EMBER,
+            )
+        var ink = FAINT
+        if which == active:
+            ink = EMBER
+        elif which == pointer_on:
+            ink = DIM
+        _boxed(chrome, glyphs[i], chrome.icon_format, button, ink)
+        _boxed(
+            chrome,
+            titles[i],
+            chrome.tiny_format,
+            D2D_RECT_F(
+                0,
+                button.bottom,
+                scaled(RAIL_CELL, chrome.scale),
+                button.bottom + scaled(12, chrome.scale),
+            ),
+            FAINT,
+        )
 
     # Every one of these is placed off the layout's own rectangles rather than
     # off the constants. They used to be written out longhand -- `RAIL_W +
@@ -855,6 +1034,58 @@ def _fill(target: Int, rect: D2D_RECT_F, colour: Int) raises:
     _release(brush)
 
 
+def _boxed(
+    chrome: Chrome,
+    text: StringSlice,
+    format: Int,
+    box: D2D_RECT_F,
+    colour: Int,
+) raises:
+    """Draw text centred in a rectangle, in the given face and colour."""
+    if format == 0:
+        return
+    var rt = Com[StaticString("ID2D1HwndRenderTarget")](
+        borrowed=chrome.target
+    )
+    var c = D2D_COLOR_F.rgb(colour)
+    var brush = Int(0)
+    _ = rt.CreateSolidColorBrush(com_addr(c), 0, com_addr(brush))
+    _ = c
+    if brush == 0:
+        return
+    var wide_text = utf16(text)
+    var count = len(wide_text) - 1
+    var rect = box
+    var this = OpaquePointer[MutUntrackedOrigin](
+        unsafe_from_address=chrome.target
+    )
+    com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            Int,
+            UInt32,
+            Int,
+            Pointer[D2D_RECT_F, MutAnyOrigin],
+            Int,
+            UInt32,
+            UInt32,
+        ) thin abi("C") -> NoneType,
+        "ID2D1HwndRenderTarget",
+        "DrawText",
+    ](this)(
+        this,
+        Int(wide_text.unsafe_ptr()),
+        UInt32(count),
+        format,
+        com_addr(rect),
+        brush,
+        UInt32(0),
+        UInt32(0),  # DWRITE_MEASURING_MODE_NATURAL
+    )
+    _ = wide_text
+    _release(brush)
+
+
 def _label(chrome: Chrome, text: StringSlice,
            x: Float32, y: Float32, colour: Int) raises:
     """Draw one short label at a point.
@@ -918,6 +1149,8 @@ def release(chrome: Chrome) raises:
     _release(chrome.brush_keyword)
     _release(chrome.brush_number)
     _release(chrome.text_format)
+    _release(chrome.icon_format)
+    _release(chrome.tiny_format)
     _release(chrome.dwrite)
     _release(chrome.target)
     _release(chrome.factory)
