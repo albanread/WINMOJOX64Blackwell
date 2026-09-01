@@ -2153,13 +2153,25 @@ def is_dirty(hwnd: Int) raises -> Bool:
     return _doc_at(hwnd)[].dirty
 
 
+# The title as last set, so retitle can tell a change from a repeat. Not a
+# nicety: SetWindowTextW dispatches WM_SETTEXT and a non-client repaint
+# through the window procedure synchronously, and at -O0 each of those
+# entries costs a ~67KB stack frame. retitle is called from _touch -- that
+# is, from inside every pumped message that changes anything -- so during a
+# build the unchanged title was paying two of those frames per output line,
+# stacked on top of whatever depth the pump was already at. The stack
+# overflow this caused took an afternoon to find; the comparison below is
+# the fix that makes it structural rather than "the reserve is big enough".
+comptime g_last_title = named_global["ide.lasttitle", String]
+
+
 def retitle(hwnd: Int) raises:
     """Put the file's name and its dirty mark in the title bar.
 
     The one place a person looks to find out whether their work is safe, and
     the convention every editor shares: a leading bullet means unsaved. It is
-    updated on every edit, which costs a SetWindowTextW on a string that is
-    usually the same -- Windows compares and does nothing when it matches.
+    updated on every edit, and skipped when the text has not changed -- see
+    `g_last_title` for why that skip is load-bearing.
 
     Args:
         hwnd: The window.
@@ -2177,6 +2189,10 @@ def retitle(hwnd: Int) raises:
     if doc[].dirty:
         title += chr(0x2022) + " "  # bullet
     title += name + "  --  Griddle"
+
+    if title == g_last_title()[]:
+        return
+    g_last_title()[] = title
 
     var SetWindowTextW = win32[
         def (Int, Pointer[UInt16, MutAnyOrigin]) thin abi("C") -> c_int,

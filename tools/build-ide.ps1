@@ -105,6 +105,21 @@ if (Test-Path $manifest) {
         Remove-Item "$Out.manifest" -Force
     }
 }
+# ---- the stack -----------------------------------------------------------
+# An -O0 Mojo frame is measured in tens of kilobytes -- the window
+# procedure's alone came to 67KB -- and the default 1MB reserve was measured
+# overflowing under run-script, where script, verb, pump and dispatch frames
+# stack a dozen deep. The linker standing in for link.exe ignores -Xlinker,
+# so the reserve is set where it actually lives: the PE optional header.
+# After mt.exe, which rewrites the file.
+$img = [System.IO.File]::ReadAllBytes((Resolve-Path $Out).Path)
+$pe = [BitConverter]::ToInt32($img, 0x3C)
+if ([BitConverter]::ToUInt16($img, $pe + 24) -eq 0x20B) {
+    [BitConverter]::GetBytes([UInt64]8388608).CopyTo($img, $pe + 24 + 72)
+    [System.IO.File]::WriteAllBytes((Resolve-Path $Out).Path, $img)
+    Write-Host "  stack reserve set to 8MB"
+}
+
 Write-Host "staged the runtime beside it; $Out runs on its own"
 
 if ($Check) { & (Join-Path $PSScriptRoot 'check-ide.ps1') -Exe $Out }
