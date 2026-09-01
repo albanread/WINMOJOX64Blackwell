@@ -30,3 +30,27 @@ Mojo debugger plugin, Crashpad, `lld`, the Windows API database, and the
 open-source NVIDIA PTX driver runtime. The proprietary NVIDIA display driver is
 still required to execute PTX on the GPU; no proprietary CUDA compiler or CUDA
 runtime is bundled.
+
+## Installing
+
+Three ways, least commitment first:
+
+- **The zip alone.** Unpack it anywhere -- a directory, a second drive, a
+  memory stick -- and run `griddle.cmd` or any other launcher. The first
+  thing you run repoints the package at wherever it landed. Moving the
+  directory later is fine for the same reason.
+- **The installer** (`*-setup-*.exe`). The same tree with the usual
+  conveniences: pick a directory (anywhere you can write -- no
+  administrator rights, nothing touches system directories), choose
+  components (the Python runtime, the examples, the guide), get Start
+  Menu shortcuts and an entry in Apps & Features that uninstalls
+  cleanly. Built with NSIS by `create-release.ps1 -Installer`.
+- **`install.ps1`**, for the versioned layout: it unpacks releases under
+  one root with a `current` junction, so several versions sit side by
+  side and switching is repointing the junction.
+
+The IDE is `griddle.cmd`, or `bin\griddle.exe` directly -- the editor
+repoints the configuration itself at startup, so a pinned taskbar
+shortcut to the exe works. Python comes bundled in `python\`; the
+IDE's Python menu and the compiler's interop use it with nothing to
+configure. The programmer's guide is in `WinMojoGuide\`.

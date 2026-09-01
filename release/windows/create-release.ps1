@@ -2,7 +2,13 @@
 param(
     [string]$Destination = 'C:\projects\mojo_release',
     [string]$OutputBase,
-    [switch]$NoArchive
+    [switch]$NoArchive,
+    # Also produce a per-user NSIS installer beside the zip. Needs makensis:
+    # either pass -MakeNsis, or unzip the portable NSIS into build\nsis-3.11.
+    [switch]$Installer,
+    [string]$MakeNsis,
+    # zlib instead of solid LZMA in the installer, for a fast test cycle.
+    [switch]$QuickInstaller
 )
 
 $ErrorActionPreference = 'Stop'
@@ -98,7 +104,7 @@ $artifacts = [ordered]@{
     'lib\std.mojoc' = 'bazel-bin\mojo\stdlib\std\std.mojoc'
     'lib\max.mojoc' = 'bazel-bin\max\mojo\max\max.mojoc'
     'lib\windows_api.db' = (Join-Path $OutputBase 'external\+http_archive+winkb\windows_api.db')
-    'examples\nvidia_mandelbrot.mojo' = 'examples\win32\nvidia_mandelbrot.mojo'
+    'examples\nvidia_mandelbrot.mojo' = 'examples\win32\nvidia_mandelbrot\main.mojo'
     'examples\nvidia_mandelbrot.exe' = 'bazel-bin\examples\win32\nvidia_mandelbrot.exe'
     'examples\AsyncRTRuntimeGlobals.dll' = 'bazel-bin\AsyncRT\AsyncRTRuntimeGlobals.dll'
     'examples\MSupportGlobals.dll' = 'bazel-bin\Support\MSupportGlobals.dll'
@@ -124,6 +130,8 @@ $exampleProjects = Get-ChildItem -LiteralPath $exampleRoot -Directory |
 foreach ($project in $exampleProjects) {
     foreach ($file in (Get-ChildItem -LiteralPath $project.FullName -File -Recurse)) {
         if ($file.Extension -in @('.exe', '.lib', '.pdb', '.obj')) { continue }
+        # Editor state from whoever last opened the example is not part of it.
+        if ($file.Name -eq '.griddle-session.json') { continue }
         $relative = $file.FullName.Substring($exampleRoot.Length).TrimStart('\\')
         $artifacts['examples\win32\' + $relative] = 'examples\win32\' + $relative
     }
@@ -185,6 +193,43 @@ foreach ($relativePath in $templateFiles) {
     Copy-Item -LiteralPath $source -Destination $target -Force
 }
 
+# ---- the Python runtime -------------------------------------------------
+# ide/python_env.mojo probes `<toolchain>\python` for the interpreter that
+# creates environments and provides MOJO_PYTHON_LIBRARY. The standalone
+# CPython Bazel fetched for this very build is relocatable by construction,
+# so the newest one it holds ships as that directory. Without it, Python in
+# an installed copy depends on what the user's machine happens to have --
+# and what it happens to have is usually the Microsoft Store stub.
+$pythonSource = $null
+$externalRoot = Join-Path $OutputBase 'external'
+$pythonDirs = Get-ChildItem -LiteralPath $externalRoot -Directory -Filter 'rules_python++python+python_3_*_x86_64-pc-windows-msvc' -ErrorAction SilentlyContinue |
+    Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'python.exe') } |
+    Sort-Object @{Expression = { [int]($_.Name -replace '.*python_3_(\d+)_.*', '$1') }} -Descending
+if ($pythonDirs) { $pythonSource = $pythonDirs[0].FullName }
+if ($pythonSource) {
+    Write-Host "Bundling Python from $pythonSource"
+    $pythonTarget = Join-Path $destinationPath 'python'
+    if (Test-Path -LiteralPath $pythonTarget) { Remove-Item -LiteralPath $pythonTarget -Recurse -Force }
+    Copy-Item -LiteralPath $pythonSource -Destination $pythonTarget -Recurse -Force
+    # Bazel leaves its own bookkeeping in the fetched tree; none of it is
+    # Python's and some of it (BUILD files, MODULE.bazel) confuses a reader
+    # into thinking the directory is a workspace.
+    foreach ($junk in @('BUILD.bazel', 'MODULE.bazel', 'WORKSPACE', 'REPO.bazel')) {
+        $junkPath = Join-Path $pythonTarget $junk
+        if (Test-Path -LiteralPath $junkPath) { Remove-Item -LiteralPath $junkPath -Force }
+    }
+} else {
+    Write-Warning 'No standalone CPython found in the Bazel external tree; the release will have no bundled Python.'
+}
+
+# ---- the guide ------------------------------------------------------------
+# WinMojoGuide is the user documentation. A release without it hands the
+# user a toolchain and no book.
+$guideSource = Join-Path $repository 'WinMojoGuide'
+if (Test-Path -LiteralPath $guideSource -PathType Container) {
+    Copy-Item -LiteralPath $guideSource -Destination (Join-Path $destinationPath 'WinMojoGuide') -Recurse -Force
+}
+
 $licenseDirectory = Join-Path $repository 'Licenses'
 if (Test-Path -LiteralPath $licenseDirectory -PathType Container) {
     Copy-Item -LiteralPath $licenseDirectory -Destination $destinationPath -Recurse -Force
@@ -238,4 +283,30 @@ if (-not $NoArchive) {
     $zipHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
     [System.IO.File]::WriteAllText($archivePath + '.sha256', "$zipHash  $(Split-Path -Leaf $archivePath)`r`n", [System.Text.UTF8Encoding]::new($false))
     Write-Host "sha256: $zipHash"
+}
+
+if ($Installer) {
+    $makensis = $MakeNsis
+    if (-not $makensis) {
+        $candidates = @(
+            (Join-Path $repository 'build\nsis-3.11\makensis.exe'),
+            (Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe')
+        )
+        $makensis = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    }
+    if (-not $makensis) {
+        Write-Warning 'makensis.exe not found; skipping the installer. Pass -MakeNsis or unzip the portable NSIS into build\nsis-3.11.'
+    } else {
+        $setupPath = $destinationPath + '-setup-' + $revision + '.exe'
+        $nsiArgs = @('/V2', "/DRELEASE_DIR=$destinationPath", "/DREVISION=$revision", "/DOUTFILE=$setupPath")
+        if ($QuickInstaller) { $nsiArgs += '/DQUICK' }
+        $nsiArgs += (Join-Path $PSScriptRoot 'installer.nsi')
+        & $makensis @nsiArgs
+        if ($LASTEXITCODE -ne 0) { throw "makensis failed with exit code $LASTEXITCODE" }
+        $setupBytes = (Get-Item -LiteralPath $setupPath).Length
+        Write-Host ('Installer: {0} ({1:N1} MiB).' -f $setupPath, ($setupBytes / 1MB))
+        $setupHash = (Get-FileHash -LiteralPath $setupPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        [System.IO.File]::WriteAllText($setupPath + '.sha256', "$setupHash  $(Split-Path -Leaf $setupPath)`r`n", [System.Text.UTF8Encoding]::new($false))
+        Write-Host "sha256: $setupHash"
+    }
 }
