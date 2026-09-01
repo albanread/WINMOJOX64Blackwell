@@ -89,6 +89,7 @@ from std.time import perf_counter_ns, sleep
 
 from ide.json import JSON
 from ide.pipes import kill, read_some, set_env, spawn, utf16z
+from ide.toolchain import toolchain_root as found_toolchain
 from ide.win32 import absolute, env_or, win32
 
 
@@ -294,10 +295,18 @@ def _hex64(value: UInt64) -> String:
 def toolchain_root() raises -> String:
     """Where the compiler, the language server and the debugger live.
 
-    `GRIDDLE_TOOLCHAIN_ROOT` first so a packaged build can say; otherwise the
-    `bazel-bin` junction, which is how `ide/build.mojo` and `ide/griddle.mojo`
-    already find every tool they spawn. There is no installed product on a
-    from-source machine and this must degrade to the build rather than fail.
+    `GRIDDLE_TOOLCHAIN_ROOT` first so a packaged build can say; then the
+    toolchain module, which is the one place that answers "which toolchain"
+    and answers it from where Griddle's own executable is; then `bazel-bin`
+    relative to the current directory.
+
+    That middle candidate is the fix for a real failure. This used to be
+    `absolute("bazel-bin")` alone, and `absolute` is relative to the current
+    directory -- so opening a project in another folder and asking for a
+    Python environment reported "no Python runtime", because the CPython the
+    toolchain ships was being looked for under the user's own project. The
+    editor knows where its toolchain is; it should not guess from the working
+    directory.
 
     Returns:
         An absolute directory, which may not exist.
@@ -308,6 +317,12 @@ def toolchain_root() raises -> String:
     var override = env_or("GRIDDLE_TOOLCHAIN_ROOT", "")
     if override != "":
         return override^
+    var found = found_toolchain()
+    if found != "":
+        # The from-source tree keeps its binaries under `bazel-bin`; an
+        # installed one keeps them under `bin`, and the caller below probes
+        # both shapes, so the root itself is the right answer to give.
+        return found^
     return absolute("bazel-bin")
 
 
@@ -350,7 +365,16 @@ def runtime_home() raises -> String:
     # `external`. Derived rather than written out, so a checkout under another
     # name still finds them; each candidate is probed anyway, so a wrong guess
     # costs one `GetFileAttributesW`.
-    var checkout = dirname(root)
+    # The checkout, from either shape of root. `toolchain_root` answers the
+    # checkout itself when the toolchain module found one, and
+    # `<checkout>\bazel-bin` when it fell back to the working directory --
+    # so which one this is has to be asked rather than assumed. It was
+    # assumed, and the day the answer changed shape every project outside the
+    # checkout reported "no Python runtime".
+    var checkout = root
+    if basename(checkout).lower() == "bazel-bin":
+        var above = dirname(checkout)
+        checkout = above^
     var junction = _join(
         checkout, "bazel-" + basename(checkout).lower()
     )
