@@ -27,7 +27,17 @@ from std.sys._winkb import winkb_constant
 from std.time import perf_counter_ns
 
 from ide.caret import is_simple
-from ide.chrome import Chrome, Layout, bring_up, release
+from ide.chrome import (
+    Chrome,
+    Layout,
+    RAIL_W,
+    bring_up,
+    pane_height,
+    release,
+    set_pane_height,
+    set_sidebar_width,
+    sidebar_width,
+)
 from ide.doc import (
     Doc,
     Grid,
@@ -77,6 +87,7 @@ from ide.python_env import (
     python_report,
 )
 from ide.python_env import variables as python_variables
+from ide.settings import set_setting, setting
 from ide.samples import (
     sample_entry,
     sample_files,
@@ -170,6 +181,8 @@ from ide.gridview import (
     set_variable_rows,
     outline_row_at,
     output_row_at,
+    output_scrolled_back,
+    scroll_output,
     tab_at,
     tree_row_at,
     release_cache,
@@ -5207,3 +5220,201 @@ def open_project(hwnd: Int, folder: String) raises -> String:
     if opened.startswith("opened") or opened.startswith("switched"):
         out += ", showing main.mojo"
     return out^
+
+
+# ===----------------------------------------------------------------------===#
+# The splitters, and scrolling the pane the pointer is over
+# ===----------------------------------------------------------------------===#
+
+
+def splitter_at(hwnd: Int, x: Int, y: Int) raises -> Int:
+    """Which splitter, if any, is under a point.
+
+    Args:
+        hwnd: The window.
+        x: Client x.
+        y: Client y.
+
+    Returns:
+        1 for the sidebar's, 2 for the bottom panes', 0 for neither.
+
+    Raises:
+        If the window has no chrome.
+    """
+    var full = _layout(hwnd)
+    var px = Float32(x)
+    var py = Float32(y)
+
+    # The bottom one first. They cross at one corner, and the horizontal edge
+    # is the one somebody aiming at that corner almost always means -- the
+    # sidebar runs the whole height and can be grabbed anywhere else along it.
+    var pane = full.pane_splitter()
+    if px >= pane.left and px <= pane.right and py >= pane.top and py <= pane.bottom:
+        return 2
+    var side = full.sidebar_splitter()
+    if px >= side.left and px <= side.right and py >= side.top and py <= side.bottom:
+        return 1
+    return 0
+
+
+def drag_splitter(hwnd: Int, which: Int, x: Int, y: Int) raises -> String:
+    """Move a splitter to follow the pointer.
+
+    The pointer's position is the answer, not the distance it has moved: a
+    drag that started a pixel off the edge would otherwise carry that pixel
+    for its whole length, and the splitter would drift away from the cursor.
+
+    Args:
+        hwnd: The window.
+        which: 1 for the sidebar, 2 for the bottom panes.
+        x: Client x.
+        y: Client y.
+
+    Returns:
+        Where the edge ended up.
+
+    Raises:
+        If the window has no chrome.
+    """
+    var scale = dpi_scale(hwnd)
+    if scale <= 0.0:
+        scale = 1.0
+    if which == 1:
+        # Design pixels, because that is what the layout is written in and
+        # what gets multiplied back up on a denser display.
+        set_sidebar_width(Int(Float32(x) / scale) - RAIL_W)
+    elif which == 2:
+        var full = _layout(hwnd)
+        var bottom = full.status().top
+        set_pane_height(Int((bottom - Float32(y)) / scale))
+    else:
+        return String("no such splitter")
+    # No render target to rebuild: the window has not changed size, only the
+    # line inside it has moved, and every region is arithmetic on that line
+    # recomputed for the next frame.
+    _touch(hwnd)
+    return (
+        String("sidebar ") + String(sidebar_width())
+        + ", pane " + String(pane_height())
+    )
+
+
+def over_output(hwnd: Int, x: Int, y: Int) raises -> Bool:
+    """Whether a point is inside the output pane.
+
+    Args:
+        hwnd: The window.
+        x: Client x.
+        y: Client y.
+
+    Returns:
+        True when the pointer is over the build and run pane.
+
+    Raises:
+        If the window has no chrome.
+    """
+    var pane = _layout(hwnd).output()
+    return (
+        Float32(x) >= pane.left
+        and Float32(x) <= pane.right
+        and Float32(y) >= pane.top
+        and Float32(y) <= pane.bottom
+    )
+
+
+def scroll_output_pane(hwnd: Int, by: Int) raises -> String:
+    """Scroll the output pane.
+
+    Args:
+        hwnd: The window.
+        by: Lines; negative goes back through the history.
+
+    Returns:
+        How far back it is now.
+
+    Raises:
+        If the window has no chrome.
+    """
+    var full = _layout(hwnd)
+    scroll_output(by, full.output(), dpi_scale(hwnd))
+    _touch(hwnd)
+    var back = output_scrolled_back()
+    if back == 0:
+        return String("output following the tail")
+    return String("output scrolled back ") + String(back) + " lines"
+
+
+def restore_layout(hwnd: Int) raises -> String:
+    """Put the splitters back where they were left.
+
+    Called once at startup. The settings store holds strings, so these are
+    parsed here rather than there -- and a value that is not a number is
+    ignored rather than argued with, because a hand-edited settings file is
+    something this store invites.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What was restored, or empty when there was nothing to restore.
+
+    Raises:
+        Never in practice.
+    """
+    _ = hwnd
+    var moved = False
+    try:
+        var w = setting(String("layout.sidebar"))
+        if w != "" and _all_digits(w):
+            set_sidebar_width(Int(w))
+            moved = True
+        var h = setting(String("layout.pane"))
+        if h != "" and _all_digits(h):
+            set_pane_height(Int(h))
+            moved = True
+    except:
+        pass
+    if not moved:
+        return String("")
+    return (
+        String("layout: sidebar ") + String(sidebar_width())
+        + ", pane " + String(pane_height())
+    )
+
+
+def _all_digits(s: String) -> Bool:
+    """Whether every byte is 0-9, and there is at least one."""
+    if s.byte_length() == 0:
+        return False
+    for byte in s.as_bytes():
+        var c = Int(byte)
+        if c < 0x30 or c > 0x39:
+            return False
+    return True
+
+
+def _layout(hwnd: Int) raises -> Layout:
+    """The window's regions, for this client size and this display.
+
+    Built fresh rather than kept, for the reason `Layout`'s own docstring
+    gives: it is a view of the window size, and a stored copy is a copy that
+    is wrong after the first resize.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        The layout.
+
+    Raises:
+        If GetClientRect cannot be resolved.
+    """
+    var GetClientRect = win32[
+        def (Int, Pointer[RECT, MutAnyOrigin]) thin abi("C") -> c_int,
+        "GetClientRect",
+    ]()
+    var rc = RECT()
+    _ = GetClientRect(hwnd, Pointer(to=rc).unsafe_origin_cast[MutAnyOrigin]())
+    return Layout(
+        Int(rc.right - rc.left), Int(rc.bottom - rc.top), dpi_scale(hwnd)
+    )

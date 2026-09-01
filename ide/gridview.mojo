@@ -1605,12 +1605,57 @@ def draw_references(
     ](this)(this)
 
 
+# How far back the output pane has been scrolled, in lines from the bottom.
+# Zero means the tail, which is where it sits while a build is running and
+# where it returns to the moment somebody scrolls back down.
+comptime _g_out_back = named_global["gridview.outback", Int]
+
+
+def output_scrolled_back() -> Int:
+    """How many lines above the tail the output pane is showing.
+
+    Returns:
+        Zero when it is following the tail.
+    """
+    return _g_out_back()[]
+
+
+def scroll_output(by: Int, region: D2D_RECT_F, scale: Float32):
+    """Move the output pane, clamped to what there is.
+
+    Args:
+        by: Lines; negative scrolls back through the history.
+        region: The output pane, for how many lines fit.
+        scale: Device pixels per design pixel.
+    """
+    var rows = output_rows(region, scale)
+    var most = output_count() - rows
+    if most < 0:
+        most = 0
+    var back = _g_out_back()[] - by
+    if back < 0:
+        back = 0
+    if back > most:
+        back = most
+    _g_out_back()[] = back
+
+
+def follow_output():
+    """Go back to following the tail.
+
+    Called when the pane is cleared and when a new command starts: a person
+    who runs something is asking to see what it says now, not to stay where
+    they had scrolled to during the last one.
+    """
+    _g_out_back()[] = 0
+
+
 def output_first_row(region: D2D_RECT_F, scale: Float32) -> Int:
     """Which output line is drawn at the top of the pane.
 
-    The pane shows the tail, so this is not zero, and a click handler that
-    assumed it was would jump to the wrong diagnostic. Shared with the drawing
-    so the two cannot disagree.
+    The pane follows the tail unless somebody has scrolled it back, so this
+    is usually not zero, and a click handler that assumed it was would jump to
+    the wrong diagnostic. Shared with the drawing so the two cannot disagree.
 
     Args:
         region: The output pane.
@@ -1620,7 +1665,7 @@ def output_first_row(region: D2D_RECT_F, scale: Float32) -> Int:
         The index of the first visible line.
     """
     var rows = output_rows(region, scale)
-    var first = output_count() - rows
+    var first = output_count() - rows - _g_out_back()[]
     return 0 if first < 0 else first
 
 
@@ -1710,6 +1755,10 @@ def draw_output(
         heading += "   running"
     elif total > 0:
         heading += "   " + String(total) + " lines"
+    if output_scrolled_back() > 0:
+        # Said out loud: a pane that is not at the end while a build is
+        # running looks like a build that has stopped producing output.
+        heading += "   (scrolled back " + String(output_scrolled_back()) + ")"
     var head_layout = _make_layout(dwrite, chrome, heading, 100000.0)
     if head_layout != 0:
         _draw_layout(

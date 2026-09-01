@@ -26,6 +26,7 @@ an HRESULT to check. This is the documented escape hatch doing its job the
 first time a real client needed it.
 """
 
+from std.sys._globals import named_global
 from std.ffi import c_int
 from std.memory import Pointer
 from std.sys.info import size_of
@@ -196,10 +197,78 @@ struct D2D1_HWND_RENDER_TARGET_PROPERTIES(Defaultable, ImplicitlyCopyable, Movab
 # ===----------------------------------------------------------------------===#
 
 comptime RAIL_W = 52
-comptime SIDEBAR_W = 208
+comptime SIDEBAR_W = 208  # the default; `sidebar_width` is what is drawn
 comptime STATUS_H = 28
-comptime PANE_H = 140
+comptime PANE_H = 140  # the default; `pane_height` is what is drawn
+
+# The two movable edges, in design pixels, at their defaults until somebody
+# drags one. Held here rather than in the Layout because a Layout is built
+# fresh for every frame and every hit test -- it is a view of the window size,
+# not a place to keep anything.
+#
+# The bounds are not taste. A sidebar dragged to nothing is a sidebar nobody
+# can get back, because there is no longer anything to grab; the same is true
+# of the pane. The upper bounds keep the editor from disappearing instead.
+comptime SIDEBAR_MIN = 80
+comptime SIDEBAR_MAX = 600
+comptime PANE_MIN = 60
+comptime PANE_MAX = 700
+
+comptime g_sidebar_w = named_global["chrome.sidebar.w", Int]
+comptime g_pane_h = named_global["chrome.pane.h", Int]
+
+
+def sidebar_width() -> Int:
+    """The sidebar's width in design pixels.
+
+    Returns:
+        What was dragged, or the default before anything was.
+    """
+    var w = g_sidebar_w()[]
+    return SIDEBAR_W if w == 0 else w
+
+
+def set_sidebar_width(w: Int):
+    """Move the splitter between the sidebar and the editor.
+
+    Args:
+        w: The wanted width in design pixels; clamped.
+    """
+    var want = w
+    if want < SIDEBAR_MIN:
+        want = SIDEBAR_MIN
+    if want > SIDEBAR_MAX:
+        want = SIDEBAR_MAX
+    g_sidebar_w()[] = want
+
+
+def pane_height() -> Int:
+    """The bottom panes' height in design pixels.
+
+    Returns:
+        What was dragged, or the default before anything was.
+    """
+    var h = g_pane_h()[]
+    return PANE_H if h == 0 else h
+
+
+def set_pane_height(h: Int):
+    """Move the splitter between the editor and the bottom panes.
+
+    Args:
+        h: The wanted height in design pixels; clamped.
+    """
+    var want = h
+    if want < PANE_MIN:
+        want = PANE_MIN
+    if want > PANE_MAX:
+        want = PANE_MAX
+    g_pane_h()[] = want
 comptime TAB_H = 30
+
+# How wide a splitter is to the mouse, in design pixels. It draws as a
+# hairline and grabs as a band.
+comptime SPLITTER_GRAB = 6
 """The tab strip, above the editor field. One row, always present: a strip
 that appears when a second file opens moves every line of the first one down
 by thirty pixels while somebody is reading it."""
@@ -232,7 +301,7 @@ struct Layout(ImplicitlyCopyable, Movable):
 
     def gutter_x(self) -> Float32:
         """Where the editor field begins: past the rail and the sidebar."""
-        return scaled(RAIL_W + SIDEBAR_W, self.scale)
+        return scaled(RAIL_W + sidebar_width(), self.scale)
 
     def _bar_top(self) -> Float32:
         """The top of the status bar."""
@@ -240,7 +309,27 @@ struct Layout(ImplicitlyCopyable, Movable):
 
     def _pane_top(self) -> Float32:
         """The top of the bottom panes."""
-        return self._bar_top() - scaled(PANE_H, self.scale)
+        return self._bar_top() - scaled(pane_height(), self.scale)
+
+    def sidebar_splitter(self) -> D2D_RECT_F:
+        """The band that resizes the sidebar.
+
+        Wider than the line it appears to be, and deliberately: a one-pixel
+        target is a target nobody can hit, and at 150% scaling it is not even
+        one pixel. Six design pixels centred on the edge is what a person can
+        grab without noticing they aimed.
+        """
+        var x = self.gutter_x()
+        var half = scaled(SPLITTER_GRAB, self.scale) * 0.5
+        return D2D_RECT_F(x - half, 0, x + half, self._bar_top())
+
+    def pane_splitter(self) -> D2D_RECT_F:
+        """The band that resizes the bottom panes."""
+        var y = self._pane_top()
+        var half = scaled(SPLITTER_GRAB, self.scale) * 0.5
+        return D2D_RECT_F(
+            self.gutter_x(), y - half, Float32(self.width), y + half
+        )
 
     def _split(self) -> Float32:
         """Where the issues pane ends and the output pane begins."""

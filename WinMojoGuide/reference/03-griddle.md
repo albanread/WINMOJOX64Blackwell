@@ -67,7 +67,7 @@ Read from the live menu, which is built from what the installation actually has 
 
 **Python** — Create or Repair Environment · Install Project Dependencies · Install Package... · Show Environment
 
-**Examples** — adreno_index_probe · adreno_saxpy · adreno_saxpy_debug · bifurcation · comptr · d3djulia · d3dwindow · ferns · fernwind · fluid · life · nvidia_mandelbrot · structptr · windows_tour · winkb_queries · winstr_smoke
+**Examples** — adreno_index_probe · adreno_saxpy · adreno_saxpy_debug · bifurcation · comptr · d3djulia · d3dwindow · ferns · fernwind · fluid · life · life-python · nvidia_mandelbrot · structptr · windows_tour · winkb_queries · winstr_smoke
 
 **Help** — About
 
@@ -146,6 +146,8 @@ console [<command>]              the output pane, or run a command in it
 debug [launch|wait|step|stop]    the debugger
 break [N|list|clear]             breakpoints
 toolchain [refresh|gaps|<part>]  which compiler this is
+split [sidebar|pane <px>]        where the movable edges are
+output-scroll <lines>            move the output pane; negative goes back
 project [<folder>]               open a folder as the project, closing the last one
 samples [<name>]                 the shipped examples; open one as a project
 python [create|install|clear]    this project's Python environment

@@ -29,6 +29,7 @@ from ide.gridview import (
 )
 from ide.pipeutf8 import without_bom
 from ide.prompt import prompt_report
+from ide.chrome import pane_height, set_pane_height, set_sidebar_width, sidebar_width
 from ide.settings import set_setting, setting, settings_report
 from ide.build import append_output
 from ide.symbols import symbols_report
@@ -60,6 +61,7 @@ from ide.window import (
     prompt_replace,
     prompt_symbol,
     open_project,
+    scroll_output_pane,
     open_sample_named,
     prompt_type,
     python_create,
@@ -310,6 +312,8 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             "debug [launch|wait|step|stop]    the debugger\n"
             "break [N|list|clear]             breakpoints\n"
             "toolchain [refresh|gaps|<part>]  which compiler this is\n"
+            "split [sidebar|pane <px>]        where the movable edges are\n"
+            "output-scroll <lines>            move the output pane; negative goes back\n"
             "project [<folder>]               open a folder as the project, closing the last one\n"
             "samples [<name>]                 the shipped examples; open one as a project\n"
             "python [create|install|clear]    this project's Python environment\n"
@@ -1088,6 +1092,44 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
 
     # The shipped examples. `samples` lists them, `samples <name>` opens one,
     # which is what the Examples menu does with a click.
+    # The two movable edges, and the pane that scrolls. Verbs because a
+    # splitter dragged with a mouse and a splitter set by a check should be
+    # the same code, and because a check cannot drag anything.
+    if verb == "split":
+        var spec = String(rest).strip()
+        if spec.byte_length() == 0:
+            return (
+                String("sidebar ") + String(sidebar_width())
+                + ", pane " + String(pane_height())
+            )
+        var space = spec.find(" ")
+        if space < 0:
+            return String("usage: split sidebar|pane <pixels>")
+        var which = String(spec[byte=:space])
+        var value = Int(String(spec[byte=space + 1 :]).strip())
+        if which == "sidebar":
+            set_sidebar_width(value)
+        elif which == "pane":
+            set_pane_height(value)
+        else:
+            return String("usage: split sidebar|pane <pixels>")
+        # Marked for repaint. `paint` is the verb that forces one
+        # synchronously; this only has to make the next frame use the new
+        # edge, which the window manager will ask for on its own.
+        var InvalidateRect2 = win32[
+            def (Int, Int, c_int) thin abi("C") -> c_int, "InvalidateRect"
+        ]()
+        _ = InvalidateRect2(hwnd, 0, c_int(0))
+        return (
+            String("sidebar ") + String(sidebar_width())
+            + ", pane " + String(pane_height())
+        )
+
+    if verb == "output-scroll":
+        if rest.byte_length() == 0:
+            return String("usage: output-scroll <lines>  (negative goes back)")
+        return scroll_output_pane(hwnd, Int(String(rest).strip()))
+
     if verb == "project":
         if rest.byte_length() == 0:
             return String("project ") + project_root()

@@ -24,6 +24,7 @@ up empty for a window that plainly exists.
 """
 
 from std.os import getenv
+from std.sys._globals import named_global
 from std.sys import argv
 
 from std.ffi import c_int
@@ -37,8 +38,17 @@ from std.sys.com import Apartment
 from std.memory import alloc
 
 from ide.agent import agent_command
-from ide.chrome import Chrome, bring_up, draw, finish, release
+from ide.chrome import (
+    Chrome,
+    bring_up,
+    draw,
+    finish,
+    pane_height,
+    release,
+    sidebar_width,
+)
 from ide.drop import register as register_drop, revoke as revoke_drop
+from ide.settings import set_setting
 from ide.toolchain import adopt_installed_toolchain
 from ide.python_env import project_location
 from ide.tree import project_root
@@ -125,7 +135,12 @@ from ide.window import (
     find_text,
     new_tab,
     asking,
+    drag_splitter,
     outline,
+    over_output,
+    restore_layout,
+    scroll_output_pane,
+    splitter_at,
     prompt_accept,
     prompt_cancel,
     prompt_find,
@@ -175,6 +190,7 @@ from ide.tsf import Tsf, activate, deactivate
 from ide.build import ensure_linker
 from ide.watch import file_stamp
 from ide.win32 import (
+    POINT,
     COPYDATASTRUCT,
     absolute,
     env_or,
@@ -204,6 +220,12 @@ comptime D2DERR_RECREATE_TARGET = 0x8899000C
 # anything resolved in advance and has to find what it needs each time. That
 # is the whole reason it re-opens user32 rather than being handed a pointer.
 # ===----------------------------------------------------------------------===#
+
+
+# Which splitter is being dragged: 1 the sidebar's, 2 the bottom panes',
+# 0 for none. In a global because a drag spans three messages and the
+# window procedure keeps nothing between them.
+comptime g_dragging = named_global["ide.dragging", Int]
 
 
 @export("griddle_wndproc")
@@ -494,7 +516,71 @@ def griddle_wndproc(
                 py -= 0x10000
             var SetFocus = win32[def (Int) thin abi("C") -> Int, "SetFocus"]()
             _ = SetFocus(hwnd)
+
+            # A splitter first. It sits over the edge of two regions, so a
+            # click there means "move this edge" and never "put the caret at
+            # the first column" -- which is what the editor would otherwise
+            # make of a click on its own left border.
+            var grabbed = splitter_at(hwnd, px, py)
+            if grabbed != 0:
+                g_dragging()[] = grabbed
+                var SetCapture = win32[
+                    def (Int) thin abi("C") -> Int, "SetCapture"
+                ]()
+                _ = SetCapture(hwnd)
+                return 0
+
             _ = caret_click(hwnd, px, py)
+            return 0
+
+        if message == UInt32(winkb_constant["WM_MOUSEMOVE"]()):
+            var mx = lparam & 0xFFFF
+            if mx >= 0x8000:
+                mx -= 0x10000
+            var my = (lparam >> 16) & 0xFFFF
+            if my >= 0x8000:
+                my -= 0x10000
+
+            if g_dragging()[] != 0:
+                _ = drag_splitter(hwnd, g_dragging()[], mx, my)
+                return 0
+
+            # Not dragging: the cursor still has to say that this edge can be
+            # moved. Windows resets it to the class cursor on every move, so
+            # this is set every time rather than on the way in and out.
+            var over = splitter_at(hwnd, mx, my)
+            if over != 0:
+                var LoadCursorW = win32[
+                    def (Int, Int) thin abi("C") -> Int, "LoadCursorW"
+                ]()
+                var SetCursor = win32[
+                    def (Int) thin abi("C") -> Int, "SetCursor"
+                ]()
+                var which = (
+                    winkb_constant["IDC_SIZEWE"]() if over
+                    == 1 else winkb_constant["IDC_SIZENS"]()
+                )
+                _ = SetCursor(LoadCursorW(0, which))
+            return 0
+
+        if message == UInt32(winkb_constant["WM_LBUTTONUP"]()):
+            if g_dragging()[] != 0:
+                g_dragging()[] = 0
+                var ReleaseCapture = win32[
+                    def () thin abi("C") -> Int, "ReleaseCapture"
+                ]()
+                _ = ReleaseCapture()
+                # Remembered, so the window comes back the shape it was left.
+                try:
+                    _ = set_setting(
+                        String("layout.sidebar"), String(sidebar_width())
+                    )
+                    _ = set_setting(
+                        String("layout.pane"), String(pane_height())
+                    )
+                except:
+                    pass
+                return 0
             return 0
 
         # Scrolling. The wheel reports in notches of 120; three lines a notch
@@ -506,7 +592,33 @@ def griddle_wndproc(
             var delta = Int((wparam >> 16) & 0xFFFF)
             if delta >= 0x8000:
                 delta -= 0x10000
-            _ = scroll_by(hwnd, -(delta * 3) // 120)
+            var lines = -(delta * 3) // 120
+
+            # WM_MOUSEWHEEL reports in SCREEN coordinates, unlike every other
+            # mouse message here, so the point has to be brought back into the
+            # client before it can be compared with a region.
+            var wx = lparam & 0xFFFF
+            if wx >= 0x8000:
+                wx -= 0x10000
+            var wy = (lparam >> 16) & 0xFFFF
+            if wy >= 0x8000:
+                wy -= 0x10000
+            var point = POINT(Int32(wx), Int32(wy))
+            var ScreenToClient = win32[
+                def (Int, Pointer[POINT, MutAnyOrigin]) thin abi("C") -> c_int,
+                "ScreenToClient",
+            ]()
+            _ = ScreenToClient(
+                hwnd, Pointer(to=point).unsafe_origin_cast[MutAnyOrigin]()
+            )
+
+            # The pane under the pointer scrolls, which is what every other
+            # Windows program does and what makes a long build log readable
+            # without moving the focus off the text.
+            if over_output(hwnd, Int(point.x), Int(point.y)):
+                _ = scroll_output_pane(hwnd, -lines)
+                return 0
+            _ = scroll_by(hwnd, lines)
             return 0
 
         # Typed characters. Windows has already done the keyboard layout, the
@@ -1348,6 +1460,15 @@ def main() raises:
 
     # The menu first: it takes height from the client area, and the chrome's
     # layout is arithmetic on whatever is left.
+    # The splitters, back where they were left. Before the first paint, so
+    # the window does not appear at the default size and jump.
+    try:
+        var restored = restore_layout(hwnd)
+        if restored != "":
+            print("griddle:", restored)
+    except:
+        pass
+
     build_menu(hwnd)
 
     # 1200x800 was written for a 96 DPI display, so on a denser one the
