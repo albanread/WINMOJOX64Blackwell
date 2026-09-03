@@ -817,6 +817,37 @@ def draw_caret(
 # ===----------------------------------------------------------------------===#
 
 
+# A short answer to something the person just did, shown on the status bar
+# until the next caret movement replaces it. A key press had nowhere to say
+# anything: the handlers discard what they are told, and the ones that print
+# write to a stdout a GUI-subsystem process does not have. "No language
+# server for this document" is the true answer to F12 for the first minute
+# after a large file is opened, and it was invisible.
+#
+# Cleared by movement rather than by a clock, deliberately: it costs no timer,
+# it cannot expire while somebody is reading it, and the gesture that clears
+# it -- carrying on -- is the one that means the message has been seen.
+comptime _g_notice = named_global["gridview.notice", String]
+comptime _g_notice_at = named_global["gridview.notice.at", Int]
+
+
+def set_notice(var text: String, line: Int, col: Int):
+    """Say something on the status bar until the caret moves.
+
+    Args:
+        text: The message. Empty clears it.
+        line: The caret line it was said at.
+        col: The caret column it was said at.
+    """
+    _g_notice()[] = text^
+    _g_notice_at()[] = (line << 20) | (col & 0xFFFFF)
+
+
+def notice() -> String:
+    """What the status bar is currently saying, or empty."""
+    return _g_notice()[]
+
+
 def status_line(doc: Doc) raises -> String:
     """What the status bar says: position, selection, and whether it is saved.
 
@@ -841,6 +872,18 @@ def status_line(doc: Doc) raises -> String:
             prompt_label() + "  " + String(typed[byte=:at]) + chr(0x2502)
             + typed[byte=at:]
         )
+
+    # A notice outlives only the position it was said at. Moving on is what
+    # says it has been read.
+    if _g_notice()[] != "":
+        var said_at = (doc.caret_line << 20) | (doc.caret_col & 0xFFFFF)
+        if said_at == _g_notice_at()[]:
+            return (
+                String("Ln ") + String(doc.caret_line + 1)
+                + ", Col " + String(doc.caret_col + 1)
+                + "    " + _g_notice()[]
+            )
+        _g_notice()[] = String("")
 
     var out = (
         String("Ln ") + String(doc.caret_line + 1)

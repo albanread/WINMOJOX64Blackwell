@@ -176,6 +176,7 @@ from ide.lsp import (
 )
 from ide.gridview import (
     GUTTER_W,
+    set_notice,
     debug_row_at,
     frame_rows,
     set_stop_line,
@@ -1277,6 +1278,51 @@ def sync(hwnd: Int) raises:
     did_change(doc[].uri, doc[].sent_version, doc[].rope.to_string())
 
 
+# The last definition answer this window has acted on, and what acting on it
+# reported. A reply is applied once, wherever it is noticed first.
+comptime g_definition_seen = named_global["ide.definition.seen", Int]
+comptime g_definition_said = named_global["ide.definition.said", String]
+
+
+def follow_definition(hwnd: Int) raises:
+    """Go where a newly arrived definition answer points.
+
+    Called from the pump, so it runs whether the request came from F12, from
+    the Go menu, or from the `definition` verb. It used to live inside
+    `definition_wait` alone, which meant the only way to reach a definition
+    was to ask and then wait in the same breath -- and the key handler does
+    not wait, so F12 sent a question whose answer nobody ever read.
+
+    Args:
+        hwnd: The window.
+
+    Raises:
+        Never in practice; a failed jump is reported, not raised.
+    """
+    var serial = definition_serial()
+    if serial == 0 or serial == g_definition_seen()[]:
+        return
+    g_definition_seen()[] = serial
+    var uri = definition_uri()
+    if uri.byte_length() == 0:
+        g_definition_said()[] = String("no definition for that")
+        _notice(hwnd, String("no definition for that"))
+        return
+    g_definition_said()[] = jump_to(
+        hwnd, uri, definition_line(), definition_character()
+    )
+
+
+def _notice(hwnd: Int, text: String) raises:
+    """Put a short answer on the status bar, at the caret it belongs to."""
+    try:
+        var doc = _doc_at(hwnd)
+        set_notice(text, doc[].caret_line, doc[].caret_col)
+        _touch(hwnd)
+    except:
+        pass
+
+
 def pump(hwnd: Int) raises -> Int:
     """Drain whatever the server has said, and repaint if it said anything."""
     if not is_running():
@@ -1286,6 +1332,8 @@ def pump(hwnd: Int) raises -> Int:
     if was:
         announce(hwnd)
         sync(hwnd)
+    # Before the repaint below, so a jump and its redraw are one frame.
+    follow_definition(hwnd)
     if handled > 0:
         _touch(hwnd)
     return handled
@@ -1749,8 +1797,13 @@ def definition_at_caret(hwnd: Int) raises -> String:
     """
     var doc = _doc_at(hwnd)
     if doc[].uri.byte_length() == 0 or not is_ready():
+        # Said on the status bar as well as returned, because the key
+        # handler discards what it is told and this is the answer a person
+        # gets for the first minute after opening a large file.
+        _notice(hwnd, String("no language server yet for this document"))
         return String("no language server for this document")
     sync(hwnd)
+    _notice(hwnd, String("looking for the definition..."))
     _ = request_definition(doc[].uri, doc[].caret_line, doc[].caret_col)
     return (
         String("asked where ") + String(doc[].caret_line + 1) + ":"
@@ -1776,12 +1829,9 @@ def definition_wait(hwnd: Int, milliseconds: Int) raises -> String:
     while perf_counter_ns() < deadline:
         _ = pump(hwnd)
         if definition_serial() != before:
-            var uri = definition_uri()
-            if uri.byte_length() == 0:
-                return String("no definition for that")
-            return jump_to(
-                hwnd, uri, definition_line(), definition_character()
-            )
+            # `pump` above applied it. Reporting what it did rather than
+            # doing it again is what keeps one answer to one jump.
+            return g_definition_said()[]
         # Ten milliseconds of being idle, not ten of being hung: `settle`
         # dispatches whatever the window manager has queued and comes back
         # early if something arrived.
