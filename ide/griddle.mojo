@@ -884,6 +884,13 @@ def griddle_wndproc(
                     return 0
 
             if ctrl:
+                # Whether this block actually claimed the key. It used to
+                # return unconditionally at the end, which swallowed EVERY
+                # Ctrl combination it did not recognise -- including Ctrl+F5
+                # and Ctrl+F10, whose handlers sit just below and were
+                # therefore unreachable. Chapter 1 of the guide opens by
+                # telling a new reader to press Ctrl+F5; nothing happened.
+                var swallowed = True
                 # Ctrl+Space: the universal "what can go here".
                 if wparam == winkb_constant["VK_SPACE"]():
                     _ = complete_at_caret(hwnd)
@@ -986,7 +993,12 @@ def griddle_wndproc(
                     # Ctrl+Tab forward, Ctrl+Shift+Tab back, the way every
                     # tabbed thing on this platform spells it.
                     _ = next_tab(hwnd, -1 if shift else 1)
-                return 0
+                else:
+                    # Not one of ours. Fall through to the function keys
+                    # rather than eating the keystroke.
+                    swallowed = False
+                if swallowed:
+                    return 0
 
             # F5 runs what is open, Shift+F5 stops it. The document is
             # saved first; running the version on disk while the window shows
