@@ -2139,6 +2139,58 @@ def save(hwnd: Int) raises -> String:
     return save_as(hwnd, path)
 
 
+def save_all(hwnd: Int) raises -> String:
+    """Write every tab that has unsaved work, not only the one on screen.
+
+    What Build, Run and Debug owe the compiler. Each of them reads a file
+    from disk -- and for a project, the file it reads is the project's
+    `main.mojo` rather than whatever is in front of you -- so saving only
+    the showing document meant a fix made in one tab could be invisible to a
+    build started from another. That failure wears the compiler's face: the
+    error stays on screen, pointing at a line you have already corrected.
+
+    Tabs are visited by switching to them, because `save` works on the
+    document the window is showing and reusing it is better than growing a
+    second path to disk that could rot differently. The tab that was showing
+    is restored afterwards, including when a write fails.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        `saved N file(s)`, or the first failure's message.
+
+    Raises:
+        If the window has no document.
+    """
+    var was = current_tab()
+    var written = 0
+    var trouble = String("")
+    for i in range(tab_count()):
+        var address = tab_doc(i)
+        if address == 0:
+            continue
+        var doc = Pointer[Doc, MutAnyOrigin](unsafe_from_address=address)
+        if not doc[].dirty:
+            continue
+        # An untitled document has nowhere to go, and a build must not stop
+        # to ask: it is not part of what is being compiled unless somebody
+        # has already given it a name.
+        if doc[].uri.byte_length() == 0:
+            continue
+        _ = switch_tab(hwnd, i)
+        var wrote = save(hwnd)
+        if not wrote.startswith("saved"):
+            trouble = wrote
+            break
+        written += 1
+    if was >= 0 and was < tab_count():
+        _ = switch_tab(hwnd, was)
+    if trouble != "":
+        return trouble^
+    return String("saved ") + String(written) + " file(s)"
+
+
 def is_dirty(hwnd: Int) raises -> Bool:
     """Whether the document has unsaved changes.
 
@@ -2482,10 +2534,9 @@ def run_file(hwnd: Int) raises -> String:
     # Saved first, deliberately. Running the version on disk while the window
     # shows a different one is how a person spends ten minutes debugging an
     # edit they had not saved.
-    if is_dirty(hwnd):
-        var wrote = save(hwnd)
-        if not wrote.startswith("saved"):
-            return wrote
+    var wrote = save_all(hwnd)
+    if not wrote.startswith("saved"):
+        return wrote
     var tools = _toolchain()
     return start_build(
         '"' + tools[0] + '" run' + _stdlib_flag(tools[1]) + ' -I .'
@@ -2508,10 +2559,9 @@ def build_file(hwnd: Int) raises -> String:
     var path = entry_point(hwnd)
     if path.byte_length() == 0:
         return String("save the file first; there is nothing to build")
-    if is_dirty(hwnd):
-        var wrote = save(hwnd)
-        if not wrote.startswith("saved"):
-            return wrote
+    var wrote = save_all(hwnd)
+    if not wrote.startswith("saved"):
+        return wrote
     var out = path
     if out.endswith(".mojo"):
         var stem = String(out[byte=0 : out.byte_length() - 5])
@@ -3493,10 +3543,9 @@ def debug_file(hwnd: Int) raises -> String:
     var path = document_path(hwnd)
     if path.byte_length() == 0:
         return String("save the file first; there is nothing to debug")
-    if is_dirty(hwnd):
-        var wrote = save(hwnd)
-        if not wrote.startswith("saved"):
-            return wrote
+    var wrote = save_all(hwnd)
+    if not wrote.startswith("saved"):
+        return wrote
     if debugging():
         # Already stopped somewhere: F5 means carry on, which is what it means
         # in every debugger and what a person pressing it again expects.
