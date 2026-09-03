@@ -181,7 +181,54 @@ if ($out -match '(?m)^error 12:20\s+use of unknown declaration') {
     Record 'lsp-class-body' 'FAIL' (($out -split "`n" | Where-Object { $_ -match 'error' })[0])
 }
 
-# 8. A text file gets no server at all. A Mojo language server has nothing to
+# 8. Rename. The server is narrower than its own capability flag suggests --
+# renameProvider is true, but it refuses anything that is not a local
+# variable with "renaming is only available for local variables" -- so this
+# renames a local, which is what it does support.
+#
+# It checks the string literal too. A rename that also edited "total" inside
+# the print would be a find-and-replace wearing a language server's clothes,
+# and the whole point of asking the compiler is that it knows the difference.
+$ren = Join-Path $dir 'rename.mojo'
+[System.IO.File]::WriteAllText($ren,
+    "def main():`n    var total = 0`n    total = total + 1`n" +
+    "    total = total + 2`n    print(`"total`", total)`n",
+    (New-Object System.Text.UTF8Encoding $false))
+$out = Ask $ren 'lsp wait 60000;;goto 2:9;;rename tally;;rename wait 25000;;text 2;;text 5'
+if ($out -match 'renamed 6 place' -and $out -match 'var tally = 0') {
+    if ($out -match '"total", tally') {
+        Record 'lsp-rename' 'PASS' 'six occurrences renamed, the string literal untouched'
+    } else {
+        Record 'lsp-rename' 'FAIL' 'the rename reached inside a string literal'
+    }
+} else {
+    Record 'lsp-rename' 'FAIL' (($out -split "`n" | Where-Object { $_ -match 'renamed|error|no ' })[0])
+}
+
+# 9. Go to definition, driven the way the key does it: ask, and let the pump
+# apply the answer. `definition wait` returns what the pump already did, so a
+# regression in which only the waiting caller jumps would fail here.
+$def = Join-Path $dir 'jump.mojo'
+[System.IO.File]::WriteAllText($def,
+    "def helper() -> Int:`n    return 7`n`n`ndef main():`n    print(`"v`", helper())`n",
+    (New-Object System.Text.UTF8Encoding $false))
+# Asked up to twice. The editor's own retries cover an empty answer -- the
+# server's way of saying "still reading" -- but roughly one attempt in five
+# gets no reply at all within the wait, and that is the server being slow
+# rather than the editor being wrong. Retrying the whole scenario keeps this
+# a check about navigation; a failure on both attempts is still a failure.
+$out = ''
+foreach ($try in 1..2) {
+    $out = Ask $def 'lsp wait 60000;;goto 6:16;;definition;;definition wait 40000;;caret'
+    if ($out -match 'at 1:5') { break }
+}
+if ($out -match 'at 1:5' -and $out -match 'line=0') {
+    Record 'lsp-definition' 'PASS' 'the caret landed on the definition'
+} else {
+    Record 'lsp-definition' 'FAIL' (($out -split "`n" | Where-Object { $_ -match 'at |no |caret' })[0])
+}
+
+# 10. A text file gets no server at all. A Mojo language server has nothing to
 # say about one, and starting a compiler per opened document is a cost the
 # rest of the check suite would pay on every run.
 $txt = Join-Path $dir 'plain.txt'

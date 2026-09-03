@@ -87,6 +87,30 @@ try {
     }
     Record 'foreground' 'PASS' 'the editor has the keyboard'
 
+    # F12 goes first, on a quiet editor. Ctrl+F5 below leaves a
+    # compiler running for several seconds, and its output arrives on
+    # the same timer that applies language-server answers -- asking
+    # for a definition behind that tests two things and blames the
+    # wrong one.
+    # ---- F12: go to definition ------------------------------------------
+    # The caret is put on the call to `helper` on the last line, and the
+    # definition is on the first, so a jump is unambiguous.
+    Ask 'lsp wait 60000' | Out-Null
+    # Column 20 is the 'h' of helper; 19 is the space before it, and the
+    # server answers about the token under the position, not beside it.
+    Ask 'goto 6:20' | Out-Null
+    $before = Ask 'caret'
+    Press $VK.F12
+    # Ten seconds, not four: an empty first answer means the server has not
+    # finished reading the file, and the editor asks again -- up to three
+    # more times, each costing a round trip.
+    Start-Sleep -Seconds 10
+    $after = Ask 'caret'
+    if ($after -match 'line=0') {
+        Record 'f12-jumps' 'PASS' "caret moved to the definition ($($after -replace '\s+',' '))"
+    } else {
+        Record 'f12-jumps' 'FAIL' "caret did not move: $($after -replace '\s+',' ')"
+    }
     # ---- Ctrl+F5: run without debugging ---------------------------------
     Press $VK.F5 @($VK.CONTROL)
     Start-Sleep -Seconds 5
@@ -97,22 +121,6 @@ try {
         Record 'ctrl-f5-runs' 'FAIL' 'Ctrl+F5 produced no run'
     }
 
-    # ---- F12: go to definition ------------------------------------------
-    # The caret is put on the call to `helper` on the last line, and the
-    # definition is on the first, so a jump is unambiguous.
-    Ask 'lsp wait 60000' | Out-Null
-    # Column 20 is the 'h' of helper; 19 is the space before it, and the
-    # server answers about the token under the position, not beside it.
-    Ask 'goto 6:20' | Out-Null
-    $before = Ask 'caret'
-    Press $VK.F12
-    Start-Sleep -Seconds 4
-    $after = Ask 'caret'
-    if ($after -match 'line=0') {
-        Record 'f12-jumps' 'PASS' "caret moved to the definition ($($after -replace '\s+',' '))"
-    } else {
-        Record 'f12-jumps' 'FAIL' "caret did not move: $($after -replace '\s+',' ')"
-    }
 } finally {
     if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
     Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
