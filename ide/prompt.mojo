@@ -43,6 +43,7 @@ comptime ASK_GOTO = 3
 comptime ASK_SYMBOL = 4
 comptime ASK_PACKAGE = 5
 comptime ASK_OPEN = 6
+comptime ASK_RENAME = 7
 
 comptime g_kind = named_global["prompt.kind", Int]
 comptime g_caret = named_global["prompt.caret", Int]

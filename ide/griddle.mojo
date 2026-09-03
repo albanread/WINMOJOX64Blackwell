@@ -88,6 +88,8 @@ from ide.gridview import (
     status_line,
 )
 from ide.window import (
+    has_selection,
+    prompt_rename,
     adopt_tab,
     remember_session,
     restore_session,
@@ -190,7 +192,7 @@ from ide.window import (
     scroll_to,
     type_unit,
 )
-from ide.menu import build as build_menu
+from ide.menu import build as build_menu, show_context_menu
 from ide.lsp import is_running as lsp_running
 from ide.rope import Rope
 from ide.tsf import Tsf, activate, deactivate
@@ -534,6 +536,59 @@ def griddle_wndproc(
         # `click` verb calls, so what a person gets and what a check gets
         # cannot drift apart -- which is the whole reason the agent surface
         # exists before the editor does.
+        # The caret follows a right-click only when nothing is selected.
+        # Moving it always would throw away the selection somebody
+        # right-clicked in order to copy, which is the commonest reason to
+        # right-click in a text editor at all.
+        if message == UInt32(winkb_constant["WM_RBUTTONDOWN"]()):
+            var rx = lparam & 0xFFFF
+            if rx >= 0x8000:
+                rx -= 0x10000
+            var ry = (lparam >> 16) & 0xFFFF
+            if ry >= 0x8000:
+                ry -= 0x10000
+            var SetFocusR = win32[
+                def (Int) thin abi("C") -> Int, "SetFocus"
+            ]()
+            _ = SetFocusR(hwnd)
+            try:
+                if not has_selection(hwnd):
+                    _ = caret_click(hwnd, rx, ry)
+            except:
+                pass
+            return 0
+
+        # Sent after the button is released, and also by the Menu key and by
+        # Shift+F10 -- which is why this is handled rather than WM_RBUTTONUP:
+        # the keyboard route reaches the same menu for free.
+        if message == UInt32(winkb_constant["WM_CONTEXTMENU"]()):
+            var cx = lparam & 0xFFFF
+            if cx >= 0x8000:
+                cx -= 0x10000
+            var cy = (lparam >> 16) & 0xFFFF
+            if cy >= 0x8000:
+                cy -= 0x10000
+            # The keyboard sends -1, -1. Put the menu near the top of the
+            # editor rather than in the corner of the screen.
+            if cx == -1 and cy == -1:
+                var spot = POINT(Int32(120), Int32(120))
+                var ClientToScreenC = win32[
+                    def (
+                        Int, Pointer[POINT, MutAnyOrigin]
+                    ) thin abi("C") -> c_int,
+                    "ClientToScreen",
+                ]()
+                _ = ClientToScreenC(
+                    hwnd, Pointer(to=spot).unsafe_origin_cast[MutAnyOrigin]()
+                )
+                cx = Int(spot.x)
+                cy = Int(spot.y)
+            try:
+                show_context_menu(hwnd, cx, cy)
+            except:
+                pass
+            return 0
+
         if message == UInt32(winkb_constant["WM_LBUTTONDOWN"]()):
             # lParam packs the point as two signed 16-bit halves, and they
             # are signed: a drag that leaves the window to the left reports a
@@ -885,6 +940,11 @@ def griddle_wndproc(
             # The answers arrive on a later pump and the window redraws then;
             # nothing here waits, because a slow server must not be able to
             # hold a keystroke.
+            # F2 renames, the way it has in every IDE for twenty years.
+            if wparam == winkb_constant["VK_F2"]():
+                _ = prompt_rename(hwnd)
+                return 0
+
             if wparam == winkb_constant["VK_F12"]():
                 if shift:
                     _ = references_at_caret(hwnd)
@@ -1127,6 +1187,9 @@ def griddle_wndproc(
                 return 0
             if which == 1007:  # File > Close Tab
                 print("griddle:", close_tab(hwnd))
+                return 0
+            if which == 1056:  # Go > Rename Symbol
+                print("griddle:", prompt_rename(hwnd))
                 return 0
             if which == 1030:  # Edit > Undo
                 print("griddle:", edit_key(hwnd, "undo"))

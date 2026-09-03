@@ -48,6 +48,9 @@ from ide.python_env import (
 )
 from ide.tree import project_root
 from ide.window import (
+    prompt_rename,
+    rename_symbol,
+    rename_wait,
     about,
     copy,
     cut,
@@ -290,6 +293,7 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
             "definition [wait ms]             where the thing under the caret is defined\n"
             "hover [wait ms|show|close]       what the thing under the caret is\n"
             "references [wait ms|N]           who uses it, and jump to one\n"
+            "rename [<name>|wait ms]          rename the symbol under the caret\n"
             "outline [wait ms|<name>]         the file's symbols, or go to one\n"
             "tree [N|root <path>]             the project tree; expand a row or move it\n"
             "search <text>                    every match in the project\n"
@@ -689,6 +693,20 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         if rest.byte_length() > 0:
             return goto_symbol(hwnd, rest)
         return outline(hwnd)
+
+    if verb == "rename":
+        # `rename` opens the prompt the way F2 does; `rename <name>` skips
+        # the prompt, which is what a check needs; `rename wait` waits for
+        # the edits to arrive and be applied.
+        if rest.startswith("wait"):
+            var ms = 8000
+            var sp = rest.find(" ")
+            if sp > 0:
+                ms = Int(String(rest[byte=sp + 1 :]).strip())
+            return rename_wait(hwnd, ms)
+        if rest.byte_length() == 0:
+            return prompt_rename(hwnd)
+        return rename_symbol(hwnd, String(String(rest).strip()))
 
     if verb == "references" or verb == "refs":
         # `references N` goes to the nth, the way `issues N` does -- one verb

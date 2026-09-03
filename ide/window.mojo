@@ -104,6 +104,7 @@ from ide.prompt import (
     ASK_GOTO,
     ASK_NOTHING,
     ASK_OPEN,
+    ASK_RENAME,
     ASK_PACKAGE,
     ASK_REPLACE_WITH,
     ASK_SYMBOL,
@@ -135,6 +136,14 @@ from ide.symbols import (
     symbols_serial,
 )
 from ide.lsp import (
+    rename_count,
+    rename_end_char,
+    rename_end_line,
+    rename_serial,
+    rename_start_char,
+    rename_start_line,
+    rename_uri,
+    request_rename,
     start_with_environment,
     parse_serial,
     parsed_uri,
@@ -908,6 +917,24 @@ def goto(hwnd: Int, line: Int, col: Int) raises -> String:
     return caret_report(hwnd)
 
 
+def has_selection(hwnd: Int) raises -> Bool:
+    """Whether anything is selected in the showing document.
+
+    Asked by the right-click handler, which must not move the caret into a
+    selection somebody is about to copy.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        True when there is a selection.
+
+    Raises:
+        If the window has no document.
+    """
+    return _doc_at(hwnd)[].has_selection()
+
+
 def selection_report(hwnd: Int) raises -> String:
     """What is selected, and between which two points."""
     var doc = _doc_at(hwnd)
@@ -1282,6 +1309,19 @@ def sync(hwnd: Int) raises:
 # reported. A reply is applied once, wherever it is noticed first.
 comptime g_definition_seen = named_global["ide.definition.seen", Int]
 comptime g_definition_said = named_global["ide.definition.said", String]
+# Where the outstanding question was asked, and whether it may be asked
+# again. The caret can move between the question and the answer, so the
+# retry uses the position the request was made at rather than wherever the
+# caret is when the empty reply lands.
+comptime g_definition_line = named_global["ide.definition.line", Int]
+comptime g_definition_char = named_global["ide.definition.char", Int]
+comptime g_definition_retry = named_global["ide.definition.retry", Int]
+# Bumped only when a definition question REACHES A CONCLUSION -- jumped, or
+# given up on. The reply serial is the wrong thing for a caller to wait on:
+# an empty answer that is about to be retried also advances it, so a waiter
+# watching the reply serial woke on the retry and reported whatever the
+# previous question had said.
+comptime g_definition_done = named_global["ide.definition.done", Int]
 
 
 def follow_definition(hwnd: Int) raises:
@@ -1305,12 +1345,31 @@ def follow_definition(hwnd: Int) raises:
     g_definition_seen()[] = serial
     var uri = definition_uri()
     if uri.byte_length() == 0:
+        # Empty is what this server sends for "I have not finished reading
+        # that file yet", which is a different thing from "there is no
+        # definition" and arrives looking identical. Ask once more.
+        # Up to three more asks. Each costs one round trip, so they pace
+        # themselves against however long the server is taking rather than
+        # against a clock this code would have to guess at.
+        if g_definition_retry()[] > 0:
+            g_definition_retry()[] -= 1
+            var doc = _doc_at(hwnd)
+            if doc[].uri.byte_length() != 0 and is_ready():
+                _notice(hwnd, String("still reading the file; asking again"))
+                _ = request_definition(
+                    doc[].uri,
+                    g_definition_line()[],
+                    g_definition_char()[],
+                )
+                return
         g_definition_said()[] = String("no definition for that")
+        g_definition_done()[] += 1
         _notice(hwnd, String("no definition for that"))
         return
     g_definition_said()[] = jump_to(
         hwnd, uri, definition_line(), definition_character()
     )
+    g_definition_done()[] += 1
 
 
 def _notice(hwnd: Int, text: String) raises:
@@ -1334,6 +1393,7 @@ def pump(hwnd: Int) raises -> Int:
         sync(hwnd)
     # Before the repaint below, so a jump and its redraw are one frame.
     follow_definition(hwnd)
+    follow_rename(hwnd)
     if handled > 0:
         _touch(hwnd)
     return handled
@@ -1617,11 +1677,23 @@ def path_of_uri(uri: String) raises -> String:
 
     Returns:
         The path, with backslashes, or an empty string for anything that is
-        not a file URI.
+        neither a file URI nor already a path.
 
     Raises:
         Never in practice.
     """
+    # The Mojo language server keys its rename replies by PLAIN WINDOWS PATH
+    # rather than by URI -- "C:\...\main.mojo", not "file:///C:/...". The
+    # protocol says URI, the server says path, and refusing the path meant a
+    # rename that the server had answered with four edits applied none of
+    # them and reported "0 places in 1 file". Anything with a drive letter or
+    # a backslash is taken as already being what it names.
+    if not uri.startswith("file:"):
+        if uri.byte_length() > 1 and (
+            String(uri[byte=1:2]) == ":" or uri.startswith(chr(0x5C))
+        ):
+            return uri
+        return String("")
     if not uri.startswith("file:///"):
         return String("")
     var rest = String(uri[byte=8:])
@@ -1804,6 +1876,9 @@ def definition_at_caret(hwnd: Int) raises -> String:
         return String("no language server for this document")
     sync(hwnd)
     _notice(hwnd, String("looking for the definition..."))
+    g_definition_line()[] = doc[].caret_line
+    g_definition_char()[] = doc[].caret_col
+    g_definition_retry()[] = 3
     _ = request_definition(doc[].uri, doc[].caret_line, doc[].caret_col)
     return (
         String("asked where ") + String(doc[].caret_line + 1) + ":"
@@ -1824,11 +1899,11 @@ def definition_wait(hwnd: Int, milliseconds: Int) raises -> String:
     Raises:
         If the window has no document.
     """
-    var before = definition_serial()
+    var before = g_definition_done()[]
     var deadline = perf_counter_ns() + milliseconds * 1_000_000
     while perf_counter_ns() < deadline:
         _ = pump(hwnd)
-        if definition_serial() != before:
+        if g_definition_done()[] != before:
             # `pump` above applied it. Reporting what it did rather than
             # doing it again is what keeps one answer to one jump.
             return g_definition_said()[]
@@ -4706,6 +4781,37 @@ def prompt_find(hwnd: Int) raises -> String:
     return String("asking what to find")
 
 
+def prompt_rename(hwnd: Int) raises -> String:
+    """Ask what to rename the symbol under the caret to.
+
+    Seeded with the name it has, because a rename is nearly always a small
+    edit to an existing word and retyping it from nothing is the worst way
+    to spell it. Refused early when there is no server: sending a rename
+    nobody can answer would leave a person waiting at a prompt for a reply
+    that is not coming.
+
+    Args:
+        hwnd: The window.
+
+    Returns:
+        What is being asked, or why it is not.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    if doc[].uri.byte_length() == 0 or not is_ready():
+        _notice(hwnd, String("no language server yet for this document"))
+        return String("no language server for this document")
+    var current = word_at_caret(hwnd)
+    if current.byte_length() == 0:
+        _notice(hwnd, String("no symbol under the caret to rename"))
+        return String("no symbol under the caret")
+    ask(ASK_RENAME, String("Rename to"), current)
+    _touch(hwnd)
+    return String("asking what to rename it to")
+
+
 def prompt_replace(hwnd: Int) raises -> String:
     """Ask what to replace the current search with.
 
@@ -4867,7 +4973,185 @@ def prompt_accept(hwnd: Int) raises -> String:
         )
     if kind == ASK_OPEN:
         return open_path(hwnd, text)
+    if kind == ASK_RENAME:
+        return rename_symbol(hwnd, text)
     return String("nothing to do with that")
+
+
+# The name a rename is waiting to write, and the last reply acted on. A
+# rename answer is a set of edits with no name in it -- the server assumes
+# the client remembers what it asked for -- so the name has to be kept from
+# the request until the reply.
+comptime g_rename_to = named_global["ide.rename.to", String]
+# The position the rename was asked at, and how many more times it may be
+# asked. Same race as a definition: "ready" is not "has read this file", and
+# an answer with no edits in it is what the server sends in the meantime.
+comptime g_rename_line = named_global["ide.rename.line", Int]
+comptime g_rename_char = named_global["ide.rename.char", Int]
+comptime g_rename_retry = named_global["ide.rename.retry", Int]
+comptime g_rename_seen = named_global["ide.rename.seen", Int]
+comptime g_rename_said = named_global["ide.rename.said", String]
+
+
+def rename_symbol(hwnd: Int, new_name: String) raises -> String:
+    """Ask the server where the symbol under the caret is used, to rename it.
+
+    Args:
+        hwnd: The window.
+        new_name: What it should be called.
+
+    Returns:
+        What was asked, or why it was not.
+
+    Raises:
+        If the window has no document.
+    """
+    var doc = _doc_at(hwnd)
+    if doc[].uri.byte_length() == 0 or not is_ready():
+        _notice(hwnd, String("no language server yet for this document"))
+        return String("no language server for this document")
+    if new_name.byte_length() == 0:
+        return String("a rename needs a new name")
+    sync(hwnd)
+    g_rename_to()[] = new_name
+    g_rename_line()[] = doc[].caret_line
+    g_rename_char()[] = doc[].caret_col
+    g_rename_retry()[] = 3
+    _notice(hwnd, String("renaming to ") + new_name + "...")
+    _ = request_rename(
+        doc[].uri, doc[].caret_line, doc[].caret_col, new_name
+    )
+    return String("asked to rename to ") + new_name
+
+
+def follow_rename(hwnd: Int) raises:
+    """Apply a rename answer, once, wherever it is noticed first.
+
+    Args:
+        hwnd: The window.
+
+    Raises:
+        Never in practice; a failure is reported on the status bar.
+    """
+    var serial = rename_serial()
+    if serial == 0 or serial == g_rename_seen()[]:
+        return
+    g_rename_seen()[] = serial
+    var total = rename_count()
+    if total == 0:
+        if g_rename_retry()[] > 0:
+            g_rename_retry()[] -= 1
+            var asking = _doc_at(hwnd)
+            if asking[].uri.byte_length() != 0 and is_ready():
+                _notice(hwnd, String("still reading the file; asking again"))
+                _ = request_rename(
+                    asking[].uri,
+                    g_rename_line()[],
+                    g_rename_char()[],
+                    g_rename_to()[],
+                )
+                return
+        g_rename_said()[] = String("the server renamed nothing")
+        _notice(hwnd, String("nothing to rename there"))
+        return
+
+    var new_name = g_rename_to()[]
+    var was_tab = current_tab()
+
+    # One file at a time, and within a file LAST EDIT FIRST. Every range is
+    # in the coordinates of the document the server read, so applying an
+    # earlier edit first would shift every later one by the difference in
+    # length between the two names.
+    var files = List[String]()
+    for i in range(total):
+        var uri = rename_uri(i)
+        var seen = False
+        for f in range(len(files)):
+            if files[f] == uri:
+                seen = True
+        if not seen:
+            files.append(uri)
+
+    var changed = 0
+    # Indexed rather than `for uri in files`: iterating a List yields a
+    # reference, and comparing that reference with the String coming back
+    # from `rename_uri` matched nothing -- which showed up as "renamed 0
+    # places in 1 file", a file found and every edit in it missed.
+    for f in range(len(files)):
+        var uri = files[f]
+        var where = String("")
+        try:
+            where = path_of_uri(uri)
+        except:
+            continue
+        if where == "":
+            continue
+        var opened = open_path(hwnd, where)
+        if opened.startswith("cannot open"):
+            continue
+        var doc = _doc_at(hwnd)
+
+        # The edits for this file, ordered latest-first.
+        var order = List[Int]()
+        for i in range(total):
+            if rename_uri(i) != uri:
+                continue
+            var at = 0
+            while at < len(order):
+                var here = order[at]
+                if (
+                    rename_start_line(i) > rename_start_line(here)
+                    or (
+                        rename_start_line(i) == rename_start_line(here)
+                        and rename_start_char(i) > rename_start_char(here)
+                    )
+                ):
+                    break
+                at += 1
+            order.insert(at, i)
+
+        for i in order:
+            move_to(
+                doc[], rename_start_line(i), rename_start_char(i), False
+            )
+            move_to(doc[], rename_end_line(i), rename_end_char(i), True)
+            insert(doc[], new_name)
+            changed += 1
+        restate_dirty(doc[])
+        release_cache(doc[].grid)
+
+    if was_tab >= 0 and was_tab < tab_count():
+        _ = switch_tab(hwnd, was_tab)
+    _touch(hwnd)
+    var said = (
+        String("renamed ") + String(changed) + " place(s) in "
+        + String(len(files)) + " file(s); unsaved"
+    )
+    g_rename_said()[] = said
+    _notice(hwnd, said)
+
+
+def rename_wait(hwnd: Int, milliseconds: Int) raises -> String:
+    """Pump until the rename answer arrives and has been applied.
+
+    Args:
+        hwnd: The window.
+        milliseconds: How long to wait.
+
+    Returns:
+        What was changed, or that nothing came.
+
+    Raises:
+        If the window has no document.
+    """
+    var before = rename_serial()
+    var deadline = perf_counter_ns() + milliseconds * 1_000_000
+    while perf_counter_ns() < deadline:
+        _ = pump(hwnd)
+        if rename_serial() != before:
+            return g_rename_said()[]
+        _ = settle(hwnd, 10)
+    return String("no rename arrived")
 
 
 def prompt_key(hwnd: Int, what: StringSlice) raises -> String:

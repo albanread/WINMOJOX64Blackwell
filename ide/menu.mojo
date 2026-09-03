@@ -49,6 +49,7 @@ comptime ID_GO_SYMBOL = 1052
 comptime ID_GO_BACK = 1053
 comptime ID_GO_NEXT_TAB = 1054
 comptime ID_GO_PREV_TAB = 1055
+comptime ID_GO_RENAME = 1056
 
 comptime ID_BUILD_STEP_OUT = 1027
 comptime ID_BUILD_RUN_TO_CARET = 1017
@@ -170,6 +171,8 @@ def build(hwnd: Int) raises:
             ID_GO_REFERENCES, "References\tShift+F12")
     _append(AppendMenuW, go, winkb_constant["MF_STRING"](),
             ID_GO_SYMBOL, "Symbol in File\tCtrl+Shift+O")
+    _append(AppendMenuW, go, winkb_constant["MF_STRING"](),
+            ID_GO_RENAME, "Rename Symbol\tF2")
     _append(AppendMenuW, go, winkb_constant["MF_SEPARATOR"](), 0, "")
     _append(AppendMenuW, go, winkb_constant["MF_STRING"](),
             ID_GO_BACK, "Back\tAlt+Left")
@@ -287,6 +290,70 @@ def build(hwnd: Int) raises:
 
     if SetMenu(hwnd, bar) == 0:
         raise Error("SetMenu failed")
+
+
+def show_context_menu(hwnd: Int, screen_x: Int, screen_y: Int) raises:
+    """Put the right-click menu on screen at a point.
+
+    Built fresh each time and destroyed after: it is small, and a menu kept
+    between clicks is one that has to be kept in step with what is selected.
+
+    Every id here is one the menu bar already sends, so choosing an item
+    arrives at the window procedure as the same WM_COMMAND the equivalent
+    menu item produces. The popup is another way to reach handlers that
+    already exist, not a second copy of them.
+
+    Args:
+        hwnd: The window the command should be sent to.
+        screen_x: Where to put it, in screen coordinates.
+        screen_y: Where to put it, in screen coordinates.
+
+    Raises:
+        If the menu cannot be created.
+    """
+    var CreatePopupMenu = win32[
+        def () thin abi("C") -> Int, "CreatePopupMenu"
+    ]()
+    var AppendMenuW = win32[
+        def (
+            Int, UInt32, Int, Pointer[UInt16, MutAnyOrigin]
+        ) thin abi("C") -> c_int,
+        "AppendMenuW",
+    ]()
+    var TrackPopupMenu = win32[
+        def (
+            Int, UInt32, c_int, c_int, c_int, Int, Int
+        ) thin abi("C") -> c_int,
+        "TrackPopupMenu",
+    ]()
+    var DestroyMenu = win32[def (Int) thin abi("C") -> c_int, "DestroyMenu"]()
+
+    var popup = CreatePopupMenu()
+    if popup == 0:
+        raise Error("CreatePopupMenu failed")
+
+    var item = winkb_constant["MF_STRING"]()
+    var line = winkb_constant["MF_SEPARATOR"]()
+    _append(AppendMenuW, popup, item, ID_GO_DEFINITION,
+            "Go to Definition\tF12")
+    _append(AppendMenuW, popup, item, ID_GO_REFERENCES,
+            "Find References\tShift+F12")
+    _append(AppendMenuW, popup, item, ID_GO_RENAME, "Rename Symbol\tF2")
+    _append(AppendMenuW, popup, line, 0, "")
+    _append(AppendMenuW, popup, item, ID_EDIT_CUT, "Cut\tCtrl+X")
+    _append(AppendMenuW, popup, item, ID_EDIT_COPY, "Copy\tCtrl+C")
+    _append(AppendMenuW, popup, item, ID_EDIT_PASTE, "Paste\tCtrl+V")
+    _append(AppendMenuW, popup, line, 0, "")
+    _append(AppendMenuW, popup, item, ID_EDIT_SELECT_ALL,
+            "Select All\tCtrl+A")
+
+    # TPM_RIGHTBUTTON, so the button that opened the menu can also dismiss
+    # it, which is what every other Windows program allows.
+    _ = TrackPopupMenu(
+        popup, UInt32(0x0002), c_int(screen_x), c_int(screen_y),
+        c_int(0), hwnd, 0,
+    )
+    _ = DestroyMenu(popup)
 
 
 def _append(
