@@ -227,7 +227,19 @@ if ($pythonSource) {
 # user a toolchain and no book.
 $guideSource = Join-Path $repository 'WinMojoGuide'
 if (Test-Path -LiteralPath $guideSource -PathType Container) {
-    Copy-Item -LiteralPath $guideSource -Destination (Join-Path $destinationPath 'WinMojoGuide') -Recurse -Force
+    # Removed first, and that is not tidiness. Copy-Item -Recurse at a
+    # destination that ALREADY EXISTS copies the source folder INTO it, so a
+    # second packaging run produced WinMojoGuide\WinMojoGuide and every later
+    # run refreshed only the nested copy -- leaving the outer one, the one
+    # readers open and the one check-install.ps1 tests for, frozen at
+    # whatever the first run wrote. It would have gone stale silently and no
+    # check would have said so. The Python block above got this right; this
+    # line did not, which is the whole argument for the two looking alike.
+    $guideTarget = Join-Path $destinationPath 'WinMojoGuide'
+    if (Test-Path -LiteralPath $guideTarget) {
+        Remove-Item -LiteralPath $guideTarget -Recurse -Force
+    }
+    Copy-Item -LiteralPath $guideSource -Destination $guideTarget -Recurse -Force
 }
 
 $licenseDirectory = Join-Path $repository 'Licenses'
