@@ -161,6 +161,74 @@ if (-not (Test-Path $dap)) {
     }
 }
 
+# ---- the IDE's own debugger -------------------------------------------------
+# Everything above proves the toolchain can be debugged. These prove Griddle
+# can debug: the same breakpoint, reached through the editor's own verbs,
+# which are what F5, F10 and the Build menu call.
+$griddle = Join-Path (Split-Path -Parent $PSScriptRoot) 'build\griddle.exe'
+if (-not (Test-Path $griddle)) {
+    Record 'ide-debug' 'SKIP' 'griddle.exe is not built'
+} else {
+    $ideDir = Join-Path $work 'ide'
+    New-Item -ItemType Directory -Force -Path $ideDir | Out-Null
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    $good = Join-Path $ideDir 'main.mojo'
+    [System.IO.File]::WriteAllText($good,
+        "def add(a: Int, b: Int) -> Int:`n    var sum = a + b`n    return sum`n`n`n" +
+        "def main():`n    var x = 10`n    var y = 32`n    var total = add(x, y)`n" +
+        "    print(`"total`", total)`n", $utf8)
+
+    function AskIde([string]$file, [string]$commands) {
+        $raw = cmd /c "`"$griddle`" --open `"$file`" --no-lsp --no-session --cmd `"$commands`" 2>&1" | Out-String
+        return (($raw -split "`r?`n") |
+            Where-Object { $_ -notmatch '^(griddle: |Failed to initialize Crashpad)' }) -join "`n"
+    }
+
+    # A breakpoint set through the editor stops the program there, and the
+    # locals are visible when it does.
+    $out = AskIde $good 'break 9;;debug;;debug wait 240000'
+    if ($out -match 'stopped \(breakpoint\).*main\.mojo:9') {
+        if ($out -match '\bx = .*\b10\b' -and $out -match '\by = .*\b32\b') {
+            Record 'ide-breakpoint' 'PASS' 'stopped at line 9 with x and y readable'
+        } else {
+            Record 'ide-breakpoint' 'FAIL' 'stopped, but the locals were not there'
+        }
+    } else {
+        Record 'ide-breakpoint' 'FAIL' (($out -split "`n" | Where-Object { $_ -match 'debug:' })[0])
+    }
+
+    # Stepping moves a line, and the variable the step computed now holds its
+    # answer. 10 + 32, so a wrong value cannot be mistaken for a right one.
+    $out = AskIde $good 'break 9;;debug;;debug wait 240000;;debug over;;debug wait 30000;;debug eval total'
+    if ($out -match 'stopped \(step\).*main\.mojo:10' -and $out -match '\b42\b') {
+        Record 'ide-step-over' 'PASS' 'stepped to line 10; total evaluates to 42'
+    } else {
+        Record 'ide-step-over' 'FAIL' (($out -split "`n" | Where-Object { $_ -match 'debug:|total' })[0])
+    }
+
+    # Running to the end is a different answer from never having started, and
+    # the editor has to tell them apart.
+    $out = AskIde $good 'break 9;;debug;;debug wait 240000;;debug continue;;debug wait 60000'
+    if ($out -match 'ran to the end') {
+        Record 'ide-run-to-end' 'PASS' 'the debuggee finished and the editor said so'
+    } else {
+        Record 'ide-run-to-end' 'FAIL' (($out -split "`n" | Where-Object { $_ -match 'debug:' })[-1])
+    }
+
+    # F5 on a program that does not compile. The debugger cannot start, and
+    # the editor must say why rather than advising another F5 -- which is
+    # what it used to do, directly beneath the compiler's error.
+    $broken = Join-Path $ideDir 'broken.mojo'
+    [System.IO.File]::WriteAllText($broken,
+        "def main():`n    var x = 1`n    print(`"x`", xyzzy)`n", $utf8)
+    $out = AskIde $broken 'break 2;;debug;;debug wait 45000'
+    if ($out -match 'debug build failed') {
+        Record 'ide-debug-build-fails' 'PASS' 'the failed build is named, not blamed on F5'
+    } else {
+        Record 'ide-debug-build-fails' 'FAIL' (($out -split "`n" | Where-Object { $_ -match 'debug:' })[0])
+    }
+}
+
 # ---- summary ---------------------------------------------------------------
 $bad = @($results | Where-Object Verdict -eq 'FAIL').Count
 Write-Host ""

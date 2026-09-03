@@ -206,6 +206,8 @@ from ide.gridview import (
 )
 from ide.build import (
     append_output,
+    last_exit,
+    something_exited,
     clear_output,
     is_building,
     locate,
@@ -3718,6 +3720,17 @@ def debug_after_build(hwnd: Int) raises -> Bool:
     if g_debug_pending()[] == 0 or is_building():
         return False
     g_debug_pending()[] = 0
+    # Did the build this was waiting for actually work? Attaching to a
+    # binary the compiler refused to produce ends in "no debug build; press
+    # F5 to build one" -- which is advice to repeat the thing that just
+    # failed, printed directly beneath the error explaining why.
+    if something_exited() and last_exit() != 0:
+        append_output(
+            String("\n[the debug build failed, so the debugger did not")
+            + " start; fix the errors above and press F5 again]\n"
+        )
+        _touch(hwnd)
+        return False
     try:
         append_output(String("\n[") + debug_launch(hwnd) + "]\n")
     except err:
@@ -3977,6 +3990,9 @@ def debug_wait(hwnd: Int, milliseconds: Int) raises -> String:
     # to somebody whose debugger had not started is a lie that sends them
     # looking in the wrong place.
     var ever_started = debugging()
+    # A build that has already failed will never produce a session, and
+    # sitting out the rest of the timeout to discover that helps nobody.
+    var gave_up_early = False
     while perf_counter_ns() < deadline:
         # The launch is normally the timer's job, but a check driving this
         # through the agent surface may arrive between the build finishing and
@@ -3989,6 +4005,15 @@ def debug_wait(hwnd: Int, milliseconds: Int) raises -> String:
         _ = debug_poll(hwnd)
         if debugging():
             ever_started = True
+        # Nothing will ever attach to a binary that was not produced.
+        if (
+            not ever_started
+            and not is_building()
+            and something_exited()
+            and last_exit() != 0
+        ):
+            gave_up_early = True
+            break
         if stopped() and frame_count() > 0:
             # The stack answers before the scopes and the scopes before the
             # variables, so a stop with frames may still have no locals for
@@ -4014,6 +4039,10 @@ def debug_wait(hwnd: Int, milliseconds: Int) raises -> String:
         if ever_started and not debugging():
             return String("debug: the debuggee ran to the end")
         _ = settle(hwnd, 10)
+    if gave_up_early:
+        return String(
+            "debug: the debug build failed (exit "
+        ) + String(last_exit()) + "), so no session could start"
     if not ever_started:
         return String("debug: no session started in ") + String(
             milliseconds

@@ -76,6 +76,29 @@ def output_line(i: Int) -> String:
     return lines[][i]
 
 
+# What the last child exited with, and whether one has finished at all.
+# The number existed only inside the "[exit N after M ms]" line -- readable
+# by a person and by nothing else -- so a caller that needed to know whether
+# a build had worked had to parse the output pane.
+comptime g_last_exit = named_global["build.lastexit", Int]
+comptime g_ever_exited = named_global["build.everexited", Int]
+
+
+def last_exit() -> Int:
+    """The exit code of the last build or run that finished.
+
+    Returns:
+        The code, or zero when nothing has finished yet -- check
+        `something_exited` to tell those apart.
+    """
+    return g_last_exit()[]
+
+
+def something_exited() -> Bool:
+    """Whether any child has run to completion since the editor started."""
+    return g_ever_exited()[] != 0
+
+
 def output_serial() -> Int:
     """Bumped whenever the output changes, so a waiter can tell.
 
@@ -337,6 +360,8 @@ def poll() raises -> Bool:
             child.process, Pointer(to=code).unsafe_origin_cast[MutAnyOrigin]()
         )
         var took = (perf_counter_ns() - g_started()[]) // 1_000_000
+        g_last_exit()[] = Int(code)
+        g_ever_exited()[] = 1
         if g_partial()[].byte_length() > 0:
             _append(String("\n"))
         _append(
