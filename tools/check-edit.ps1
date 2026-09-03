@@ -27,6 +27,17 @@ function Record($name, $verdict, $detail) {
 Write-Host "== edit check =="
 if (-not (Test-Path $Exe)) { throw "not built: $Exe" }
 
+# The editor answers in UTF-8 down a pipe, and PowerShell decodes that pipe
+# with whatever the console's code page happens to be. On a 1252 console --
+# which is the default on an English install -- the CJK character in the
+# unicode fixture comes back as "?" and backspace-whole-cjk fails for a
+# reason that has nothing to do with the editor: the same binary passes on a
+# 65001 console and fails here. A check whose verdict depends on the shell it
+# was started from is worse than no check, so the encoding is pinned for the
+# length of this script and put back afterwards.
+$previousEncoding = [Console]::OutputEncoding
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+
 # Two fixtures. The ASCII one keeps byte counts predictable; the other exists
 # so "delete one character" can be checked against characters that are not one
 # byte, one code unit, or one advance wide.
@@ -204,6 +215,8 @@ if ($mem.Count -lt 2) {
 }
 
 Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+
+[Console]::OutputEncoding = $previousEncoding
 
 $bad = @($results | Where-Object Verdict -eq 'FAIL').Count
 Write-Host ""
