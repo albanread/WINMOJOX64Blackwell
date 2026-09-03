@@ -1010,9 +1010,12 @@ def draw_issues(
     """
     if chrome.target == 0 or chrome.text_format == 0:
         return
+    # No early return on an empty list. A pane that draws nothing at all is
+    # indistinguishable from a pane that is broken or a language server that
+    # died: the reader cannot tell "no problems" from "no answer". The
+    # OUTPUT pane has always named itself whatever it held, and this one
+    # went blank, so a clean file looked like a fault.
     var total = count_for_shown()
-    if total == 0:
-        return
 
     var this = OpaquePointer[MutUntrackedOrigin](
         unsafe_from_address=chrome.target
@@ -1039,9 +1042,9 @@ def draw_issues(
 
     # The pane says what it is showing, because it shows three different
     # things and a person arriving at it should not have to work out which.
-    var head_layout = _make_layout(
-        dwrite, chrome, String("ISSUES  ") + String(total), 100000.0
-    )
+    var head = String("ISSUES  ")
+    head += "none" if total == 0 else String(total)
+    var head_layout = _make_layout(dwrite, chrome, head, 100000.0)
     if head_layout != 0:
         _draw_layout(
             this, head_layout, dim if dim != 0 else ink,

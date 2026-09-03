@@ -44,6 +44,7 @@ from ide.chrome import (
     draw,
     finish,
     hot_rail,
+    set_project_label,
     hot_splitter,
     pane_height,
     rail_item,
@@ -395,6 +396,21 @@ def griddle_wndproc(
                         elif told[].pane_mode == PANE_TOOLCHAIN:
                             showing = 4
                         set_rail_active(showing)
+
+                    # Which project the tree is showing. Derived at paint
+                    # rather than stored when the project opens: opening,
+                    # closing and the session restore all change it, and a
+                    # cache updated in three places is one that is stale in
+                    # a fourth.
+                    try:
+                        var here = project_root()
+                        var cut = here.rfind(chr(0x5C))
+                        set_project_label(
+                            String(here[byte=cut + 1 :]).upper()
+                            if cut >= 0 else here.upper()
+                        )
+                    except:
+                        pass
                     # The strip's labels are gathered here because this
                     # is where a document's name is known; gridview draws a
                     # row of tabs and does not know what a Doc is.

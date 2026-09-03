@@ -245,6 +245,12 @@ def set_hot_splitter(which: Int):
 # Which rail cell the pointer is over, and which view the pane is showing.
 # Globals for the same reason the splitters' are: paint and the mouse live
 # in different modules with one captureless procedure between them.
+# What the file tree is a tree OF. Held here because the heading is drawn
+# here and the answer is known in the window procedure, which is the same
+# division set_tab_labels makes: this module draws words it is handed and
+# does not learn what a project is.
+comptime g_project_label = named_global["chrome.project", String]
+
 comptime g_hot_rail = named_global["chrome.hotrail", Int]
 comptime g_rail_active = named_global["chrome.railactive", Int]
 
@@ -254,6 +260,26 @@ comptime g_rail_active = named_global["chrome.railactive", Int]
 comptime RAIL_TOP = 10
 comptime RAIL_PITCH = 57
 comptime RAIL_CELL = 52
+
+
+def set_project_label(var name: String):
+    """Say which project the file tree is showing.
+
+    Args:
+        name: The project's own name, or empty for none.
+    """
+    g_project_label()[] = name^
+
+
+def project_label() -> String:
+    """The heading over the file tree.
+
+    Returns:
+        The project's name, or the application's when there is no project --
+        an empty heading over a populated tree reads as a drawing fault.
+    """
+    var name = g_project_label()[]
+    return String("GRIDDLE") if name == "" else name^
 
 
 def hot_rail() -> Int:
@@ -954,7 +980,7 @@ def draw(
     # pixels apart, and the word looked blurred rather than doubled, which is
     # why it survived this long.
     _label(
-        chrome, "GRIDDLE", layout.rail_w() + scaled(14, chrome.scale),
+        chrome, project_label(), layout.rail_w() + scaled(14, chrome.scale),
         scaled(10, chrome.scale), DIM,
     )
     _label(
