@@ -14,10 +14,17 @@
 # the metadata does not know, built from `fn`s.
 
 from std.memory import Pointer, OpaquePointer
-from std.sys._com import ComPtr, com_method_of, _guid_bytes
-from std.sys._winkb import winkb_interface_iid
+from std.sys._com import ComPtr, com_method_of
 
 comptime E_NOINTERFACE_RAW = Int32(-2147467262)
+
+# IUnknown's IID, 00000000-0000-0000-C000-000000000046, in COM's
+# mixed-endian byte order: eight zero bytes, C0, six zeros, 46. A vtable slot
+# is a C callback and cannot raise, so it cannot call the validating
+# `_guid_bytes` -- and unlike every other IID in this suite, this one is a
+# fixed constant of COM itself, so the spike holds the bytes the way C code
+# holds IID_IUnknown. s03_guid proves the metadata converts to exactly these
+# bytes for this interface, which is what keeps the constant honest.
 
 # The object's layout, by index into an Int array:
 #   [0] vtable pointer   [1] refcount   [2] magic
@@ -25,9 +32,14 @@ comptime E_NOINTERFACE_RAW = Int32(-2147467262)
 
 fn sink_query_interface(this: Int, riid: Int, ppv: Int) -> Int32:
     var iid = Pointer[UInt8, MutAnyOrigin](unsafe_from_address=riid)
-    var want = _guid_bytes(winkb_interface_iid["IUnknown"]())
     for i in range(16):
-        if iid.unsafe_offset(i)[] != want[i]:
+        # Eight zero bytes, C0 at 8, six zeros, 46 at 15.
+        var expected = UInt8(0)
+        if i == 8:
+            expected = UInt8(0xC0)
+        elif i == 15:
+            expected = UInt8(0x46)
+        if iid.unsafe_offset(i)[] != expected:
             var out0 = Pointer[Int, MutAnyOrigin](unsafe_from_address=ppv)
             out0[] = 0
             return E_NOINTERFACE_RAW

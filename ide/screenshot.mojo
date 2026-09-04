@@ -74,8 +74,12 @@ struct BITMAPINFOHEADER(Defaultable, Copyable, Movable):
         self.biClrImportant = 0
 
 
-def _guid_bytes_for(text: StaticString) -> List[UInt8]:
-    """The 16 bytes of a textual GUID, in COM's mixed-endian order."""
+def _guid_bytes_for(text: StaticString) raises -> List[UInt8]:
+    """The 16 bytes of a textual GUID, in COM's mixed-endian order.
+
+    Raises:
+        If the text is not 32 hex digits.
+    """
     return _guid_bytes(String(text))
 
 

@@ -115,15 +115,33 @@ def com_method_of[
     )
 
 
-def _hex_nibble(c: UInt8) -> Int:
+def _hex_nibble(c: UInt8) raises -> Int:
+    """One hex digit's value, refusing anything else.
+
+    The last case used to fall through to `c - 'A' + 10` for non-hex bytes,
+    so a corrupted IID became sixteen plausible-looking bytes -- the kind of
+    failure that surfaces much later as E_NOINTERFACE on a query that should
+    have worked.
+
+    Args:
+        c: The byte.
+
+    Returns:
+        Its value, 0 through 15.
+
+    Raises:
+        If the byte is not a hex digit in either case.
+    """
     if c >= UInt8(ord("0")) and c <= UInt8(ord("9")):
         return Int(c) - ord("0")
     if c >= UInt8(ord("a")) and c <= UInt8(ord("f")):
         return Int(c) - ord("a") + 10
-    return Int(c) - ord("A") + 10
+    if c >= UInt8(ord("A")) and c <= UInt8(ord("F")):
+        return Int(c) - ord("A") + 10
+    raise Error("expected a hex digit, got '" + chr(Int(c)) + "'")
 
 
-def _guid_bytes(text: String) -> List[UInt8]:
+def _guid_bytes(text: String) raises -> List[UInt8]:
     """The 16 bytes COM expects for a textual GUID.
 
     Not text order: the first three groups are little-endian integers and the
@@ -139,11 +157,25 @@ def _guid_bytes(text: String) -> List[UInt8]:
 
     Returns:
         The 16 bytes, in COM's mixed-endian order.
+
+    Raises:
+        If the text does not hold exactly 32 hex digits (dashes aside). A
+        truncated IID out of the metadata would otherwise be read past its
+        end, and a non-hex one silently folded into wrong bytes -- both far
+        from whoever produced the text.
     """
     var digits = List[UInt8]()
     for byte in text.as_bytes():
         if byte != UInt8(ord("-")):
             digits.append(byte)
+    if len(digits) != 32:
+        raise Error(
+            "a GUID holds 32 hex digits; this one has "
+            + String(len(digits))
+            + ": '"
+            + text
+            + "'"
+        )
 
     var raw = List[UInt8]()
     for i in range(16):

@@ -1242,8 +1242,15 @@ struct ComClassBuilder[*interfaces: StaticString]:
     var _iids: List[UInt8]
     var _iid_cells: List[Int]
 
-    def __init__(out self):
-        """Prepares the builder with every interface's IUnknown prefilled."""
+    def __init__(out self) raises:
+        """Prepares the builder with every interface's IUnknown prefilled.
+
+        Raises:
+            If an IID the metadata names is malformed -- a GUID that is not
+            32 hex digits cannot be accepted, and building an object that
+            would answer QueryInterface with wrong bytes is worse than
+            refusing here.
+        """
         self._slots = List[List[Int]]()
         self._slot_names = List[List[StaticString]]()
         self._iids = List[UInt8]()

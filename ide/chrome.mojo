@@ -1195,7 +1195,7 @@ def _release(ptr: Int) raises:
     )
 
 
-def iid_bytes[name: StaticString]() -> List[UInt8]:
+def iid_bytes[name: StaticString]() raises -> List[UInt8]:
     """The 16 IID bytes of a named interface, from the metadata.
 
     Parameters:
@@ -1203,6 +1203,9 @@ def iid_bytes[name: StaticString]() -> List[UInt8]:
 
     Returns:
         Its IID, in COM's mixed-endian byte order.
+
+    Raises:
+        If the metadata's IID for the interface is malformed.
     """
     return _guid_bytes(String(winkb_interface_iid[name]()))
 
