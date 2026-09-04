@@ -78,11 +78,36 @@ run it without a window. It carries two fixtures:
   instead of becoming graph nodes, whatever the docstring promised, until
   nvptxrt grew recording branches for them; the probe now proves they
   record, and will say so loudly if that ever regresses, and
-- a staged frame graph (`FLUID_BENCH_STAGES`) reproducing the
-  illegal-memory-access fault on replaying kernels whose address arithmetic
-  clamps at the grid edge: stage `-8` (neighbour loads, no clamp) replays;
-  stage `0` (`divergence_kernel`) faults -- at any grid, in any order,
-  recorded or explicitly added with `builder.add_function`.
+- a staged frame graph (`FLUID_BENCH_STAGES`) reproducing an
+  illegal-memory-access fault (CUDA 700) that a clamped stencil kernel hits
+  when replayed as a device-graph node. The clamp is a symptom, not the
+  cause: `divergence_kernel`, clamps and all, replays cleanly as a graph
+  node in isolation and in this same binary when handed freshly allocated
+  buffers -- so the trigger is the graph-launch binding for a particular
+  kernel-and-buffer combination, not the clamp arithmetic itself. What was
+  established while chasing it, all reproduced on the T1000:
+  - The kernel is innocent. Its PTX, the loaded module image (2229 bytes,
+    one entry), the graph node's captured argument pointers (deep-copied by
+    the driver -- clobbering the caller's storage after the add is harmless),
+    and the launch config are byte-identical between a run that faults and
+    one that passes.
+  - `compute-sanitizer` names it: an out-of-bounds READ of an input buffer
+    (`u0[1]`) at `divergence_kernel+0x240` during replay, while a CLASSIC
+    launch of the identical kernel with the identical buffers, issued
+    immediately before, reads that buffer correctly.
+  - It is address/allocation sensitive. Replacing the frame's buffers with
+    three freshly allocated ones makes the identical graph replay pass;
+    editing unrelated code in the binary (which shifts allocation addresses)
+    moves the fault in and out. It is NOT the clamp alone, local memory, the
+    `-O0` device-call stack, the recording surface vs `add_function`, buffer
+    count, allocation order, the context api, or any single kernel's
+    compilation -- each was ruled out by reproduction.
+  The practical consequence for the headline perf fix: a frame graph whose
+  buffers are allocated so the clamped kernels land on the triggering
+  addresses faults on first replay. Allocating the graph's working buffers
+  fresh/last is a workaround that unblocks it; the root cause looks like a
+  driver-level `cuGraphLaunch` param-binding issue and wants Nsight/cuda-gdb
+  on the graph node to finish.
 
 
 ```
