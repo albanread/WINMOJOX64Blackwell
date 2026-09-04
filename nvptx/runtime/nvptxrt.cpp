@@ -999,6 +999,46 @@ static const char *addRecordedWaitOnHostValue(NVPTXContext *context,
   return nullptr;
 }
 
+// The graph node builders, defined below among the exports; declared here so
+// the recording helpers can reach them. dllexport spelled out because the
+// definitions carry it and a declaration may not add it later.
+extern "C" __declspec(dllexport) const char *
+AsyncRT_DeviceGraphBuilder_addCopyHostToDevice(
+    NVPTXGraphBuilder *, NVPTXBuffer *, const void *, const int32_t *, int64_t);
+extern "C" __declspec(dllexport) const char *
+AsyncRT_DeviceGraphBuilder_addCopyDeviceToHost(
+    NVPTXGraphBuilder *, void *, NVPTXBuffer *, const int32_t *, int64_t);
+extern "C" __declspec(dllexport) const char *
+AsyncRT_DeviceGraphBuilder_addCopyDeviceToDevice(
+    NVPTXGraphBuilder *, NVPTXBuffer *, NVPTXBuffer *, const int32_t *,
+    int64_t);
+extern "C" __declspec(dllexport) const char *
+AsyncRT_DeviceGraphBuilder_addSetMemory(
+    NVPTXGraphBuilder *, NVPTXBuffer *, uint64_t, size_t, const int32_t *,
+    int64_t);
+extern "C" __declspec(dllexport) int32_t
+AsyncRT_DeviceGraphBuilder_lastNodeIdOrNone(NVPTXGraphBuilder *);
+
+// A memset or a copy enqueued through a recording context is part of the
+// graph being recorded, not something to run on the live stream halfway
+// through capture. Until this existed they did exactly that -- executed
+// eagerly and never became nodes -- so a replayed graph silently computed
+// without them, whatever the recording surface's documentation promised.
+// The node chains after whatever the recording has produced so far, the
+// same linear order recorded kernels get, and becomes the last node so
+// whatever is recorded next orders after it.
+template <typename AddRecordedNode>
+static const char *recordMemOp(NVPTXContext *context, AddRecordedNode add) {
+  NVPTXGraphBuilder *builder = context->recordingBuilder;
+  const int32_t dependency = context->recordingLastNode;
+  const char *error = add(builder, dependency >= 0 ? &dependency : nullptr,
+                          dependency >= 0 ? 1 : 0);
+  if (!error)
+    context->recordingLastNode =
+        AsyncRT_DeviceGraphBuilder_lastNodeIdOrNone(builder);
+  return error;
+}
+
 static void releaseAsyncValue(void *value) {
   if (!value)
     return;
@@ -1920,6 +1960,15 @@ AsyncRT_DeviceContext_HtoD_async(const NVPTXContext *context,
                                  const void *source) {
   if (!destination || !source)
     return errf("HtoD_async: null argument");
+  if (context && context->recordingBuilder)
+    return recordMemOp(
+        const_cast<NVPTXContext *>(context),
+        [destination, source](NVPTXGraphBuilder *builder, const int32_t *deps,
+                              int64_t count) {
+          return AsyncRT_DeviceGraphBuilder_addCopyHostToDevice(
+              builder, const_cast<NVPTXBuffer *>(destination), source, deps,
+              count);
+        });
   if (const char *error = setCurrent(context))
     return error;
   if (destination->host) {
@@ -1943,6 +1992,15 @@ AsyncRT_DeviceContext_DtoH_async(const NVPTXContext *context, void *destination,
                                  const NVPTXBuffer *source) {
   if (!destination || !source)
     return errf("DtoH_async: null argument");
+  if (context && context->recordingBuilder)
+    return recordMemOp(
+        const_cast<NVPTXContext *>(context),
+        [destination, source](NVPTXGraphBuilder *builder, const int32_t *deps,
+                              int64_t count) {
+          return AsyncRT_DeviceGraphBuilder_addCopyDeviceToHost(
+              builder, destination, const_cast<NVPTXBuffer *>(source), deps,
+              count);
+        });
   if (const char *error = setCurrent(context))
     return error;
   if (source->host) {
@@ -1963,6 +2021,19 @@ static const char *copyBuffersAsync(const NVPTXContext *context,
                                     bool crossStreamSync) {
   if (!destination || !source)
     return errf("DtoD_async: null argument");
+  // Recording a buffer-to-buffer copy makes the cross-stream question moot:
+  // there is no live stream to synchronise, and the replayed node's
+  // dependencies say everything about ordering. Both DtoD entry points share
+  // this branch, so the no-cross-stream-sync spelling records identically.
+  if (context && context->recordingBuilder)
+    return recordMemOp(
+        const_cast<NVPTXContext *>(context),
+        [destination, source](NVPTXGraphBuilder *builder, const int32_t *deps,
+                              int64_t count) {
+          return AsyncRT_DeviceGraphBuilder_addCopyDeviceToDevice(
+              builder, const_cast<NVPTXBuffer *>(destination),
+              const_cast<NVPTXBuffer *>(source), deps, count);
+        });
   if (crossStreamSync) {
     if (const char *error = waitForContext(context, source->context))
       return error;
@@ -2088,6 +2159,15 @@ AsyncRT_DeviceContext_setMemory_async(const NVPTXContext *context,
                                       uint64_t value, size_t valueSize) {
   if (!destination || valueSize == 0)
     return errf("setMemory_async: invalid argument");
+  if (context && context->recordingBuilder)
+    return recordMemOp(
+        const_cast<NVPTXContext *>(context),
+        [destination, value, valueSize](NVPTXGraphBuilder *builder,
+                                        const int32_t *deps, int64_t count) {
+          return AsyncRT_DeviceGraphBuilder_addSetMemory(
+              builder, const_cast<NVPTXBuffer *>(destination), value,
+              valueSize, deps, count);
+        });
   if (const char *error = setCurrent(context))
     return error;
 

@@ -71,16 +71,18 @@ time actually goes: the per-dispatch cost (a one-thread kernel, launched 2000
 times), the same kernel as replayed graph nodes, whole frames enqueued the
 classic way (synced per step, and once at the end) and as a recorded device
 graph. Build it exactly like `fluid.exe` above, from `fluid_bench.mojo`, and
-run it without a window. It carries two findings as fixtures:
+run it without a window. It carries two fixtures:
 
-- a recording-semantics probe showing that `enqueue_memset` and
-  `enqueue_copy` through a recording context **execute immediately** instead
-  of becoming graph nodes, despite the recording context's docstring, and
-- a staged frame graph (`FLUID_BENCH_STAGES`) reproducing the illegal-memory-
-  access fault on replaying kernels whose address arithmetic clamps at the
-  grid edge: stage `-8` (neighbour loads, no clamp) replays; stage `0`
-  (`divergence_kernel`) faults -- at any grid, in any order, recorded or
-  explicitly added with `builder.add_function`.
+- a recording-semantics regression guard: `enqueue_memset` and
+  `enqueue_copy` through a recording context once **executed immediately**
+  instead of becoming graph nodes, whatever the docstring promised, until
+  nvptxrt grew recording branches for them; the probe now proves they
+  record, and will say so loudly if that ever regresses, and
+- a staged frame graph (`FLUID_BENCH_STAGES`) reproducing the
+  illegal-memory-access fault on replaying kernels whose address arithmetic
+  clamps at the grid edge: stage `-8` (neighbour loads, no clamp) replays;
+  stage `0` (`divergence_kernel`) faults -- at any grid, in any order,
+  recorded or explicitly added with `builder.add_function`.
 
 
 ```

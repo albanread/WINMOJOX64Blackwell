@@ -27,13 +27,13 @@
 #                        a replay is one launch.
 #
 # The frame graph records the pressure clear and the copies as KERNELS
-# rather than memcpy/memset nodes. That is deliberate, and not only because
-# it keeps the dispatch count at exactly 44 so like is compared with like:
-# the recording surface does not route enqueue_copy or enqueue_memset into
-# the graph builder (the probe at the end of this file shows what happens
-# instead), and explicit builder.add_copy/add_memset nodes do not carry the
-# recorded chain's dependencies unless wired by hand. A copy kernel is one
-# line and orders like every other recorded kernel.
+# rather than memcpy/memset nodes. That kept the dispatch count at exactly
+# 44 when the recording surface still executed copies and memsets eagerly
+# instead of recording them -- the defect the probe below caught, since
+# fixed in nvptxrt -- and it still keeps the stage lattice kernels-only,
+# which is what isolates the replay fault the staged graph exists to
+# reproduce: the frame faults in the clamped solve kernels long before a
+# copy node would run, and mixing node kinds would blur which cell faults.
 # ===----------------------------------------------------------------------=== #
 
 from solver import (
@@ -564,12 +564,13 @@ def main() raises:
     print("    graph node, replayed:", replay_us, "us")
 
     # ---- 2. what does the recording surface actually record? --------------
-    # The recording context's docstring says kernels, copies and memsets are
-    # recorded. The dispatcher only intercepts kernel launches, host
-    # callbacks and host-value waits -- a memset or a copy enqueued through
-    # a recording context is likely executed RIGHT THEN on the live stream,
-    # which is not recording, and never becomes a node. Shown rather than
-    # asserted: the values below are the evidence.
+    # A regression guard with a history. The recording context's docstring
+    # promises that kernels, copies and memsets all record; until nvptxrt
+    # grew recording branches for the four copy and memset entry points, a
+    # memset or a copy enqueued through a recording context executed RIGHT
+    # THEN on the live stream and never became a node, so a replayed graph
+    # silently computed without them. The probe records one of each and
+    # asks the destination, before and after a replay, which happened.
     print()
     print("  recording-semantics probe (memset and copy through a")
     print("  recording context):")
