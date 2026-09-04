@@ -4148,13 +4148,39 @@ ParseResult StmtParser::parseClassStmt(LexerCursor startCursor,
   // starts at the line of whatever token follows, which for a bodiless class
   // is the next top-level statement. Diagnosed here, where the cause is
   // still visible, rather than as a parse error inside generated source.
-  if (auto bodyIndent = getToken().getIndentation())
+  if (auto bodyIndent = getToken().getIndentation()) {
     if (*bodyIndent <= curIndent) {
       emitError(nameLoc,
                 "a COM class needs a body: declare its state with `var` and "
                 "implement the interface's methods");
       return success();
     }
+  } else if (getToken().is(Token::eof)) {
+    // `class X(IFoo):` as the last line of the file: the token that follows
+    // carries no indentation record, so the guard above cannot see it.
+    emitError(nameLoc,
+              "a COM class needs a body: declare its state with `var` and "
+              "implement the interface's methods");
+    return success();
+  } else {
+    // The only other token without an indentation record is one sharing the
+    // header's line: `class X(IFoo): var y = 1`. The capture below walks back
+    // to the start of the token's line, which would swallow the header into
+    // the body -- and the sub-parse would then meet a nested class where the
+    // state should be, reported against a line that reads perfectly fine.
+    // recover(), not a bare return: the rest of the header line is not a
+    // statement anyone meant to write, and leaving it for the statement loop
+    // would report it a second time beneath the real diagnosis.
+    unsigned headerBufId = getSourceMgr().FindBufferContainingLoc(kwLoc);
+    if (headerBufId &&
+        getSourceMgr().getLineAndColumn(getToken().getLoc(), headerBufId)
+                .first ==
+            getSourceMgr().getLineAndColumn(kwLoc, headerBufId).first) {
+      emitError(nameLoc,
+                "a COM class body starts on the line below the header");
+      return recover();
+    }
+  }
 
   // Capture the body's source. getToken() now sits on the first body token;
   // walk back to the start of its line so the captured text keeps the user's
@@ -4199,11 +4225,20 @@ ParseResult StmtParser::parseClassStmt(LexerCursor startCursor,
   // Scan the body for method names: any `def` at the base indent. A COM slot
   // is filled per method, and the metadata gives the slot -- so only names are
   // needed here, not arities (ComClassBuilder.method picks the trampoline).
+  // The base indent, not merely any `def`: a def deeper in the body belongs
+  // to something the sub-parse will refuse anyway (Mojo has no local defs and
+  // nested types are module-scope), and wiring it here would bury that
+  // refusal under an unresolved ClassName.name in the factory.
   SmallVector<StringRef> methods;
   {
+    auto atBaseIndent = [&](const Token &tok) {
+      auto indent = tok.getIndentation();
+      return indent && *indent == baseIndent.size();
+    };
     Lexer scan(shared.diags, bodyText, bodyText.begin());
     while (scan.getToken().isNot(Token::eof)) {
-      if (scan.getToken().is(Token::kw_def)) {
+      if (scan.getToken().is(Token::kw_def) &&
+          atBaseIndent(scan.getToken())) {
         scan.lexToken();
         if (scan.getToken().is(Token::identifier))
           methods.push_back(scan.getToken().getSpelling());
