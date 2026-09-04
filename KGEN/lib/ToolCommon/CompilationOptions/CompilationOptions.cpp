@@ -17,6 +17,7 @@
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/DynamicLibrary.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 #include <string>
 
 using namespace M;
@@ -95,11 +96,18 @@ CompilationOptions::CompilationOptions(
   requireMaxForAcceleratorRequest(this->targetAccelerator);
 
   if (this->targetAccelerator == "cuda") {
+    // Resolve the generic request against the machine, but do not kill the
+    // process on a GPU-less one. This constructor is also reached from
+    // long-lived hosts that embed the compiler -- the LSP server, Jupyter --
+    // where report_fatal_error takes the whole process down for a machine
+    // property the host could have shrugged off and kept editing. The
+    // command-line driver reports the same condition as a real error before
+    // it ever gets here, so this warning is the only notice an embedding
+    // will see; compiling without an accelerator is the usable fallback.
     this->targetAccelerator = getDetectedAcceleratorArchOrEmpty();
     if (this->targetAccelerator.empty())
-      llvm::report_fatal_error(
-          "--target-accelerator=cuda could not detect an NVIDIA GPU",
-          /*gen_crash_diag=*/false);
+      llvm::errs() << "warning: --target-accelerator=cuda could not detect "
+                      "an NVIDIA GPU; compiling without an accelerator\n";
   }
 
   if (this->targetCpu.empty())
