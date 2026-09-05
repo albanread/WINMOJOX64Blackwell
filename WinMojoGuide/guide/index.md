@@ -18,10 +18,13 @@ Read these in order the first time. Each chapter assumes the ones before it.
 
 Chapters 1 through 5 are written and are accurate against the current
 build — chapter 2's tables come out of the running program, and chapters 4
-and 5's programs compile against the current compiler. The
-[std.windows reference](../reference/04-std-windows.md) sits beside them:
-chapters 4 and 5 teach the floor, the reference documents the library
-standing on it.
+and 5's programs compile against the current compiler. Beside them: the
+[language reference](../reference/01-language.md) states the dialect
+itself, the [metadata](../reference/02-metadata-queries.md) and
+[COM](../reference/05-com.md) references state the extensions lookup-style,
+and every shipped example has a [walkthrough](../examples/index.md) —
+ordered by what it teaches, one page each, quoting the file and line where
+the lesson lives.
 
 The rest are listed because the shape of the guide is a decision worth making
 early, and because a reader deserves to know what is missing rather than

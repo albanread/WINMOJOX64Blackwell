@@ -4,11 +4,16 @@ Look things up here. The guide explains; this states.
 
 | | What it is |
 |:---|:---|
-| The language | *Not yet written.* The frozen dialect, spelled out: what `comptime` means here, `let` and `var`, `def` and `fn`, origins, and every construct whose spelling differs from what is written elsewhere. |
-| The metadata queries | *Not yet written.* `winkb_constant`, `winkb_struct_size`, `winkb_field_offset`, `winkb_function_dll`, `winkb_vtable_index`, `winkb_interface_iid`, and the provenance queries. Each with what it returns and what happens when the name is unknown. |
+| [The language](01-language.md) | The frozen dialect, spelled out: what `comptime` means here, `let` and `var`, `def` and `fn`, origins, and every construct whose spelling differs from what is written elsewhere. |
+| [The metadata queries](02-metadata-queries.md) | `winkb_constant`, `winkb_struct_size`, `winkb_field_offset`, `winkb_function_dll`, `winkb_vtable_index`, `winkb_interface_iid`, and the COM chain queries. Each with what it returns and what happens when the name is unknown. |
 | [Griddle](03-griddle.md) | Every keyboard shortcut, the whole menu bar, the complete command surface, the environment variables it reads and the files it writes. Generated from the running program. |
+| [std.windows](04-std-windows.md) | The library standing on the metadata floor: registry, folders, clipboard, processes, console, audio, GUI. |
+| [The COM extension](05-com.md) | `ComPtr` ownership, metadata slot dispatch, `HResult`/`Apartment`/`co_create`, and the `class` keyword — with the refcount table and the desugar stated exactly. |
 | Diagnostics | *Not yet written.* The compiler's Windows-specific messages, what each one really means, and what to do about it. |
 | Deviations | *Not yet written.* Every place this fork behaves differently from upstream Mojo, with the reason. |
+
+The worked examples all have walkthroughs: [the examples index](../examples/index.md)
+orders them by what they teach and links to one page each.
 
 ## Meanwhile
 
