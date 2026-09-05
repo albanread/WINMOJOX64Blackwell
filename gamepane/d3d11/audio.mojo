@@ -145,10 +145,19 @@ def play_tune(d: P, source: String, loop: Bool = False) raises -> Int:
     return len(steps)
 
 
-def stop_audio(unit_addr: Int):
+def stop_audio(unit_addr: Int) raises:
     """Always, before main returns. Clearing the global stops the running
-    predicate; the thread then drains, stops and exits on its own."""
+    predicate; the thread then drains, stops and exits on its own -- and
+    this WAITS for that, because the caller frees the deck next and a fill
+    still running would read freed state. The crash lands after everything
+    has already rendered, which is the worst place to look for it."""
     g_deck()[] = 0
+    if unit_addr != 0:
+        var wait = win32[
+            def (Int, UInt32) thin abi("C") -> UInt32,
+            "WaitForSingleObject",
+        ]()
+        _ = wait(unit_addr, UInt32(5000))
 
 
 def stop_tune(d: P):

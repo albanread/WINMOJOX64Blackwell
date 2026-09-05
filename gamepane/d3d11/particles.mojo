@@ -11,7 +11,8 @@ plus the transparent clip, so debris never paints a black box.
 
 from max.gpu.host import DeviceContext, HostBuffer
 from std.gpu import global_idx
-from std.memory import Pointer, OpaquePointer, Span
+from std.memory import Pointer, OpaquePointer
+from std.collections import Span
 from std.sys._com import com_method_of
 
 from gamepane.api import (
