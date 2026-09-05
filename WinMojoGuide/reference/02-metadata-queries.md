@@ -89,6 +89,7 @@ winkb_com_has_method["IDropTarget", "DragEnter"]()  # 1 or 0
 winkb_com_ret_type["IUnknown", "Release"]()      # the return's width/kind
 winkb_com_param_count["IUnknown", "QueryInterface"]()
 winkb_com_param_type["IUnknown", "QueryInterface", StaticString("0")]()
+winkb_com_setter_for["IACList2", "options"]()    # "SetOptions" -- the setter a plain name means
 winkb_com_chain_iids["IStream"]()                # the whole inheritance chain, comma-joined
 winkb_com_interface_base["IDropTarget"]()        # its immediate base
 winkb_type_width["UInt32"]()                     # a Mojo type name's width in bits

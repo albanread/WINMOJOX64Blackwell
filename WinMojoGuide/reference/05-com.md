@@ -162,6 +162,23 @@ The rules the compiler enforces:
   `query_interface` across the cells honours COM identity — the same
   object, and the primary cell answers for `IUnknown`.
 
+## Property writes
+
+```mojo
+var view = Com[StaticString("IACList2")](of=obj)
+view.options = 2          # means SetOptions(UInt32(2))
+```
+
+An assignment to a name that is not a field resolves through the metadata:
+the setter is `Set` plus the capitalised name, verified to exist on the
+interface or its chain at compile time, and the value is dispatched through
+its vtable slot with the full arity and argument checks. A bare literal
+adopts the setter's declared type (`2` becomes `UInt32(2)`); a typed value
+keeps the exact-type discipline; a string is refused with the SDK's spelling
+named; a property with no setter is a compile error naming the interface and
+the property. Read-only in the SDK is read-only here, and a typo is a
+compile error rather than a silently dropped write.
+
 The keyword is a *source-level desugar*: the parser captures the body and
 generates the `@fieldwise_init` struct plus the `into_com()` factory the
 library form spells by hand, then sub-parses that into the module — every

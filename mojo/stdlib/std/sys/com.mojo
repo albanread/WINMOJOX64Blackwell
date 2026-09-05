@@ -29,6 +29,7 @@ from std.sys._winkb import (
     winkb_com_param_type,
     winkb_com_method_count,
     winkb_com_has_method,
+    winkb_com_setter_for,
     winkb_com_method_at_slot,
     winkb_com_chain_iids,
     winkb_type_width,
@@ -303,12 +304,59 @@ def _check_arg[
 ]():
     """Compile-time check of one argument against the metadata.
 
-    Width only, for now: it catches the recorded disaster class (an f32 slot
-    fed an 8-byte double corrupts the virtual call), and the register-file
-    half (int vs float of equal width) is named future work in
-    language_update.md rather than silently skipped.
+    Width and KIND. Width catches the recorded disaster class (an f32 slot
+    fed an 8-byte double corrupts the virtual call); kind catches the quieter
+    half the width check cannot see -- an Int32 and a Float32 are both four
+    bytes, and feeding the float slot the integer reinterprets the bits in
+    the callee's frame, silently. Text is refused outright: a Mojo String is
+    UTF-8 and COM wants a UTF-16 PWSTR pointer, so a String that reaches this
+    boundary would have crossed as a pointer to the wrong encoding.
     """
     comptime declared = winkb_com_param_type[interface_name, method, ordinal]()
+
+    comptime if A == String or A == StaticString:
+        comptime assert False, (
+            "a Mojo string cannot cross the COM boundary for parameter "
+            + String(ordinal)
+            + " of "
+            + String(interface_name)
+            + "."
+            + String(method)
+            + ": the SDK declares '"
+            + String(declared)
+            + "' -- pass the UTF-16 spelling, a Pointer[UInt16] or a"
+            " WideString"
+        )
+
+    comptime declared_is_float = declared == "f32" or declared == "f64"
+    comptime arg_is_float = A == Float32 or A == Float64
+    comptime if declared_is_float and not arg_is_float:
+        comptime assert False, (
+            "argument kind disagrees with the metadata for parameter "
+            + String(ordinal)
+            + " of "
+            + String(interface_name)
+            + "."
+            + String(method)
+            + ": the SDK declares '"
+            + String(declared)
+            + "', a float -- pass a Float32, not the integer whose bits"
+            " would be reinterpreted"
+        )
+    comptime if arg_is_float and not declared_is_float:
+        comptime assert False, (
+            "argument kind disagrees with the metadata for parameter "
+            + String(ordinal)
+            + " of "
+            + String(interface_name)
+            + "."
+            + String(method)
+            + ": the SDK declares '"
+            + String(declared)
+            + "', an integer or pointer -- passing a float would hand the"
+            " callee reinterpreted bits"
+        )
+
     comptime expect = _expected_width[declared]()
     comptime assert size_of[A]() == expect, (
         "argument width disagrees with the metadata for this parameter of "
@@ -997,6 +1045,117 @@ struct Com[interface_name: StaticString](TrivialRegisterPassable):
             The bound method, awaiting arguments.
         """
         return _ComBound[Self.interface_name, name](self._this)
+
+    def __setattr_param__[prop: StringLiteral](
+        self, value: IntLiteral
+    ) raises -> HResult:
+        """The literal arm of the property write: `view.options = 2`.
+
+        A bare literal adopts the setter's declared type -- the width a
+        literal materialises at is an accident of the assignment, not what
+        the SDK declared. The declared spelling is read from the metadata
+        and the literal is constructed into it; a declared type no known
+        constructor answers falls through to the checked generic arm,
+        which names the width the SDK wants.
+        """
+        comptime setter = winkb_com_setter_for[Self.interface_name, prop]()
+        _check_hresult_method[Self.interface_name, setter, 1]()
+        comptime declared = winkb_com_param_type[
+            Self.interface_name, setter, "0"
+        ]()
+        comptime if declared == "u8":
+            return self._dispatch_setter[UInt8, setter](UInt8(value))
+        elif declared == "u16":
+            return self._dispatch_setter[UInt16, setter](UInt16(value))
+        elif declared == "u32":
+            return self._dispatch_setter[UInt32, setter](UInt32(value))
+        elif declared == "u64":
+            return self._dispatch_setter[UInt64, setter](UInt64(value))
+        elif declared == "i8":
+            return self._dispatch_setter[Int8, setter](Int8(value))
+        elif declared == "i16":
+            return self._dispatch_setter[Int16, setter](Int16(value))
+        elif declared == "i32":
+            return self._dispatch_setter[Int32, setter](Int32(value))
+        elif declared == "i64":
+            return self._dispatch_setter[Int64, setter](Int64(value))
+        elif declared == "f32":
+            return self._dispatch_setter[Float32, setter](Float32(value))
+        elif declared == "f64":
+            return self._dispatch_setter[Float64, setter](Float64(value))
+        elif declared == "bool":
+            return self._dispatch_setter[Bool, setter](Bool(value))
+        else:
+            comptime assert False, (
+                "a literal cannot adopt the declared type '"
+                + String(declared)
+                + "' for "
+                + String(Self.interface_name)
+                + "."
+                + String(setter)
+                + ": construct the value explicitly at the assignment"
+            )
+
+    def __setattr_param__[prop: StringLiteral, A0: TrivialRegisterPassable](
+        self, value: A0
+    ) raises -> HResult:
+        """The write half of the property surface: `view.options = x`.
+
+        The property name arrives as a compile-time parameter, and the
+        setter it means -- 'Set' plus the capitalised name, `options` to
+        SetOptions -- is settled against the metadata at compile time, with
+        the same arity and argument checks any typed call gets. The value
+        is then dispatched through the setter's vtable slot, and a failed
+        HRESULT raises. A property with no setter is a compile error naming
+        the interface and the property: read-only in the metadata means
+        read-only here.
+
+        Parameters:
+            prop: The property name as written at the assignment.
+            A0: The value's type, checked against the SDK.
+
+        Returns:
+            The successful HResult.
+
+        Raises:
+            If the setter reports failure.
+        """
+        comptime setter = winkb_com_setter_for[Self.interface_name, prop]()
+        _check_hresult_method[Self.interface_name, setter, 1]()
+
+        comptime if A0 == String or A0 == StaticString:
+            comptime declared = winkb_com_param_type[
+                Self.interface_name, setter, "0"
+            ]()
+            comptime assert False, (
+                "a Mojo string cannot cross the COM boundary for parameter 0"
+                " of "
+                + String(Self.interface_name)
+                + "."
+                + String(setter)
+                + ": the SDK declares '"
+                + String(declared)
+                + "' -- pass the UTF-16 spelling, a Pointer[UInt16] or a"
+                " WideString"
+            )
+
+        _check_arg[Self.interface_name, setter, "0", A0]()
+        return self._dispatch_setter[A0, setter](value)
+
+    def _dispatch_setter[
+        T: TrivialRegisterPassable, setter: StaticString
+    ](self, value: T) raises -> HResult:
+        """One setter call, through the slot the metadata records."""
+        var hr = HResult(
+            com_method[
+                def (
+                    OpaquePointer[MutUntrackedOrigin], T
+                ) thin abi("C") -> Int32,
+                winkb_vtable_index[Self.interface_name, setter](),
+            ](self._this)(self._this, value)
+        )
+        hr.raise_for[setter]()
+        return hr
 
 
 # ===----------------------------------------------------------------------=== #

@@ -59,6 +59,7 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Support/IndentedOstream.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVectorExtras.h"
 #include "llvm/Support/SaveAndRestore.h"
@@ -3741,6 +3742,70 @@ static AnyValue emitBinOpCall(ASTExprAnd<AnyValue> lhs,
 /// The walrus := operator in Python requires the left side to be a simple
 /// identifier, but Mojo allows arbitrary lvalues like the assign stmt.
 AnyValue BinOpNode::emitAssign(ExprDest &dest, IREmitter &emitter) const {
+  // winmojo: property WRITES through `__setattr_param__` -- the
+  // assignment-shaped sibling of `__getattr_param__`. `view.options = x` on
+  // a type that declares the hook re-dispatches onto
+  // `view.__setattr_param__["options"](x)`: the property name arrives as a
+  // string parameter, so what the write means is settled against the
+  // metadata database at compile time -- for COM, the Set<name> setter --
+  // which a plain `__setattr__` receiving a runtime name could never do.
+  //
+  // The interception lives here rather than in the LValue machinery: a
+  // property write consumes the value and cannot produce an address, so it
+  // has to be caught where both sides of the `=` are in hand.
+  //
+  // Restricted to a bare-variable base: the base is emitted to learn its
+  // type, and when the hook does not apply the ordinary path below emits it
+  // again. A second variable load is harmless; a second call with side
+  // effects would not be. `f().prop = x` keeps the ordinary path until
+  // someone wants it enough to solve the double emission.
+  if (auto *attr = dyn_cast<AttributeRefNode>(lhs->getWithoutParens())) {
+    if (isa<DeclRefNode>(attr->base->getWithoutParens())) {
+      AnyValue baseVal = emitter.emitExpr(attr->base, EC_AttributeRefBase);
+      if (baseVal) {
+        if (auto baseCVal = baseVal.getIfCValue()) {
+          ASTType baseType = baseCVal.getRValueType();
+          // Only names the type does not already declare: an assignment to
+          // a real field is a field write, not a property write. Without
+          // this, `self._this = x` inside the very struct that declares the
+          // hook would re-enter it -- a field assignment cannot raise, the
+          // property path can, and the call would refuse to compile in the
+          // ordinary places.
+          if (emitter.shared.typeHasMember(baseType, "__setattr_param__",
+                                           getLoc()) &&
+              !emitter.shared.typeHasMember(baseType, attr->spelling,
+                                            getLoc())) {
+            // The name as a quoted string literal, so it arrives at the
+            // hook as the compile-time parameter the query needs.
+            std::string quoted = ("\"" + attr->spelling.str() + "\"");
+            StringRef spelling(quoted);
+            auto *nameNode =
+                new StringLiteralNode(ArrayRef<StringRef>(spelling));
+            llvm::scope_exit freeNode([&] { delete nameNode; });
+            Operand nameOperand(nameNode, attr->getLoc(),
+                                ArgUnpackStyle::kPositional);
+            Operand valueOperand(rhs, rhs->getLoc(),
+                                 ArgUnpackStyle::kPositional);
+
+            SyntheticNode baseNode(getLoc(), baseVal);
+            AttributeRefNode hookNode(
+                &baseNode, getLoc(),
+                StringAttr::get(emitter.getContext(), "__setattr_param__"));
+            SmallVector<Operand, 2> subOperands = {nameOperand};
+            SubscriptNode paramNode(&hookNode, getLoc(), subOperands,
+                                    getLoc());
+            SmallVector<Operand, 2> callOperands = {valueOperand};
+            CallNode callNode(&paramNode, getLoc(), callOperands,
+                              rhs->getLoc());
+            auto result = emitter.emitExpr(&callNode, dest);
+            freeNode.release();
+            return result;
+          }
+        }
+      }
+    }
+  }
+
   // Assignments might need to infer the LHS from the RHS when the LHS is
   // unresolved, and the RHS from the LHS when it is known:
   //

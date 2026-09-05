@@ -374,6 +374,38 @@ def winkb_com_method_at_slot[
     return StaticString(res)
 
 
+def winkb_com_setter_for[
+    type_name: StaticString, prop: StaticString
+]() -> StaticString:
+    """The setter method a plain property name means.
+
+    `obj.options = x` on an IACList2 means SetOptions: the name is
+    assembled in SQL -- 'Set' plus the property with its first letter
+    capitalised -- and found on the interface or its chain. The property
+    write path uses this to settle, at compile time, what a write means;
+    a property with no setter leaves no row, and the elaboration error
+    names the interface and the property, which is the sentence a typo
+    wants to produce.
+
+    Parameters:
+        type_name: The COM interface name.
+        prop: The property name as written at the assignment.
+
+    Returns:
+        The setter method's name.
+    """
+    var res = __mlir_attr[
+        `#kgen.param.expr<winkb_query, `,
+        _get_kgen_string["com_setter_for"](),
+        `, `,
+        _get_kgen_string[type_name](),
+        `, `,
+        _get_kgen_string[prop](),
+        `> : !kgen.string`,
+    ]
+    return StaticString(res)
+
+
 def winkb_com_has_method[
     type_name: StaticString, method_name: StaticString
 ]() -> Bool:

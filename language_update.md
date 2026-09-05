@@ -416,3 +416,37 @@ this honest: every milestone above is a capability the editor needs anyway.
 5. **`class` keyword expectations.** Upstream reserved `class` and may one day
    ship its own. Same standing policy as MojoCocoa's STATUS.md: this fork is
    frozen; the platform's object story is ours to define here.
+
+---
+
+## Property writes and argument kinds (2026-09-05)
+
+Two additions to the typed surface, shaped by MojoCocoa's P3/P4 sprints on
+the Obj-C side.
+
+**Argument kinds, not just widths.** `_check_arg` checked widths only, and
+its docstring named the gap: an Int32 and a Float32 are both four bytes, and
+the wrong one on a float slot reinterprets the bits in the callee's frame,
+silently. The check now compares kinds against the metadata's declared
+spelling -- a float where the SDK says integer (or the reverse) is a compile
+error quoting both, and a Mojo string is refused outright, because a Mojo
+string is UTF-8 and the SDK's parameter is a UTF-16 pointer: crossing would
+hand the callee the wrong encoding with no error anywhere. f17 is the
+must-fail spike.
+
+**Property writes.** `view.options = 2` on a `Com["IACList2"]` means
+`SetOptions(UInt32(2))`. The mechanism is the assignment-shaped sibling of
+`__getattr_param__`: a hook at the top of `BinOpNode::emitAssign` re-dispatches
+onto `__setattr_param__["name"](value)` when the base's type declares it and
+the name is not a field, the setter is assembled in SQL (`'Set' || upper(
+first letter) || rest` -- string surgery belongs where it always evaluates)
+and found on the interface or its chain, and the write carries the full
+arity/kind/width checks. A bare literal adopts the setter's declared type;
+a property with no setter is a compile error naming the interface and the
+property. Read-only in the SDK is read-only here. The hook fires only on
+bare-variable bases (the base is emitted to learn its type; a re-emitted
+variable load is harmless where a re-emitted call would not be), and it
+ignores names the type really declares -- `self._this = x` inside the very
+struct that declares the hook is a field write, not a property write.
+s21 is the end-to-end spike: write, read back, write again, through a
+`class`-built object. 40/40 in the COM suite with the new spikes.

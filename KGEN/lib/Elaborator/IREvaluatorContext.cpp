@@ -996,6 +996,22 @@ constexpr StringRef kComHasMethodSQL =
     "SELECT CASE WHEN EXISTS (SELECT 1 FROM interface_methods m "
     "JOIN chain c ON c.type_id = m.interface_type_id "
     "WHERE m.method_name = ?2) THEN 1 ELSE 0 END";
+// The SETTER a plain property name means: `obj.options = x` on an
+// IACList2 names SetOptions. The name is assembled in SQL -- 'Set' plus
+// the property with its first letter capitalised -- because string surgery
+// belongs where it always evaluates, not in comptime Mojo where it may not
+// fold (the Mac ports' lesson, already written on type_width above). The
+// chain walk means an inherited setter answers at the derived interface's
+// name. A property with no setter leaves no row, and the elaborator's
+// own no-'com_setter_for' note is the diagnostic: it names the interface
+// and the property, which is the sentence a typo wants to produce.
+constexpr StringRef kComSetterForSQL =
+    WINKB_IFACE_CHAIN_CTE
+    "SELECT m.method_name FROM interface_methods m "
+    "JOIN chain c ON c.type_id = m.interface_type_id "
+    "WHERE m.method_name = "
+    "('Set' || upper(substr(?2, 1, 1)) || substr(?2, 2)) "
+    "ORDER BY c.depth LIMIT 1";
 constexpr StringRef kComInterfaceBaseSQL =
     "SELECT t2.type_name FROM types t1 "
     "JOIN types t2 ON t2.qualified_name = t1.base_qualified_name "
@@ -1225,6 +1241,7 @@ const WinKBQueryDef kQueries[] = {
     {"com_method_count", 1, kComMethodCountSQL},
     {"com_interface_base", 1, kComInterfaceBaseSQL},
     {"com_has_method", 2, kComHasMethodSQL},
+    {"com_setter_for", 2, kComSetterForSQL},
     {"com_method_at_slot", 2, kComMethodAtSlotSQL},
     {"com_chain_iids", 1, kComChainIIDsSQL},
     {"type_width", 1, kTypeWidthSQL},
