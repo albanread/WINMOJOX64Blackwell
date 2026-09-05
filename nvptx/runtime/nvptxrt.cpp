@@ -184,6 +184,7 @@ constexpr int CU_LIMIT_STACK_SIZE = 0;
 constexpr size_t NVPTX_MIN_THREAD_STACK_SIZE = 4096;
 constexpr int CU_MEMORYTYPE_HOST = 1;
 constexpr int CU_MEMORYTYPE_DEVICE = 2;
+constexpr unsigned int CU_MEMHOSTALLOC_DEVICEMAP = 0x02;
 
 #define CUDA_API __stdcall
 #define CUDA_FUNCTION(result, name, ...)                                       \
@@ -1831,7 +1832,17 @@ NVPTXRT_EXPORT const char *AsyncRT_DeviceContext_createHostBuffer(
   if (const char *error = setCurrent(context))
     return error;
   void *allocation = nullptr;
-  CUresult status = cuMemHostAlloc(&allocation, std::max<size_t>(bytes, 1), 0);
+  // Device-mapped, not merely pinned: a game-plane allocation is written by
+  // the CPU through the host pointer and read or written by kernels through
+  // the device pointer of the SAME bytes -- the zero-copy half of the game
+  // pane's one-memory model, which Metal gets from unified memory. The flag
+  // costs nothing for callers that never use the device address, and the
+  // plain-pinned fallback keeps every existing caller working if a driver
+  // ever refuses it.
+  CUresult status = cuMemHostAlloc(&allocation, std::max<size_t>(bytes, 1),
+                                   CU_MEMHOSTALLOC_DEVICEMAP);
+  if (status != CUDA_SUCCESS)
+    status = cuMemHostAlloc(&allocation, std::max<size_t>(bytes, 1), 0);
   if (status != CUDA_SUCCESS)
     return cudaError("cuMemHostAlloc", status);
 
@@ -1840,6 +1851,9 @@ NVPTXRT_EXPORT const char *AsyncRT_DeviceContext_createHostBuffer(
   buffer->bytes = bytes;
   buffer->context = const_cast<NVPTXContext *>(context);
   buffer->hostPinned = true;
+  if (cuMemHostGetDevicePointer(&buffer->device, allocation, 0) !=
+      CUDA_SUCCESS)
+    buffer->device = 0;
   AsyncRT_DeviceContext_retain(context);
   registerHostBuffer(buffer);
   if (result)
@@ -1873,6 +1887,15 @@ NVPTXRT_EXPORT void AsyncRT_DeviceContext_createBuffer_owning(
 NVPTXRT_EXPORT int64_t
 AsyncRT_DeviceBuffer_bytesize(const NVPTXBuffer *buffer) {
   return buffer ? static_cast<int64_t>(buffer->bytes) : 0;
+}
+
+// The device address of a device-mapped host buffer -- what a kernel
+// argument carries so the GPU dereferences the same bytes the CPU writes
+// through the host pointer. Zero when the allocation is not device-mapped,
+// which the caller reports rather than passing on.
+NVPTXRT_EXPORT uint64_t
+AsyncRT_DeviceBuffer_devicePtr(const NVPTXBuffer *buffer) {
+  return buffer ? buffer->device : 0;
 }
 
 NVPTXRT_EXPORT void AsyncRT_DeviceBuffer_retain(const NVPTXBuffer *buffer) {
