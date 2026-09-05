@@ -53,7 +53,7 @@ def device_ptr_device[dtype: DType](buf: DeviceBuffer[dtype]) -> Int:
     )
 
 
-def host_ptr(buf: HostBuffer[DType.uint8]) -> Pointer[UInt8, MutUntrackedOrigin]:
+def host_ptr[dtype: DType](buf: HostBuffer[dtype]) -> Pointer[UInt8, MutUntrackedOrigin]:
     """The CPU address of a host buffer's bytes -- the drawing surface."""
     return Pointer[UInt8, MutUntrackedOrigin](
         unsafe_from_address=Int(buf.unsafe_ptr())

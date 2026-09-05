@@ -108,6 +108,21 @@ def mouse_state() -> Tuple[Float64, Float64, Bool, Bool]:
     )
 
 
+def any_key_held() -> Bool:
+    """Is ANY key down? An attract mode needs this and nothing else: it is
+    not interested in which key woke the cabinet up, only that somebody
+    touched it."""
+    if _HELD_PTR()[] == 0:
+        return False
+    var held = Pointer[UInt8, MutUntrackedOrigin](
+        unsafe_from_address=_HELD_PTR()[]
+    )
+    for i in range(128):
+        if held[unsafe_offset=i] != 0:
+            return True
+    return False
+
+
 def clear_input():
     """Every key up, every button up. The stuck-key hazard on focus change
     is not a Windows speciality, but it is not the game's either --
@@ -460,6 +475,17 @@ struct GamePane(Movable):
             and self.dump_path.byte_length() > 0
         ):
             self._dump()
+
+    def clear(mut self, frame: Frame):
+        """The ground, and nothing else -- layer 0 when there is no layer 0.
+        On this backend the swap chain starts every frame undefined, so
+        clear is OMSetRenderTargets + ClearRenderTargetView, once."""
+        from .device import clear_render_target, om_set_render_targets
+
+        if not frame.valid:
+            return
+        om_set_render_targets(self.context, self.rtv)
+        clear_render_target(self.context, self.rtv, 0.0, 0.0, 0.0)
 
     def present(mut self) raises:
         """Show a frame with nothing in it -- begin and end. The one-liner
