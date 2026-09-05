@@ -2,7 +2,7 @@
 # The fluid solver, headless, MEASURED.
 #
 #     mojo build -I mojo/stdlib -I . -I max/mojo \
-#         -Xlinker "<repo>\bazel-bin\nvptx\runtime\nvptxrt.lib" \
+#         -Xlinker "<repo>\bazel-bin\nvptx\runtime\nvptxrt.if.lib" \
 #         -o build/fluid_bench.exe examples/win32/fluid/fluid_bench.mojo
 #     ./build/fluid_bench.exe
 #

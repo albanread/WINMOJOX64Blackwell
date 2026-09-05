@@ -2667,7 +2667,7 @@ def run_file(hwnd: Int) raises -> String:
     var tools = _toolchain()
     return start_build(
         '"' + tools[0] + '" run' + _stdlib_flag(tools[1]) + ' -I .'
-        + _extra_flags() + ' "' + path + '"'
+        + _extra_flags(jit=True) + ' "' + path + '"'
     )
 
 
@@ -2697,7 +2697,7 @@ def build_file(hwnd: Int) raises -> String:
     var tools = _toolchain()
     return start_build(
         '"' + tools[0] + '" build --no-optimization'
-        + _stdlib_flag(tools[1]) + ' -I .' + _extra_flags()
+        + _stdlib_flag(tools[1]) + ' -I .' + _extra_flags(jit=False)
         + ' -o "' + out + '" "' + path + '"'
     )
 
@@ -3691,7 +3691,8 @@ def debug_file(hwnd: Int) raises -> String:
     g_debug_pending()[] = 1
     return start_build(
         '"' + tools[0] + '" build --no-optimization --debug-level full'
-        + _stdlib_flag(tools[1]) + ' -I .' + _extra_flags() + ' -o "' + out
+        + _stdlib_flag(tools[1]) + ' -I .' + _extra_flags(jit=False)
+        + ' -o "' + out
         + '" "' + path + '"'
     ) + " (debug build; the debugger starts when it finishes)"
 
@@ -5239,15 +5240,18 @@ def prompt_type(hwnd: Int, text: String) raises -> String:
     return prompt_report()
 
 
-def _extra_flags() raises -> String:
+def _extra_flags(jit: Bool) raises -> String:
     """The include path and the library the shipped examples need.
 
     Griddle could not build its own examples. `-I mojo/stdlib -I .` does not
     reach the `max` package -- it lives at `max/mojo/max` -- so every GPU
     example stopped at `unable to locate module 'gpu'`, and with the include
     path added they stopped again at `undefined symbol:
-    AsyncRT_DeviceContext_create`, which is the NVIDIA device runtime that
-    Bazel links as `nvptx/runtime/nvptxrt.lib`.
+    AsyncRT_DeviceContext_create`, which is the NVIDIA device runtime. It
+    is linked through its import library, `nvptx/runtime/nvptxrt.if.lib`,
+    and loaded at run time from `nvptxrt.dll` -- which `ensure_linker` puts
+    on the child's PATH -- so a fix to the runtime reaches every program
+    already built against it.
 
     Passed on every build rather than only when a file looks like it needs
     them, because deciding from the source text would mean reading imports and
@@ -5259,6 +5263,17 @@ def _extra_flags() raises -> String:
 
     Each is included only if it is really there, so a tree without the max
     package builds exactly as it did before.
+
+    `jit` says who the flags are for, because `-Xlinker` means two
+    different things. To `mojo build` it names a file for the linker, and
+    the linker wants the IMPORT library, `nvptxrt.if.lib`. To `mojo run` it
+    names a library to load into the JIT, and the JIT wants the DLL itself:
+    handed the import library instead it reports `Can't open: 0xC1` (bad
+    executable format) and nothing runs -- not even a program that never
+    touches the GPU, because the flag is passed on every run.
+
+    Args:
+        jit: True for `mojo run`, False for `mojo build`.
 
     Returns:
         The flags, with a leading space, or empty.
@@ -5289,9 +5304,10 @@ def _extra_flags() raises -> String:
     var max_package = _under(root, "max") + chr(0x5C) + "mojo"
     if _is_directory(max_package):
         out += ' -I "' + max_package + '"'
+    var library = String("nvptxrt.dll") if jit else String("nvptxrt.if.lib")
     var runtime = (
         _under(root, "bazel-bin") + chr(0x5C) + "nvptx" + chr(0x5C)
-        + "runtime" + chr(0x5C) + "nvptxrt.lib"
+        + "runtime" + chr(0x5C) + library
     )
     if _file_exists(runtime):
         out += ' -Xlinker "' + runtime + '"'

@@ -88,6 +88,31 @@ if ($SkipBuild) {
     if ($LASTEXITCODE -ne 0) { throw "the IDE did not build" }
 }
 
+# ---- 1b. the import libraries -----------------------------------------------
+# Every .lib the release stages beside a DLL, asked for by name. nvptxrt.if.lib
+# -- what every GPU program links -- is a Bazel target of its own, derived from
+# the DLL's export table. The other four are declared outputs of their DLLs'
+# link actions, but not top-level ones: this tree builds with
+# --remote_download_outputs=toplevel, so a link served from the disk cache
+# materialises the DLL and leaves the .lib behind. MojoLLDB.lib went missing
+# exactly that way and packaging stopped with "Required release artifact is
+# missing". The interface_library output group makes them top-level.
+# Seconds when everything is current, and the packager refuses to stage
+# without them, so they are built here rather than trusted.
+Say 'building the import libraries'
+Push-Location $repo
+try {
+    # Through cmd, so cmd does the 2>&1: PowerShell 5.1 redirecting a native
+    # command's stderr wraps every line -- and Bazel puts its INFO lines there
+    # -- in a NativeCommandError, which under $ErrorActionPreference = 'Stop'
+    # ends the script on the first "INFO: Invocation ID".
+    $bazelOut = & cmd /c ("`"$repo\bazelw.cmd`" build --output_groups=+interface_library " +
+        "//nvptx/runtime:nvptxrt.dll //nvptx/runtime:nvptxrt_implib " +
+        "//KGEN:MojoLLDB //KGEN:CompilerRT //AsyncRT:RuntimeGlobals //Support:Globals 2>&1")
+    $bazelOut | Select-String 'ERROR|error:|FAILED|Build completed' | ForEach-Object { Write-Host "  $_" }
+} finally { Pop-Location }
+if ($LASTEXITCODE -ne 0) { throw "the import libraries did not build" }
+
 # ---- 2. the release tree --------------------------------------------------
 Say "staging the release into $stage"
 # A HASHTABLE splat, not an array one. Splatting an array into a PowerShell

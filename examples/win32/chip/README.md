@@ -319,7 +319,7 @@ From the repository root:
 export MODULAR_MOJO_MAX_WINKB_PATH="F:/bzs/external/+http_archive+winkb/windows_api.db"
 ./bazel-bin/KGEN/tools/mojo/mojo.exe build --no-optimization \
     -I mojo/stdlib -I . -I max/mojo \
-    -Xlinker "$(cygpath -w bazel-bin/nvptx/runtime/nvptxrt.lib)" \
+    -Xlinker "$(cygpath -w bazel-bin/nvptx/runtime/nvptxrt.if.lib)" \
     -o build/chip.exe examples/win32/chip/main.mojo
 ```
 

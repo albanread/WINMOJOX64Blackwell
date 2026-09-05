@@ -51,6 +51,33 @@ try {
     Check 'no-repo-paths'       ($out -notmatch 'E:\\Mojo|bazel-bin|F:/bzs|F:\\bzs') 'nothing points at the checkout'
     Check 'python-is-bundled'   ($out -match [regex]::Escape("$Target\python")) 'python view names the bundled runtime'
     Check 'hello-builds'        ($out -match 'exit 0') 'built and ran from the installed toolchain'
+
+    # A GPU program, built and RUN the same way. It imports nvptxrt.dll --
+    # the runtime is a DLL, not a static archive -- and the three Mojo
+    # runtime DLLs; with PATH scrubbed, only the editor can supply the
+    # directory they live in. A project is a folder, so this is one.
+    $gpuDir = "$Target\examples\gpucheck"
+    New-Item -ItemType Directory -Force -Path $gpuDir | Out-Null
+    [System.IO.File]::WriteAllText("$gpuDir\main.mojo", @"
+from max.gpu.host import DeviceContext
+
+
+def main() raises:
+    var ctx = DeviceContext()
+    var buf = ctx.enqueue_create_buffer[DType.float32](64)
+    var host = ctx.enqueue_create_host_buffer[DType.float32](64)
+    ctx.enqueue_memset(buf, Float32(6.5))
+    host.enqueue_copy_from(buf)
+    ctx.synchronize()
+    print("gpu ok", host[0], ctx.name())
+"@.Replace("`r`n", "`n"), (New-Object System.Text.UTF8Encoding $false))
+    $gpuOut = & cmd /c "`"$Target\bin\griddle.exe`" --open `"$gpuDir\main.mojo`" --no-lsp --cmd `"run;;run wait 240000;;output`" 2>&1" | Out-String
+    Check 'gpu-runs-installed'  ($gpuOut -match 'gpu ok 6\.5') 'a GPU program built here loads nvptxrt.dll and runs'
+    if ($gpuOut -notmatch 'gpu ok 6\.5') {
+        Write-Host '--- gpu transcript tail ---'
+        ($gpuOut -split "`r?`n" | Select-Object -Last 12) | ForEach-Object { Write-Host "  $_" }
+    }
+    Remove-Item $gpuDir -Recurse -Force -ErrorAction SilentlyContinue
     if ($fail -gt 0) {
         Write-Host '--- transcript tail ---'
         ($out -split "`r?`n" | Select-Object -Last 25) | ForEach-Object { Write-Host "  $_" }

@@ -1,5 +1,6 @@
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("//bazel:api.bzl", "modular_cc_library")
+load("//bazel/windows:import_library.bzl", "windows_import_library")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -43,4 +44,15 @@ cc_binary(
         "@platforms//cpu:x86_64",
         "@platforms//os:windows",
     ],
+)
+
+# The import library for nvptxrt.dll, so a program links the runtime the way
+# it links KGENCompilerRTShared, AsyncRTRuntimeGlobals and MSupportGlobals:
+# a few kilobytes of import stubs, and the code in a DLL that is fixed once
+# for every program that loads it. Named `.if.lib` because `nvptxrt.lib` in
+# this package is the static archive Bazel-built Mojo targets still link.
+windows_import_library(
+    name = "nvptxrt_implib",
+    dll = ":nvptxrt.dll",
+    out = "nvptxrt.if.lib",
 )

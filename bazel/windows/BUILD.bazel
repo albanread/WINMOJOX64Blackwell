@@ -1,0 +1,11 @@
+load("//bazel:api.bzl", "modular_py_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+# Reads a DLL's export table into a module-definition file; the input to
+# every import library windows_import_library declares. Pure PE parsing, so
+# it runs inside a Bazel action with nothing but the interpreter.
+modular_py_binary(
+    name = "gen_def",
+    srcs = ["gen_def.py"],
+)

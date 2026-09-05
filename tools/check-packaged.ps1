@@ -88,6 +88,35 @@ if ($cacheBefore -eq 0 -and (Test-Path $cache)) {
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# One program built against the package and RUN with nothing on PATH but the
+# release's own bin and lib -- what a launcher gives it. Building proves the
+# import library resolves; only running proves the DLL it names is found.
+# fluid_smoke is headless and checks its own physics, so a pass means the
+# NVIDIA runtime loaded, initialised the device and computed the answer.
+Write-Host ""
+Write-Host "  running one GPU program against the package:"
+$smokeDir = Join-Path $Root 'examples\win32\fluid'
+$smokeExe = Join-Path $smokeDir 'fluid_smoke.exe'
+Remove-Item $smokeExe -Force -ErrorAction SilentlyContinue
+Push-Location $smokeDir
+$buildOut = & cmd /c "`"$mojo`" build --no-optimization -I . -o `"$smokeExe`" fluid_smoke.mojo 2>&1" | Out-String
+Pop-Location
+$savedPath = $env:PATH
+$env:PATH = "$Root\bin;$Root\lib;$env:SystemRoot\System32;$env:SystemRoot"
+$runOut = if (Test-Path $smokeExe) { & cmd /c "`"$smokeExe`" 2>&1" | Out-String } else { $buildOut }
+$env:PATH = $savedPath
+foreach ($ext in @('exe', 'lib', 'exp', 'pdb', 'ilk')) {
+    Remove-Item (Join-Path $smokeDir "fluid_smoke.$ext") -Force -ErrorAction SilentlyContinue
+}
+Remove-Item (Join-Path $smokeDir 'fluid_frame.png') -Force -ErrorAction SilentlyContinue
+if ($runOut -match 'ok - mass, divergence, velocity') {
+    Write-Host "  fluid_smoke (run)       PASS  nvptxrt.dll loaded from lib and the physics checked out"
+} else {
+    $fail++; $failed += 'fluid_smoke (run)'
+    $why = ($runOut -split "`r?`n" | Where-Object { $_ -match 'error|not found|0xc|failed' } | Select-Object -First 1)
+    Write-Host "  fluid_smoke (run)       FAIL  $why"
+}
+
 Write-Host ""
 Write-Host ("{0} example projects: {1} built, {2} failed" -f $projects.Count, $pass, $fail)
 if ($fail -gt 0) {

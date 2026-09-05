@@ -90,6 +90,7 @@ $artifacts = [ordered]@{
     'bin\KGENCompilerRTShared.dll' = 'bazel-bin\KGEN\KGENCompilerRTShared.dll'
     'bin\AsyncRTRuntimeGlobals.dll' = 'bazel-bin\AsyncRT\AsyncRTRuntimeGlobals.dll'
     'bin\MSupportGlobals.dll' = 'bazel-bin\Support\MSupportGlobals.dll'
+    'bin\nvptxrt.dll' = 'bazel-bin\nvptx\runtime\nvptxrt.dll'
     'lib\MojoLLDB.dll' = 'bazel-bin\KGEN\MojoLLDB.dll'
     'lib\MojoLLDB.lib' = 'bazel-bin\KGEN\MojoLLDB.lib'
     'lib\mojo-repl-entry-point.exe' = 'bazel-bin\KGEN\tools\mojo-repl-entry-point\mojo-repl-entry-point.exe'
@@ -100,7 +101,10 @@ $artifacts = [ordered]@{
     'lib\MSupportGlobals.dll' = 'bazel-bin\Support\MSupportGlobals.dll'
     'lib\MSupportGlobals.lib' = 'bazel-bin\Support\MSupportGlobals.lib'
     'lib\nvptxrt.dll' = 'bazel-bin\nvptx\runtime\nvptxrt.dll'
-    'lib\nvptxrt.lib' = 'bazel-bin\nvptx\runtime\nvptxrt.lib'
+    # The IMPORT library, not the static archive Bazel builds under the same
+    # name: a program links a few kilobytes of stubs and loads the DLL, so
+    # a runtime fix reaches every program already built against it.
+    'lib\nvptxrt.lib' = 'bazel-bin\nvptx\runtime\nvptxrt.if.lib'
     'lib\std.mojoc' = 'bazel-bin\mojo\stdlib\std\std.mojoc'
     'lib\max.mojoc' = 'bazel-bin\max\mojo\max\max.mojoc'
     'lib\windows_api.db' = (Join-Path $OutputBase 'external\+http_archive+winkb\windows_api.db')

@@ -491,6 +491,12 @@ def _source_components(root: String, mut rows: List[Component]) raises:
     )
     _add(
         rows,
+        String("runtime nvptx"),
+        _under(root, "bazel-bin/nvptx/runtime"),
+        True,
+    )
+    _add(
+        rows,
         String("runtime lldb"),
         _under(root, "bazel-bin/external/+llvm_configure+llvm-project/lldb"),
         True,

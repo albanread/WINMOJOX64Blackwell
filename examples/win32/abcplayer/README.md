@@ -23,7 +23,7 @@ export MODULAR_MOJO_MAX_WINKB_PATH="F:/bzs/external/+http_archive+winkb/windows_
 export PATH="/c/Users/alban/AppData/Local/Temp/griddle-linkbin:$PATH"
 ./bazel-bin/KGEN/tools/mojo/mojo.exe build --no-optimization \
     -I mojo/stdlib -I . -I max/mojo \
-    -Xlinker "$(cygpath -w bazel-bin/nvptx/runtime/nvptxrt.lib)" \
+    -Xlinker "$(cygpath -w bazel-bin/nvptx/runtime/nvptxrt.if.lib)" \
     -o build/abcplayer.exe examples/win32/abcplayer/main.mojo
 export PATH="bazel-bin/KGEN:bazel-bin/AsyncRT:bazel-bin/Support:$PATH"
 ./build/abcplayer.exe examples/win32/abcplayer/tunes/galixigans.abc

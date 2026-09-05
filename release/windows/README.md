@@ -4,6 +4,14 @@ This is a standalone Windows x64 build. Mojo GPU code is compiled to PTX and
 loaded through the NVIDIA driver by `nvptxrt`; no CUDA toolkit or Bazel is used
 at runtime.
 
+`nvptxrt` is a DLL, linked through the import library `lib\nvptxrt.lib` the
+way `KGENCompilerRTShared`, `AsyncRTRuntimeGlobals` and `MSupportGlobals` are.
+A program built here carries a few kilobytes of import stubs and loads
+`nvptxrt.dll` from `lib` (or `bin`) when it starts, so a fix to the runtime
+reaches every program already built against it by replacing one file. The
+launchers put `bin` and `lib` on `PATH`; Griddle does the same for anything it
+builds and runs.
+
 The GPU target is not fixed at packaging time. The launchers pass the generic
 `cuda` selector, which resolves to whichever supported card is installed, so
 the same release works on any of them. Pass `--target-accelerator` explicitly

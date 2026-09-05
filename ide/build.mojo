@@ -22,6 +22,7 @@ from std.sys._globals import named_global
 from std.time import perf_counter_ns
 
 from ide.python_env import apply_variables, project_location
+from ide.toolchain import layout_name, toolchain_root
 from ide.tree import project_root
 from ide.pipes import Child, kill, read_some, set_env, spawn, utf16z, waiting
 from ide.win32 import absolute, env_or, win32
@@ -238,12 +239,28 @@ def ensure_linker() raises -> String:
     # tools/check-debugger.ps1 has staged these since sprint 0.0; this is the
     # same list, for the children Griddle spawns itself.
     var runtime = List[String]()
-    runtime.append(absolute("bazel-bin/KGEN"))
-    runtime.append(absolute("bazel-bin/AsyncRT"))
-    runtime.append(absolute("bazel-bin/Support"))
-    runtime.append(
-        absolute("bazel-bin/external/+llvm_configure+llvm-project/lldb")
-    )
+    if layout_name() == "installed":
+        # An installed release keeps every runtime DLL a program imports --
+        # KGENCompilerRTShared, AsyncRTRuntimeGlobals, MSupportGlobals and
+        # nvptxrt -- in lib, with copies in bin so griddle.exe itself loads
+        # when launched directly. The launchers put both on PATH; an editor
+        # started from its Start-menu shortcut is not a launcher and got
+        # neither, so a program it built could not load the runtime it was
+        # linked against. Nothing in the list below exists there.
+        var root = toolchain_root()
+        runtime.append(root + chr(0x5C) + "bin")
+        runtime.append(root + chr(0x5C) + "lib")
+    else:
+        runtime.append(absolute("bazel-bin/KGEN"))
+        runtime.append(absolute("bazel-bin/AsyncRT"))
+        runtime.append(absolute("bazel-bin/Support"))
+        # And the NVIDIA device runtime, a DLL since it stopped being linked
+        # into every GPU program as a static archive. A program built from
+        # the editor imports it by name and finds it here.
+        runtime.append(absolute("bazel-bin/nvptx/runtime"))
+        runtime.append(
+            absolute("bazel-bin/external/+llvm_configure+llvm-project/lldb")
+        )
 
     # Each directory is checked for on its own. Using the linker's directory
     # as a sentinel for "already staged" was wrong in the one case that

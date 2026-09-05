@@ -169,6 +169,17 @@ def _shared_library_impl(ctx):
     dwarf_outputs.append(dynamicLibrary)
     output_group_kwargs["modular_dwarf"] = depset(dwarf_outputs)
 
+    # The import library, as an output group a build can ask for by name. It
+    # is already an output of the link action (the toolchain passes /IMPLIB:
+    # for it) but not a top-level one, and under
+    # --remote_download_outputs=toplevel a link served from the cache
+    # materialises the DLL and leaves the .lib behind. Release packaging
+    # stages a .lib beside every runtime DLL, and stopped with "Required
+    # release artifact is missing" the day the debugger plugin was relinked
+    # from cache. `--output_groups=+interface_library` makes it top-level.
+    if lib.interface_library:
+        output_group_kwargs["interface_library"] = depset([lib.interface_library])
+
     # TODO: Change name to output beside the main library once we can rename in release packaging
     stripped_output = ctx.actions.declare_file(
         ctx.label.name + ".stripped/" + dynamicLibrary.basename,

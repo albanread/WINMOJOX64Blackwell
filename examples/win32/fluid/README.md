@@ -45,13 +45,21 @@ or, with the direct compiler invocation this tree uses:
 ```bash
 export MODULAR_MOJO_MAX_WINKB_PATH="F:/bzs/external/+http_archive+winkb/windows_api.db"
 mojo build --no-optimization -I mojo/stdlib -I . -I max/mojo \
-    -Xlinker "$(cygpath -w bazel-bin/nvptx/runtime/nvptxrt.lib)" \
+    -Xlinker "$(cygpath -w bazel-bin/nvptx/runtime/nvptxrt.if.lib)" \
     -o build/fluid.exe examples/win32/fluid/main.mojo
 ```
 
 The `-I .` matters here and does not for the single-file examples: this project
 is four files, and `main.mojo` imports the other three by their repo-relative
 package path (`examples.win32.fluid.solver`).
+
+`nvptxrt.if.lib` is an import library: the program it links loads
+`nvptxrt.dll` when it starts, the way it loads `KGENCompilerRTShared.dll`.
+To run it, `bazel-bin/nvptx/runtime` has to be on `PATH` (or the DLL beside
+the executable) -- Griddle does that for anything it runs, and an installed
+release keeps the DLL in `lib` where every launcher already looks. The point
+of a DLL is that a runtime fix reaches every program already built against
+it without a relink.
 
 ## Run the smoke test first if it ever looks wrong
 
