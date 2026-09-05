@@ -506,6 +506,10 @@ struct NVPTXContext {
   int32_t recordingLastNode = -1;
   std::vector<NVPTXStream *> streams;
   std::vector<NVPTXBuffer *> liveHostBuffers;
+  // Owning device allocations, so a graph node handed a bare device address
+  // can find the buffer that owns it and keep it alive. See
+  // retainGraphDevicePointer.
+  std::vector<NVPTXBuffer *> liveDeviceBuffers;
   std::string pendingError;
   std::mutex mutex;
   std::mutex cpuMutex;
@@ -640,6 +644,25 @@ static void unregisterHostBuffer(NVPTXBuffer *buffer) {
                             root->liveHostBuffers.end(), buffer);
   if (position != root->liveHostBuffers.end())
     root->liveHostBuffers.erase(position);
+}
+
+static void registerDeviceBuffer(NVPTXBuffer *buffer) {
+  if (!buffer || !buffer->device || !buffer->owning || !buffer->context)
+    return;
+  NVPTXContext *root = rootContext(buffer->context);
+  std::lock_guard<std::mutex> lock(root->mutex);
+  root->liveDeviceBuffers.push_back(buffer);
+}
+
+static void unregisterDeviceBuffer(NVPTXBuffer *buffer) {
+  if (!buffer || !buffer->device || !buffer->context)
+    return;
+  NVPTXContext *root = rootContext(buffer->context);
+  std::lock_guard<std::mutex> lock(root->mutex);
+  auto position = std::find(root->liveDeviceBuffers.begin(),
+                            root->liveDeviceBuffers.end(), buffer);
+  if (position != root->liveDeviceBuffers.end())
+    root->liveDeviceBuffers.erase(position);
 }
 
 static CUstream activeStream(const NVPTXContext *context) {
@@ -918,6 +941,25 @@ static void retainGraphHostPointer(NVPTXGraphBuilder *builder,
   std::lock_guard<std::mutex> lock(root->mutex);
   for (NVPTXBuffer *buffer : root->liveHostBuffers) {
     if (buffer->host == pointer) {
+      retainGraphBuffer(builder, buffer);
+      return;
+    }
+  }
+}
+
+// A kernel argument that is a device address inside a live owning buffer
+// makes the graph a co-owner of that buffer. Anything else -- a scalar that
+// happens to look like an address, a pointer into memory this runtime did
+// not allocate -- matches nothing and is left alone.
+static void retainGraphDevicePointer(NVPTXGraphBuilder *builder,
+                                     uintptr_t address) {
+  if (!builder || !builder->context || !address)
+    return;
+  NVPTXContext *root = rootContext(builder->context);
+  std::lock_guard<std::mutex> lock(root->mutex);
+  for (NVPTXBuffer *buffer : root->liveDeviceBuffers) {
+    const uintptr_t start = static_cast<uintptr_t>(buffer->device);
+    if (address >= start && address < start + std::max<size_t>(buffer->bytes, 1)) {
       retainGraphBuffer(builder, buffer);
       return;
     }
@@ -1753,6 +1795,7 @@ NVPTXRT_EXPORT const char *AsyncRT_DeviceContext_createBuffer_async(
   buffer->bytes = bytes;
   buffer->context = const_cast<NVPTXContext *>(context);
   AsyncRT_DeviceContext_retain(context);
+  registerDeviceBuffer(buffer);
   if (result)
     *result = buffer;
   if (devicePointer)
@@ -1821,6 +1864,8 @@ NVPTXRT_EXPORT void AsyncRT_DeviceContext_createBuffer_owning(
   AsyncRT_DeviceContext_retain(context);
   if (buffer->host)
     registerHostBuffer(buffer);
+  else
+    registerDeviceBuffer(buffer);
   if (result)
     *result = buffer;
 }
@@ -1891,6 +1936,7 @@ NVPTXRT_EXPORT void AsyncRT_DeviceBuffer_release(const NVPTXBuffer *buffer) {
   NVPTXContext *context = mutableBuffer->context;
   NVPTXBuffer *parent = mutableBuffer->parent;
   unregisterHostBuffer(mutableBuffer);
+  unregisterDeviceBuffer(mutableBuffer);
   if (mutableBuffer->host && mutableBuffer->owning) {
     if (mutableBuffer->hostPinned) {
       CUresult status = cuCtxSetCurrent(context->context);
@@ -3092,6 +3138,22 @@ NVPTXRT_EXPORT const char *AsyncRT_DeviceGraphBuilder_addFunctionDirect(
     for (uint32_t index = 0; index < argumentCount; ++index)
       if (!argumentSizes[index])
         return errf("addFunctionDirect: argument %u has zero size", index);
+  }
+
+  // Own the buffers this node will read and write, as a recorded copy or
+  // memset already does. The graph outlives the caller's variables --
+  // Mojo destroys a value at its last use -- and a replay against a buffer
+  // freed in the meantime is a use-after-free that faults as soon as the
+  // driver reclaims the pages. Only pointer-sized arguments are looked at;
+  // a null size table is the runtime's existing pointer-sized fallback.
+  for (uint32_t index = 0; index < argumentCount; ++index) {
+    if (!arguments || !arguments[index])
+      continue;
+    if (argumentSizes && argumentSizes[index] < sizeof(void *))
+      continue;
+    const uintptr_t value = *static_cast<const uintptr_t *>(arguments[index]);
+    retainGraphDevicePointer(builder, value);
+    retainGraphHostPointer(builder, reinterpret_cast<const void *>(value));
   }
 
   std::vector<CUgraphNode> dependencies;

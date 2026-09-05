@@ -78,36 +78,35 @@ run it without a window. It carries two fixtures:
   instead of becoming graph nodes, whatever the docstring promised, until
   nvptxrt grew recording branches for them; the probe now proves they
   record, and will say so loudly if that ever regresses, and
-- a staged frame graph (`FLUID_BENCH_STAGES`) reproducing an
-  illegal-memory-access fault (CUDA 700) that a clamped stencil kernel hits
-  when replayed as a device-graph node. The clamp is a symptom, not the
-  cause: `divergence_kernel`, clamps and all, replays cleanly as a graph
-  node in isolation and in this same binary when handed freshly allocated
-  buffers -- so the trigger is the graph-launch binding for a particular
-  kernel-and-buffer combination, not the clamp arithmetic itself. What was
-  established while chasing it, all reproduced on the T1000:
-  - The kernel is innocent. Its PTX, the loaded module image (2229 bytes,
-    one entry), the graph node's captured argument pointers (deep-copied by
-    the driver -- clobbering the caller's storage after the add is harmless),
-    and the launch config are byte-identical between a run that faults and
-    one that passes.
-  - `compute-sanitizer` names it: an out-of-bounds READ of an input buffer
-    (`u0[1]`) at `divergence_kernel+0x240` during replay, while a CLASSIC
-    launch of the identical kernel with the identical buffers, issued
-    immediately before, reads that buffer correctly.
-  - It is address/allocation sensitive. Replacing the frame's buffers with
-    three freshly allocated ones makes the identical graph replay pass;
-    editing unrelated code in the binary (which shifts allocation addresses)
-    moves the fault in and out. It is NOT the clamp alone, local memory, the
-    `-O0` device-call stack, the recording surface vs `add_function`, buffer
-    count, allocation order, the context api, or any single kernel's
-    compilation -- each was ruled out by reproduction.
-  The practical consequence for the headline perf fix: a frame graph whose
-  buffers are allocated so the clamped kernels land on the triggering
-  addresses faults on first replay. Allocating the graph's working buffers
-  fresh/last is a workaround that unblocks it; the root cause looks like a
-  driver-level `cuGraphLaunch` param-binding issue and wants Nsight/cuda-gdb
-  on the graph node to finish.
+- a staged frame graph (`FLUID_BENCH_STAGES`) that once reproduced an
+  illegal-memory-access fault (CUDA 700) on replaying the clamped stencil
+  kernels as device-graph nodes, and now stands as the regression fixture
+  for the bug that actually caused it. The clamp was never the cause. The
+  fault was a **use-after-free**: a recorded kernel node held only the raw
+  device addresses of its argument buffers, while a recorded copy or memset
+  retained theirs. Mojo destroys a value at its LAST USE, and as far as the
+  source can see a buffer that is only ever handed to the graph is last used
+  at the record -- so `u0` and `v0` were `cuMemFree`'d before the first
+  replay, and every replay after that read freed memory. Whether that
+  faulted depended on whether the driver had reclaimed the pages yet, which
+  is exactly why it looked address-sensitive, why unrelated edits to the
+  binary moved it in and out, why freshly allocated buffers "fixed" it, and
+  why only the kernels touching the most freed pages -- the clamped stencil
+  reads -- ever tripped it. The refcount log that settled it, in order:
+  record captures `u0`/`v0`; a classic launch of the same kernel works;
+  `cuMemFree(v0)`, `cuMemFree(u0)` -- refs to zero; synchronize; replay;
+  fault. The fix, in `nvptx/runtime/nvptxrt.cpp`: owning device buffers are
+  registered on their root context, and a kernel node looks each
+  pointer-sized argument up by address range and retains the owner, so a
+  graph owns what its kernels name for as long as it exists -- the rule the
+  other node types already followed.
+- a second recording-semantics probe guarding that rule without needing a
+  fault: it records a one-node graph over a buffer that is never named
+  again, allocates a same-sized buffer afterwards and fills it with 9, then
+  replays and reads the new buffer back. `9` means the graph wrote its own,
+  still-live buffer; `1` means the allocator handed the freed block to the
+  new buffer and the replay wrote into it. It reported `1` on the runtime
+  before the fix and reports `9` after.
 
 
 ```

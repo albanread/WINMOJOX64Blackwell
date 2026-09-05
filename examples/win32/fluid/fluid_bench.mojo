@@ -614,6 +614,46 @@ def main() raises:
         print("    without them")
 
 
+    # The graph must OWN the buffers its kernel nodes name. Mojo destroys a
+    # value at its last use, and a recorded kernel's buffer is used, as far
+    # as the source can see, exactly once: at the record. If the graph only
+    # kept the raw device address, the buffer was cuMemFree'd before the
+    # first replay and every replay after that was a use-after-free -- one
+    # that faulted or did not depending on whether the driver had reclaimed
+    # the pages yet, which is what made the frame-graph failure look like
+    # it was about clamped address arithmetic. This catches it without a
+    # fault: a same-sized allocation made after the record lands on the
+    # freed block if there was one, and the replay then writes into it.
+    print()
+    print("  recording-semantics probe (a graph owns its kernels' buffers):")
+    var owned_host = ctx.enqueue_create_host_buffer[DType.float32](4)
+
+    def build_owned(mut builder: DeviceGraphBuilder) raises {imm}:
+        var a = ctx.enqueue_create_buffer[DType.float32](4)
+        ctx.enqueue_memset(a, Float32(0))
+        with builder.recording_context() as rctx:
+            rctx.enqueue_function[tick_kernel](
+                a, Float32(1), grid_dim=1, block_dim=32
+            )
+        # `a` is not named again: without graph ownership it dies here.
+
+    var owned = DeviceGraph.create(ctx, build_owned)
+    var b = ctx.enqueue_create_buffer[DType.float32](4)
+    ctx.enqueue_memset(b, Float32(9))
+    ctx.synchronize()
+    owned.replay()
+    ctx.synchronize()
+    owned_host.enqueue_copy_from(b)
+    ctx.synchronize()
+    var untouched = owned_host[0]
+    print("    a later same-sized buffer after replay:", untouched,
+          " (9 means the graph wrote its own buffer;")
+    print("      1 means it wrote into memory the buffer had already lost)")
+    if untouched == Float32(9):
+        print("    verdict: the graph OWNS its buffers")
+    else:
+        print("    verdict: USE-AFTER-FREE - the graph held a dead pointer")
+
     # ---- 3. whole frames --------------------------------------------------
     # FLUID_BENCH_SKIP_CLASSIC=1 jumps straight to the graph section: no
     # classic use of the solver kernels before recording, which is the
