@@ -24,7 +24,8 @@
 # callback through CoreAudio's inRefCon, so nothing here needs a global and
 # two chips could run at once.
 
-from std.memory import Pointer, MutUntrackedOrigin, OpaquePointer
+from std.memory import Pointer, OpaquePointer
+from std.origin import MutUntrackedOrigin
 from std.ffi import external_call
 
 comptime P = OpaquePointer[MutUntrackedOrigin]

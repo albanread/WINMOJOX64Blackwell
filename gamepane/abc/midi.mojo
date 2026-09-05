@@ -11,7 +11,8 @@
 # durations transfer with no conversion and no rounding. That is not a
 # coincidence; it is why 480 was chosen in the model.
 
-from std.memory import Pointer, MutUntrackedOrigin, OpaquePointer
+from std.memory import Pointer, OpaquePointer
+from std.origin import MutUntrackedOrigin
 from std.ffi import external_call
 
 from .model import (

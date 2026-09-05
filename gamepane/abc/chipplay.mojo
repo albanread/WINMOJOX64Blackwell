@@ -15,7 +15,8 @@
 # of memory rather than a List: allocated once, before the unit starts, and
 # never resized.
 
-from std.memory import Pointer, MutUntrackedOrigin, OpaquePointer
+from std.memory import Pointer, OpaquePointer
+from std.origin import MutUntrackedOrigin
 from std.ffi import external_call
 
 from gamepane.api.audio import (
