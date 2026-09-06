@@ -51,4 +51,11 @@ from .keys import (
     KEY_X,
     KEY_Z,
 )
+from .sprites import (
+    SPR_ATLAS_DIM,
+    SPR_MAX_INST,
+    SPR_PAL_SLOTS,
+    SPR_PAL_WIDE,
+    Sprites,
+)
 from .window import GamePane, Frame, key_held, any_key_held, mouse_state

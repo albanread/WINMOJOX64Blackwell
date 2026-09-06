@@ -705,6 +705,240 @@ def create_buffer(device: Int, bytes: Int, bind: Int, usage: Int) raises -> Int:
     return buf
 
 
+def create_buffer_dynamic(device: Int, bytes: Int, bind: Int) raises -> Int:
+    """A DYNAMIC buffer the CPU writes every frame through Map.
+
+    D3D11_USAGE_DYNAMIC (2) + D3D11_CPU_ACCESS_WRITE (0x10000). The sprite
+    pass refills one of these per frame with WRITE_DISCARD and draws every
+    instance out of it; the alternative the old port took -- a DEFAULT
+    buffer updated per instance with UpdateSubresource -- is a round trip
+    per sprite.
+    """
+    var create_buf = com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[UInt32, MutAnyOrigin],
+            Int,
+            Pointer[Int, MutAnyOrigin],
+        ) thin abi("C") -> c_int,
+        "ID3D11Device",
+        "CreateBuffer",
+    ](_iface(device))
+    var desc = List[UInt32](length=6, fill=0)
+    desc[0] = UInt32(bytes)
+    desc[1] = UInt32(2)         # D3D11_USAGE_DYNAMIC
+    desc[2] = UInt32(bind)
+    desc[3] = UInt32(0x10000)   # D3D11_CPU_ACCESS_WRITE
+    var buf: Int = 0
+    var hr = create_buf(
+        _iface(device),
+        desc.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+        Int(0),
+        Pointer(to=buf).unsafe_origin_cast[MutAnyOrigin](),
+    )
+    if hr != 0 or buf == 0:
+        raise Error("CreateBuffer(dynamic) failed, hr = " + String(hr))
+    return buf
+
+
+def map_write_discard(
+    context: Int, resource: Int
+) raises -> Pointer[UInt8, MutUntrackedOrigin]:
+    """Open a dynamic resource for a whole-buffer rewrite.
+
+    WRITE_DISCARD (4) tells the driver the old contents are dead, so it can
+    hand back a fresh region rather than waiting for the GPU to finish with
+    the last one. That is what makes a per-frame refill free of a stall.
+    """
+    var map_fn = com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin], Int, UInt32, UInt32, UInt32,
+            Pointer[D3D11_MAPPED_SUBRESOURCE, MutAnyOrigin],
+        ) thin abi("C") -> c_int,
+        "ID3D11DeviceContext",
+        "Map",
+    ](_iface(context))
+    var mapped = D3D11_MAPPED_SUBRESOURCE()
+    var hr = map_fn(
+        _iface(context), resource, UInt32(0), UInt32(4), UInt32(0),
+        Pointer(to=mapped).unsafe_origin_cast[MutAnyOrigin](),
+    )
+    if hr != 0 or mapped.data == 0:
+        raise Error("Map failed, hr = " + String(hr))
+    return Pointer[UInt8, MutUntrackedOrigin](
+        unsafe_from_address=mapped.data
+    )
+
+
+def unmap(context: Int, resource: Int):
+    var unmap_fn = com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin], Int, UInt32
+        ) thin abi("C") -> NoneType,
+        "ID3D11DeviceContext",
+        "Unmap",
+    ](_iface(context))
+    unmap_fn(_iface(context), resource, UInt32(0))
+
+
+def create_blend_state(device: Int, alpha: Bool) raises -> Int:
+    """One of the reference's two blend states (gpu/blit.was:151-173).
+
+    Opaque: BlendEnable FALSE, write mask ALL -- the blend fields are
+    ignored. Alpha-over: SRC_ALPHA / INV_SRC_ALPHA with ADD, and
+    ONE / INV_SRC_ALPHA for the alpha channel so a sprite drawn over
+    another composites rather than replacing it.
+
+    D3D11_BLEND_DESC is AlphaToCoverageEnable, IndependentBlendEnable, then
+    eight RenderTarget entries of 32 bytes: BlendEnable, SrcBlend,
+    DestBlend, BlendOp, SrcBlendAlpha, DestBlendAlpha, BlendOpAlpha, and a
+    one-byte write mask with three bytes of padding. 8 + 8 * 32 = 264.
+    """
+    var desc = List[UInt32](length=66, fill=0)
+    if alpha:
+        desc[2] = UInt32(1)   # BlendEnable
+        desc[3] = UInt32(5)   # D3D11_BLEND_SRC_ALPHA
+        desc[4] = UInt32(6)   # D3D11_BLEND_INV_SRC_ALPHA
+        desc[5] = UInt32(1)   # D3D11_BLEND_OP_ADD
+        desc[6] = UInt32(2)   # D3D11_BLEND_ONE
+        desc[7] = UInt32(6)   # D3D11_BLEND_INV_SRC_ALPHA
+        desc[8] = UInt32(1)   # D3D11_BLEND_OP_ADD
+    desc[9] = UInt32(15)      # RenderTargetWriteMask = ALL
+
+    var create = com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[UInt32, MutAnyOrigin],
+            Pointer[Int, MutAnyOrigin],
+        ) thin abi("C") -> c_int,
+        "ID3D11Device",
+        "CreateBlendState",
+    ](_iface(device))
+    var state: Int = 0
+    var hr = create(
+        _iface(device),
+        desc.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+        Pointer(to=state).unsafe_origin_cast[MutAnyOrigin](),
+    )
+    if hr != 0 or state == 0:
+        raise Error("CreateBlendState failed, hr = " + String(hr))
+    return state
+
+
+def om_set_blend_state(context: Int, state: Int):
+    """Bind a blend state. A null factor and a full sample mask, which is
+    what both of the reference's states are bound with."""
+    var set_blend = com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin], Int,
+            Pointer[Float32, MutAnyOrigin], UInt32,
+        ) thin abi("C") -> NoneType,
+        "ID3D11DeviceContext",
+        "OMSetBlendState",
+    ](_iface(context))
+    var factor = List[Float32](length=4, fill=1.0)
+    set_blend(
+        _iface(context), state,
+        factor.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+        UInt32(0xFFFFFFFF),
+    )
+
+
+@fieldwise_init
+struct D3D11_INPUT_ELEMENT_DESC(Copyable, Movable):
+    """32 bytes. The four bytes of padding after SemanticIndex are real:
+    the semantic name is a pointer at +0 and has to stay 8-aligned, so the
+    u32 index at +8 is followed by Format at +12, InputSlot at +16,
+    AlignedByteOffset at +20, InputSlotClass at +24, InstanceDataStepRate
+    at +28. The reference spells this out because a hand-counted struct
+    here is the classic silent corruption."""
+
+    var SemanticName: Int
+    var SemanticIndex: UInt32
+    var Format: UInt32
+    var InputSlot: UInt32
+    var AlignedByteOffset: UInt32
+    var InputSlotClass: UInt32
+    var InstanceDataStepRate: UInt32
+
+
+def create_input_layout(
+    device: Int, mut elements: List[D3D11_INPUT_ELEMENT_DESC],
+    vs_ptr: Int, vs_size: Int,
+) raises -> Int:
+    """The per-instance attribute layout, validated against the vertex
+    shader's signature -- which is why the bytecode is passed in."""
+    var create = com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            Pointer[D3D11_INPUT_ELEMENT_DESC, MutAnyOrigin],
+            UInt32, Int, Int,
+            Pointer[Int, MutAnyOrigin],
+        ) thin abi("C") -> c_int,
+        "ID3D11Device",
+        "CreateInputLayout",
+    ](_iface(device))
+    var layout: Int = 0
+    var hr = create(
+        _iface(device),
+        elements.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+        UInt32(len(elements)), vs_ptr, vs_size,
+        Pointer(to=layout).unsafe_origin_cast[MutAnyOrigin](),
+    )
+    if hr != 0 or layout == 0:
+        raise Error("CreateInputLayout failed, hr = " + String(hr))
+    return layout
+
+
+def ia_set_input_layout(context: Int, layout: Int):
+    var set_layout = com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin], Int
+        ) thin abi("C") -> NoneType,
+        "ID3D11DeviceContext",
+        "IASetInputLayout",
+    ](_iface(context))
+    set_layout(_iface(context), layout)
+
+
+def ia_set_vertex_buffer(context: Int, buffer: Int, stride: Int):
+    var set_vb = com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin], UInt32, UInt32,
+            Pointer[Int, MutAnyOrigin],
+            Pointer[UInt32, MutAnyOrigin],
+            Pointer[UInt32, MutAnyOrigin],
+        ) thin abi("C") -> NoneType,
+        "ID3D11DeviceContext",
+        "IASetVertexBuffers",
+    ](_iface(context))
+    var slot = buffer
+    var strides = List[UInt32](length=1, fill=UInt32(stride))
+    var offsets = List[UInt32](length=1, fill=0)
+    set_vb(
+        _iface(context), UInt32(0), UInt32(1),
+        Pointer(to=slot).unsafe_origin_cast[MutAnyOrigin](),
+        strides.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+        offsets.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+    )
+
+
+def draw_instanced(context: Int, per_instance: Int, instances: Int):
+    """Every sprite in one call. The reference draws three thousand this
+    way; the old port issued one Draw per sprite."""
+    var draw_fn = com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin], UInt32, UInt32, UInt32, UInt32
+        ) thin abi("C") -> NoneType,
+        "ID3D11DeviceContext",
+        "DrawInstanced",
+    ](_iface(context))
+    draw_fn(
+        _iface(context), UInt32(per_instance), UInt32(instances),
+        UInt32(0), UInt32(0),
+    )
+
+
 def resolve_compiler() raises -> def (
     Int, Int, Int, Int, Int, Int, Int, UInt32, UInt32,
     Pointer[Int, MutAnyOrigin],
