@@ -31,7 +31,7 @@ from gamepane import (
 
 def main() raises:
     var pane = GamePane(String("Game pane - G0 canvas"), 1280, 720)
-    var canvas = GpuCanvas(pane.device, pane.context)
+    var canvas = GpuCanvas(pane.ctx, pane.device, pane.context)
 
     # Indices 16..255: a cyclic hue ramp, so adding a constant to the index
     # rotates every colour at once.

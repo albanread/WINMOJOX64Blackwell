@@ -58,4 +58,15 @@ from .sprites import (
     SPR_PAL_WIDE,
     Sprites,
 )
+from .buffers import GpuBuffer
+from .blitter import (
+    BlitRect,
+    OP_AND,
+    OP_OR,
+    OP_XOR,
+    Planes,
+    SLOT_COUNT,
+    SLOT_DATA_FIRST,
+    clip_blit,
+)
 from .window import GamePane, Frame, key_held, any_key_held, mouse_state

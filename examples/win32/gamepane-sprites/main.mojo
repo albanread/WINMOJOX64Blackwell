@@ -82,7 +82,7 @@ def _arrow() -> List[UInt8]:
 
 def main() raises:
     var pane = GamePane(String("Game pane - G3 sprites"), 1280, 720)
-    var canvas = GpuCanvas(pane.device, pane.context)
+    var canvas = GpuCanvas(pane.ctx, pane.device, pane.context)
     var sprites = Sprites(pane.device, pane.context)
 
     # ---- the background: G0's per-line palette ----------------------------

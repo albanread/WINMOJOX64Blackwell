@@ -28,8 +28,11 @@
 # so does this.
 # ===----------------------------------------------------------------------=== #
 
+from max.gpu.host import DeviceContext, HostBuffer
 from std.memory import Pointer
+from .blitter import Planes
 from .device import (
+    host_ptr,
     clear_render_target,
     create_pixel_shader,
     create_rasterizer_state,
@@ -136,8 +139,14 @@ struct GpuCanvas(Movable):
 
     var views: List[Int]
     """t0, t1, t2 -- built once so `present` binds without allocating."""
+    var staging: HostBuffer[DType.uint8]
+    """Pinned, kept for the life of the canvas: the bank's front buffer
+    lands here on its way to the texture. One allocation, not one a
+    frame."""
 
-    def __init__(out self, device: Int, context: Int) raises:
+    def __init__(
+        out self, ctx: DeviceContext, device: Int, context: Int
+    ) raises:
         self.device = device
         self.context = context
 
@@ -190,6 +199,10 @@ struct GpuCanvas(Movable):
         for i in range(PAL_LINE * CANVAS_H):
             self.pal_line[i * 4 + 3] = 255
 
+        self.staging = ctx.enqueue_create_host_buffer[DType.uint8](
+            CANVAS_W * CANVAS_H
+        )
+        ctx.synchronize()
         self.views = List[Int](length=3, fill=0)
         self.views[0] = self.srv_idx
         self.views[1] = self.srv_global
@@ -231,6 +244,34 @@ struct GpuCanvas(Movable):
         self.pal_line[o + 3] = 255
 
     # ── the frame ───────────────────────────────────────────────────────
+    def present_planes(
+        mut self, mut planes: Planes, rtv: Int, back_w: Int, back_h: Int
+    ) raises:
+        """Draw the bank's FRONT buffer.
+
+        The blits have to be finished before their bytes are read, because
+        they went out on the runtime's stream and this reads on the host --
+        two paths to one GPU with nothing ordering them. Then one copy
+        device-to-host into the pinned plane, and the ordinary upload.
+
+        That copy is the whole cost of not having CUDA/D3D11 interop:
+        345,600 bytes at 720x480, 0.13% of the bus at 60Hz. Registering the
+        texture with CUDA would let a kernel write it in place and remove
+        even this.
+        """
+        if planes.width != CANVAS_W or planes.height != CANVAS_H:
+            raise Error(
+                "present_planes: the bank and the canvas must agree on size"
+            )
+        planes.finish()
+        planes.read_front(self.staging)
+        planes.finish()
+        update_subresource(
+            self.context, self.tex_idx, host_ptr(self.staging), CANVAS_W
+        )
+        self._upload_palettes()
+        self._draw(rtv, back_w, back_h)
+
     def present(mut self, rtv: Int, back_w: Int, back_h: Int) raises:
         """Upload, bind, draw. The reference's GpuPresent, call for call.
 
@@ -244,6 +285,10 @@ struct GpuCanvas(Movable):
             self.idx.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin](),
             CANVAS_W,
         )
+        self._upload_palettes()
+        self._draw(rtv, back_w, back_h)
+
+    def _upload_palettes(mut self) raises:
         update_subresource(
             self.context, self.tex_global,
             self.pal_global.unsafe_ptr().unsafe_origin_cast[
@@ -259,6 +304,9 @@ struct GpuCanvas(Movable):
             PAL_LINE * 4,
         )
 
+    def _draw(mut self, rtv: Int, back_w: Int, back_h: Int) raises:
+        """Bind and draw. The reference's GpuPresent from the render
+        target onward, shared by both ways of filling the index plane."""
         om_set_render_targets(self.context, rtv)
         clear_render_target(self.context, rtv, 0.0, 0.0, 0.0)
         set_viewport(self.context, back_w, back_h)
