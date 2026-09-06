@@ -44,6 +44,8 @@ comptime MIDIPROP_SET = winkb_constant["MIDIPROP_SET"]()
 comptime MIDIPROP_TIMEDIV = winkb_constant["MIDIPROP_TIMEDIV"]()
 comptime MIDIPROP_TEMPO = winkb_constant["MIDIPROP_TEMPO"]()
 comptime MEVT_SHORTMSG = winkb_constant["MEVT_SHORTMSG"]()
+comptime CC_VOLUME = 7
+comptime CC_EXPRESSION = 11
 comptime MMSYSERR_NOERROR = winkb_constant["MMSYSERR_NOERROR"]()
 
 comptime EVENTS_PER_HEADER = 5000
@@ -180,11 +182,40 @@ def play_tune_gm(source: String) raises -> Bool:
     # event first at an equal tick. Marked with midi = -1 so the packer can
     # tell a program change from a note-off, which is the only place the two
     # are distinguishable once they are tuples.
+    # THE CHANNEL HAS TO BE TURNED UP, and this player never did it.
+    #
+    # A MIDI channel starts at whatever volume the synthesiser last left it
+    # at; the General MIDI default for CC7 is 100 of 127 and for CC11 is
+    # likewise not full. The Microsoft GS Wavetable Synth is quiet to begin
+    # with, so a cue arriving at the default sat about ten decibels under the
+    # chip effects -- measurable at the endpoint at 0.08 against the effects'
+    # 0.25, which in a game reads as "there is no music".
+    #
+    # Every real MIDI file player opens by setting volume and expression, and
+    # this is that. It is a mix decision rather than a bug fix, and it is the
+    # right place for one: the cues are written to be heard over the game.
+    #
+    # -2 marks a controller, as -1 marks a program change. Both ride at tick
+    # 0 and both sort ahead of every note, because the tie rule below puts a
+    # zero-velocity event first at an equal tick.
     var all = List[Tuple[Int, Int, Int, Int]]()
     for vi in range(len(tune.voices)):
+        # KEYED BY THE VOICE'S ABC NUMBER, NOT ITS ARRAY INDEX, and that
+        # distinction is the whole reason the program change did nothing
+        # when it was first added. A note event carries `ctx.voice`, which
+        # the parser sets to the number on the `V:` line -- 1 for `V:1` --
+        # while `tune.voices` is indexed from 0. `channel_for` is handed
+        # whichever it is given, so setup events addressed by array index
+        # landed on a DIFFERENT MIDI CHANNEL from the notes they were meant
+        # to configure. Measurably: sending CC7=20 and CC7=127 produced an
+        # identical endpoint peak, because neither reached the channel that
+        # was playing.
+        let num = tune.voices[vi].number
+        all.append((0, num, -2, (CC_VOLUME << 8) | 127))
+        all.append((0, num, -2, (CC_EXPRESSION << 8) | 127))
         let prog = tune.voices[vi].instrument
         if prog > 0:
-            all.append((0, vi, -1, prog))
+            all.append((0, num, -1, prog))
 
     for i in range(len(tune.events)):
         let ev = tune.events[i]
@@ -291,7 +322,19 @@ def play_tune_gm(source: String) raises -> Bool:
         var at = base + i * EVENT_STRIDE
         _poke32(at, 0, tick - last_tick)
         _poke32(at, 4, 0)
-        if all[i][2] < 0:
+        if all[i][2] == -2:
+            # A control change: 0xB0, controller number, value. Three bytes,
+            # like a note, but the status nibble is what makes it a setting
+            # rather than a sound.
+            _poke32(
+                at,
+                8,
+                (MEVT_SHORTMSG << 24)
+                | (0xB0 | channel)
+                | (((all[i][3] >> 8) & 0x7F) << 8)
+                | ((all[i][3] & 0x7F) << 16),
+            )
+        elif all[i][2] < 0:
             # A program change: 0xC0, one data byte, and no second. Two
             # bytes on the wire where a note is three, which is why it
             # cannot share the note path.

@@ -203,20 +203,40 @@ def _run() raises:
     else:
         print("  FAIL the cue's %%MIDI program did not survive parsing")
 
-    var started = play_tune_gm(TUNE_CHOIR)
-    print("  play_tune_gm accepted   :", started)
-    var gm_peak = _peak_over(meter, 900)
-    stop_tune_gm()
-    print("  general midi peak       :", gm_peak)
-    checks += 1
-    if started and gm_peak > idle + 0.01:
-        print("  PASS the system synthesiser sounded")
-        passes += 1
-    else:
-        print("  FAIL the general midi cue was silent")
-
+    # THE CHIP IS SHUT DOWN FIRST, so nothing but the synthesiser can move
+    # this endpoint, and the cue is metered over its WHOLE length -- it opens
+    # with `z4`, half a bar of rest, and a short window measures that silence
+    # and reports a synthesiser that is working perfectly as broken.
     stop_audio(thread)
     deck_free(deck)
+    _sleep(300)
+
+    var started = play_tune_gm(TUNE_CHOIR)
+    print("  play_tune_gm accepted   :", started)
+    var gm_peak = 0.0
+    for _ in range(5):
+        var p = _peak_over(meter, 1000)
+        if p > gm_peak:
+            gm_peak = p
+    stop_tune_gm()
+    print("  general midi peak       :", gm_peak)
+
+    # AND IT IS COMPARED WITH THE CHIP, not with an absolute number a
+    # different machine would not agree with. This is the check that catches
+    # the defect the program change first shipped with: the setup events were
+    # keyed by the voice's ARRAY INDEX while the notes carry its ABC NUMBER,
+    # so the volume and the instrument landed on a different MIDI channel
+    # from the music. It still played -- at 0.08 against the effects' 0.25,
+    # on the wrong patch -- which sounds exactly like a game with no music.
+    checks += 1
+    if started and gm_peak > best_sfx * 0.4:
+        print("  PASS the synthesiser sounded, and at a comparable level")
+        passes += 1
+    else:
+        print(
+            "  FAIL the general midi cue was silent or far too quiet --",
+            "expected more than", best_sfx * 0.4,
+        )
 
     print("")
     print("gamepane-audio:", passes, "of", checks, "audible")
