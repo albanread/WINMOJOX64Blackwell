@@ -269,7 +269,7 @@ struct GpuCanvas(Movable):
         update_subresource(
             self.context, self.tex_idx, host_ptr(self.staging), CANVAS_W
         )
-        self._upload_palettes()
+        self.upload_palettes()
         self._draw(rtv, back_w, back_h)
 
     def present(mut self, rtv: Int, back_w: Int, back_h: Int) raises:
@@ -285,10 +285,16 @@ struct GpuCanvas(Movable):
             self.idx.unsafe_ptr().unsafe_origin_cast[MutUntrackedOrigin](),
             CANVAS_W,
         )
-        self._upload_palettes()
+        self.upload_palettes()
         self._draw(rtv, back_w, back_h)
 
-    def _upload_palettes(mut self) raises:
+    def upload_palettes(mut self) raises:
+        """Both palette textures, host to GPU.
+
+        Public, and not only because `present` uses it: the TILE layer
+        samples these two textures without ever touching the canvas's
+        index plane, so a game that draws tiles instead of a canvas still
+        needs the palettes uploaded and has nothing else to call."""
         update_subresource(
             self.context, self.tex_global,
             self.pal_global.unsafe_ptr().unsafe_origin_cast[
@@ -316,6 +322,26 @@ struct GpuCanvas(Movable):
         ps_set_shader_resources(self.context, self.views)
         ia_set_topology(self.context, _TOPOLOGY_TRIANGLELIST)
         draw(self.context, 3)
+
+
+def _cstr(s: String) -> List[UInt8]:
+    """A string's bytes plus a terminator, for an argument D3D reads as a
+    C string.
+
+    `_bytes` deliberately does not add one -- its callers pass an explicit
+    length -- and that is exactly the trap. `D3D11_INPUT_ELEMENT_DESC`'s
+    SemanticName is an `LPCSTR` with no length beside it, so a buffer
+    without a terminator makes CreateInputLayout read past the end of the
+    allocation and compare whatever is there against the shader's signature.
+    It matched for months because the byte after the string happened to be
+    zero; changing an unrelated build flag moved the allocations and every
+    layout in the sprite pass started failing with E_INVALIDARG. The same
+    hazard is already handled inside `compile_shader_blob`, which terminates
+    its entry point and target before the call.
+    """
+    var out = _bytes(s)
+    out.append(0)
+    return out^
 
 
 def _bytes(s: String) -> List[UInt8]:

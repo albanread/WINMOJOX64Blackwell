@@ -13,10 +13,41 @@
 #
 # Taken from MojoCocoa's `std/objc/classes.mojo`, where it lives because the
 # Mac port needed it first. Nothing about it is Cocoa: `pop.global_alloc` is a
-# KGEN primitive, the storage is zero-initialised, and KGEN deduplicates by
-# name so every call site with the same name gets the same slot. It is here
-# rather than there so that a client of it -- `ide/lsp.mojo` -- can be shared
-# between the two ports without either importing the other's platform module.
+# KGEN primitive and the storage is zero-initialised. It is here rather than
+# there so that a client of it -- `ide/lsp.mojo` -- can be shared between the
+# two ports without either importing the other's platform module.
+#
+# THIS ONLY WORKS IN AN UNOPTIMIZED BUILD, and the failure is silent.
+#
+# The deduplication is KGEN's, and it does not survive optimization on this
+# target. Unoptimized, every call naming the same slot returns the same
+# address and this behaves as documented. Optimized, each call to
+# `pop.global_alloc` emits a FRESH allocation -- two calls in one function
+# return addresses eight bytes apart:
+#
+#     comptime G = named_global["thing", Int]
+#     G()[] = 1
+#     print(G()[])        # --no-optimization: 1.   optimized: 0.
+#
+# Nothing warns. The storage is zero-initialised, so a global that is being
+# written through one slot and read through another is indistinguishable from
+# one nobody has written to yet -- which is what makes this worth a warning
+# block rather than a footnote.
+#
+# Binding the POINTER at module scope instead of the function does NOT fix
+# it: `comptime` is an alias, substituted at each use, so every use still
+# evaluates its own `pop.global_alloc`. (And the same binding inside a
+# function body is rejected outright: "cannot use a dynamic value in comptime
+# initializer".) There is no spelling of this that is safe under
+# optimization; the build flag is the fix.
+#
+# Every consumer in this repository is therefore built with
+# `--no-optimization`: `tools/build-ide.ps1` (Griddle, 174 of these across 19
+# files) and `examples/win32/build-x64.sh` (the game pane). Griddle's
+# `-Optimized` path does not have that protection and every global in it is
+# silently dead. `gamepane/window.mojo` checks its own global at startup and
+# raises rather than running with no input, which is the pattern to copy
+# anywhere this matters.
 # ===----------------------------------------------------------------------=== #
 
 from std.collections.string.string_span import _get_kgen_string
@@ -29,9 +60,11 @@ def named_global[name: StaticString, T: AnyType]() -> Pointer[
     """A zero-initialised process global of type `T`, shared by name.
 
     One storage location per name, for state a captureless callback has to be
-    able to find. The name is a compile-time string and the deduplication is
-    KGEN's, so two call sites naming the same slot get the same memory without
-    either having to know about the other.
+    able to find.
+
+    Build with `--no-optimization`. The name-based deduplication this relies
+    on does not survive optimization, and when it fails it fails silently --
+    see the note at the top of this file.
 
     Parameters:
         name: The slot's name. Namespace it -- "lsp.task", not "task" --

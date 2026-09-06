@@ -923,6 +923,62 @@ def ia_set_vertex_buffer(context: Int, buffer: Int, stride: Int):
     )
 
 
+def vs_set_constant_buffers(context: Int, buffer: Int):
+    """One constant buffer at VERTEX slot b0.
+
+    The text layer's transform lives here and only here -- the reference
+    binds it VS-side and never touches PSSetConstantBuffers, because the
+    transform moves the glyph quad and the pixel shader has no opinion about
+    where the quad ended up.
+
+    Both of these take a POINTER TO AN ARRAY of interface pointers, not an
+    interface pointer, which is the mistake to make once: passing the buffer
+    itself compiles, binds whatever the buffer's first eight bytes happen to
+    be, and produces a shader reading garbage constants with no error
+    anywhere. A one-element `List[Int]` is the array."""
+    var setter = com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            UInt32,                        # StartSlot
+            UInt32,                        # NumBuffers
+            Pointer[Int, MutAnyOrigin],    # ppConstantBuffers
+        ) thin abi("C") -> NoneType,
+        "ID3D11DeviceContext",
+        "VSSetConstantBuffers",
+    ](_iface(context))
+    var arr = List[Int](length=1, fill=buffer)
+    setter(
+        _iface(context), UInt32(0), UInt32(1),
+        arr.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+    )
+    _ = arr
+
+
+def ps_set_constant_buffers(context: Int, buffer: Int):
+    """One constant buffer at PIXEL slot b0.
+
+    The tile layer's scroll offsets and the compositor's colour key both
+    arrive this way. Every pass in the reference re-binds its own buffer at
+    b0 immediately before drawing rather than sharing slots by convention --
+    which is why four layers can all claim b0 and none of them collide."""
+    var setter = com_method_of[
+        def (
+            OpaquePointer[MutUntrackedOrigin],
+            UInt32,
+            UInt32,
+            Pointer[Int, MutAnyOrigin],
+        ) thin abi("C") -> NoneType,
+        "ID3D11DeviceContext",
+        "PSSetConstantBuffers",
+    ](_iface(context))
+    var arr = List[Int](length=1, fill=buffer)
+    setter(
+        _iface(context), UInt32(0), UInt32(1),
+        arr.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin](),
+    )
+    _ = arr
+
+
 def draw_instanced(context: Int, per_instance: Int, instances: Int):
     """Every sprite in one call. The reference draws three thousand this
     way; the old port issued one Draw per sprite."""

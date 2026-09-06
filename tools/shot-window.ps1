@@ -25,8 +25,15 @@ param(
     [string]$Title = "",
     [string]$Out = "window.png",
     [int]$SettleMs = 2500,
-    [int]$TimeoutMs = 20000
+    [int]$TimeoutMs = 20000,
+    [int[]]$HoldVk = @()
 )
+
+# -HoldVk presses and HOLDS the given virtual key codes across the capture,
+# with keybd_event -- real input, not a synthesised WM_KEYDOWN. A pane that
+# reads its keys through GetAsyncKeyState or through the message queue both
+# see it, which is the point: SendMessage would prove only that the handler
+# runs, not that the key ever reached the window.
 
 $ErrorActionPreference = "Stop"
 
@@ -53,6 +60,11 @@ public class WinShot {
     // Per-monitor DPI aware, so a client rect in physical pixels is not
     // scaled behind our back on a display that is not at 100%.
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] static extern void keybd_event(
+        byte vk, byte scan, uint flags, IntPtr extra);
+
+    public static void KeyDown(byte vk) { keybd_event(vk, 0, 0, IntPtr.Zero); }
+    public static void KeyUp(byte vk)   { keybd_event(vk, 0, 2, IntPtr.Zero); }
 
     public static void Raise(IntPtr h) {
         ShowWindow(h, 9);                 // SW_RESTORE
@@ -113,7 +125,12 @@ if ($hwnd -eq [IntPtr]::Zero) { $proc.Kill(); throw "no window within ${TimeoutM
 [WinShot]::Raise($hwnd)
 Start-Sleep -Milliseconds $SettleMs
 
+foreach ($vk in $HoldVk) { [WinShot]::KeyDown([byte]$vk) }
+if ($HoldVk.Count -gt 0) { Start-Sleep -Milliseconds 400 }
+
 $report = [WinShot]::Capture($hwnd, (Join-Path (Get-Location) $Out))
+
+foreach ($vk in $HoldVk) { [WinShot]::KeyUp([byte]$vk) }
 Write-Output "title : $($proc.MainWindowTitle)"
 Write-Output "shot  : $Out -- $report"
 

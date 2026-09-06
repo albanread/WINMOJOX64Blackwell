@@ -48,6 +48,18 @@ export MODULAR_MOJO_MAX_IMPORT_PATH="$repo/bazel-bin/mojo/stdlib/std"
 export MODULAR_MOJO_MAX_COMPILERRT_PATH="$repo/bazel-bin/KGEN/KGENCompilerRTShared.dll"
 export MODULAR_MOJO_MAX_WINKB_PATH="$winkb"
 
+# --no-optimization is NOT a convenience and NOT a debug default. The pane's
+# input state lives in `named_global` slots, and `pop.global_alloc`'s
+# name-based deduplication does not survive optimization on this target: an
+# optimized build gives every call site its own private zero-filled slot, so
+# the key table's address is stored into one and read back from another as
+# NULL. The pane then reports every key as up, forever, with no diagnostic.
+# `tools/build-ide.ps1` passes the same flag for the same reason. Set
+# OPTIMIZE=1 to override -- the pane raises at startup rather than running
+# blind, so you will know rather than wonder.
+opt=()
+[[ "${OPTIMIZE:-0}" == "1" ]] || opt=(--no-optimization)
+
 extra=(-I "$repo")
 [[ -d "$repo/bazel-bin/max/mojo/max" ]] && extra+=(-I "$repo/bazel-bin/max/mojo/max")
 if [[ -f "$repo/bazel-bin/dragon/runtime/dragonrt.lib" ]]; then
@@ -58,6 +70,7 @@ if [[ -f "$repo/bazel-bin/nvptx/runtime/nvptxrt.if.lib" ]]; then
 fi
 
 "$repo/bazel-bin/KGEN/tools/mojo/mojo.exe" build \
+  "${opt[@]}" \
   "${extra[@]}" \
   -o "$out/$example.exe" \
   "$repo/examples/win32/$example/main.mojo" "$@"

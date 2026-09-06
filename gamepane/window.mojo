@@ -41,6 +41,7 @@ from std.windows.gui import (
     win32,
 )
 
+from .keys import ACT_COUNT, KEY_COUNT, KEY_ESCAPE, action_keys
 from .device import (
     create_device_and_swapchain,
     create_render_target_view,
@@ -48,24 +49,80 @@ from .device import (
 )
 
 
-# ── input state, shared with the window procedure ────────────────────────────
+# ── input state, shared with the window procedure ────────────────────
 #
-# A window procedure is captureless -- Windows calls it -- so the held-key
-# block and the mouse record live in one allocation whose address a
-# named_global carries. There is one game window per process, which is the
-# same reason the Metal backend reached for named_globals: a method the
-# runtime calls captures nothing.
+# A window procedure is captureless -- Windows calls it -- so the key tables
+# and the mouse record live in one allocation whose address a named_global
+# carries. There is one game window per process, which is the same reason the
+# Metal backend reached for named_globals: a method the runtime calls captures
+# nothing.
+#
+# THE TABLE IS THE REFERENCE'S, and its shape is the whole design
+# (gpu/input.was:26-31). Three parallel 256-byte planes plus the eight
+# actions, in one block:
+#
+#     [   0.. 255]  down    1 while the key is held. Written by the wndproc.
+#     [ 256.. 511]  prev    what `down` was at the last sweep.
+#     [ 512.. 767]  edge    1 for exactly one frame, on the press.
+#     [ 768.. 775]  actDown
+#     [ 776.. 783]  actEdge
+#     [ 784.. 791]  forced  sim_action's overrides, OR'd in by the sweep.
+#
+# Indexed by WINDOWS VIRTUAL KEY CODE, 0..255, with no translation at all.
+# The block was 128 bytes indexed by Mac code; 128 is not merely untidy under
+# VK indexing, it is a heap overflow, because F1 is 0x70 and every OEM
+# punctuation key is above 0xB9.
 
-comptime _HELD_PTR = named_global["gamepane.d3d11.held", Int]
-comptime _MOUSE_PTR = named_global["gamepane.d3d11.mouse", Int]
+comptime _KEY_DOWN = 0
+comptime _KEY_PREV = KEY_COUNT
+comptime _KEY_EDGE = KEY_COUNT * 2
+comptime _ACT_DOWN = KEY_COUNT * 3
+comptime _ACT_EDGE = KEY_COUNT * 3 + ACT_COUNT
+comptime _ACT_FORCED = KEY_COUNT * 3 + ACT_COUNT * 2
+comptime _INPUT_BYTES = KEY_COUNT * 3 + ACT_COUNT * 3
+
+comptime _HELD_PTR = named_global["gamepane.input.keys", Int]
+comptime _MOUSE_PTR = named_global["gamepane.input.mouse", Int]
+"""The two process globals -- AND THEY ONLY WORK IN AN UNOPTIMIZED BUILD.
+
+`named_global` is `pop.global_alloc`, whose deduplication by name does not
+survive optimization on this target. Unoptimized, every call site naming
+"gamepane.input.keys" resolves to one slot, which is the contract. Optimized,
+each call emits a FRESH eight-byte global: `_ensure_input_state` stores the
+block's address into its own slot and `key_down` reads a different one, gets
+the zero it was initialised with, and answers False for every key forever.
+Nothing warns, because a global nobody has written to looks exactly the same.
+
+That is why `examples/win32/build-x64.sh` passes `--no-optimization`, why
+`tools/build-ide.ps1` does too, and why `_ensure_input_state` checks its own
+work below rather than trusting it. The full account is at the top of
+std/sys/_globals.mojo.
+
+The names are new (`gamepane.d3d11.held` before). Deliberate: the block's
+size and its index space both changed, and a stale image finding a 128-byte
+allocation under a name that now promises 792 is worth a rename to avoid."""
 
 
-def _ensure_input_state():
+def _ensure_input_state() raises:
     if _HELD_PTR()[] == 0:
-        var held = unsafe_alloc[UInt8](128, alignment=1)
-        for i in range(128):
-            held[unsafe_offset=i] = 0
-        _HELD_PTR()[] = Int(held)
+        var block = unsafe_alloc[UInt8](_INPUT_BYTES, alignment=1)
+        for i in range(_INPUT_BYTES):
+            block[unsafe_offset=i] = 0
+        _HELD_PTR()[] = Int(block)
+        # Read it back THROUGH A DIFFERENT FUNCTION, which is the only way to
+        # see the failure described above: within one function the compiler
+        # may well fold two `named_global` calls together, so a check written
+        # inline here would pass in a build where every other reader is
+        # looking at its own private slot. `_input_block` is a real call, and
+        # if it does not find what was just written then this binary was
+        # built optimized and the pane has no input at all.
+        if Int(_input_block()) != Int(block):
+            raise Error(
+                "gamepane: the input globals did not survive the build."
+                " named_global's name-based deduplication does not survive"
+                " optimization -- build with --no-optimization"
+                " (examples/win32/build-x64.sh does this by default)."
+            )
     if _MOUSE_PTR()[] == 0:
         # x, y as Float64, then buttons: bit 0 left, bit 1 right.
         var mouse = unsafe_alloc[Float64](3, alignment=8)
@@ -75,21 +132,116 @@ def _ensure_input_state():
         _MOUSE_PTR()[] = Int(mouse)
 
 
-def key_held(code: Int) -> Bool:
-    """Whether the key with this api-tier code is down, as of the last pump.
-
-    The api's codes are the macOS virtual key codes the Metal backend
-    reports; the pump translates `VK_*` into them, which is the design's
-    rule -- a second platform maps its codes, and a game does not change.
-    """
-    if _HELD_PTR()[] == 0:
-        return False
-    if code < 0 or code >= 128:
-        return False
-    var held = Pointer[UInt8, MutUntrackedOrigin](
+def _input_block() -> Pointer[UInt8, MutUntrackedOrigin]:
+    return Pointer[UInt8, MutUntrackedOrigin](
         unsafe_from_address=_HELD_PTR()[]
     )
-    return held[unsafe_offset=code] != 0
+
+
+def key_down(code: Int) -> Bool:
+    """Is this virtual key held, as of the last pump?
+
+    Out of range answers False rather than raising, which is the reference's
+    behaviour too (`cmp ecx, KEY_COUNT / jae`) -- a game that asks about a
+    key this keyboard does not have gets a truthful no."""
+    if _HELD_PTR()[] == 0 or code < 0 or code >= KEY_COUNT:
+        return False
+    return _input_block()[unsafe_offset = _KEY_DOWN + code] != 0
+
+
+def key_held(code: Int) -> Bool:
+    """`key_down` under its older name, kept because games call it."""
+    return key_down(code)
+
+
+def key_hit(code: Int) -> Bool:
+    """Was this key pressed THIS frame -- the edge, not the level?
+
+    True for exactly one pump after the press and never again until the key
+    is released and pressed once more. This is what a menu wants; `key_down`
+    is what a thrust key wants. The edge is latched by `input_poll`, so a
+    frame that never pumps sees the same edge twice."""
+    if _HELD_PTR()[] == 0 or code < 0 or code >= KEY_COUNT:
+        return False
+    return _input_block()[unsafe_offset = _KEY_EDGE + code] != 0
+
+
+def input_poll():
+    """The sweep: every key at once, once a frame.
+
+    This is the reference's InputPoll (gpu/input.was:100-219) and the piece
+    that makes edges possible at all. It walks the WHOLE 256-key table --
+    not a list of keys anyone registered an interest in -- computing
+
+        edge = down AND NOT prev ;  prev = down
+
+    and then recomputes the eight actions from the keys underneath them,
+    latching their edges the same way. Sweeping all 256 rather than a
+    subscription list is what lets `key_hit` work for a key nobody declared,
+    and it is 256 byte compares -- cheaper than the branch that would decide
+    whether to do it.
+
+    `pump` calls this once per iteration, so a game never has to."""
+    if _HELD_PTR()[] == 0:
+        return
+    var b = _input_block()
+
+    for i in range(KEY_COUNT):
+        var now = b[unsafe_offset = _KEY_DOWN + i]
+        var was = b[unsafe_offset = _KEY_PREV + i]
+        b[unsafe_offset = _KEY_EDGE + i] = 1 if (
+            now != 0 and was == 0
+        ) else 0
+        b[unsafe_offset = _KEY_PREV + i] = now
+
+    for a in range(ACT_COUNT):
+        var pair = action_keys(a)
+        var now: UInt8 = 0
+        if (
+            b[unsafe_offset = _KEY_DOWN + pair[0]] != 0
+            or b[unsafe_offset = _KEY_DOWN + pair[1]] != 0
+            or b[unsafe_offset = _ACT_FORCED + a] != 0
+        ):
+            now = 1
+        var was = b[unsafe_offset = _ACT_DOWN + a]
+        b[unsafe_offset = _ACT_EDGE + a] = 1 if (
+            now != 0 and was == 0
+        ) else 0
+        b[unsafe_offset = _ACT_DOWN + a] = now
+
+
+def action(act: Int) -> Bool:
+    """Is this device-independent action held? The tier a game should use."""
+    if _HELD_PTR()[] == 0 or act < 0 or act >= ACT_COUNT:
+        return False
+    return _input_block()[unsafe_offset = _ACT_DOWN + act] != 0
+
+
+def action_hit(act: Int) -> Bool:
+    """Was this action triggered this frame?"""
+    if _HELD_PTR()[] == 0 or act < 0 or act >= ACT_COUNT:
+        return False
+    return _input_block()[unsafe_offset = _ACT_EDGE + act] != 0
+
+
+def sim_action(act: Int, down: Bool):
+    """Force an action on or off with no key at all.
+
+    The reference's SimAction, and the reason it exists is worth keeping:
+    introspection drives the game. A headless run sets FIRE, steps a frame
+    and reads the result back, which is a test rather than a recording of
+    one. The forced bit is OR'd in by the sweep, so a forced action and a
+    real key press are indistinguishable downstream."""
+    if _HELD_PTR()[] == 0 or act < 0 or act >= ACT_COUNT:
+        return
+    # Bound to a local first, and that is not style. Storing through the
+    # rvalue -- `_input_block()[unsafe_offset = ...] = v` -- compiles and
+    # writes nothing: the returned pointer is a temporary whose last use is
+    # the subscript, so the store goes to a value the compiler has already
+    # decided is dead. Every other writer in this file binds it first, this
+    # one did not, and the demo's latch check is what caught it.
+    var b = _input_block()
+    b[unsafe_offset = _ACT_FORCED + act] = 1 if down else 0
 
 
 def mouse_state() -> Tuple[Float64, Float64, Bool, Bool]:
@@ -111,85 +263,38 @@ def mouse_state() -> Tuple[Float64, Float64, Bool, Bool]:
 def any_key_held() -> Bool:
     """Is ANY key down? An attract mode needs this and nothing else: it is
     not interested in which key woke the cabinet up, only that somebody
-    touched it."""
+    touched it.
+
+    Under VK indexing this now sees modifiers too, which it could not before
+    -- the old table dropped every key it had no Mac code for, so Shift was
+    invisible. Holding Shift now counts as touching the cabinet, which is
+    what an arcade operator would say is correct."""
     if _HELD_PTR()[] == 0:
         return False
-    var held = Pointer[UInt8, MutUntrackedOrigin](
-        unsafe_from_address=_HELD_PTR()[]
-    )
-    for i in range(128):
-        if held[unsafe_offset=i] != 0:
+    var b = _input_block()
+    for i in range(KEY_COUNT):
+        if b[unsafe_offset = _KEY_DOWN + i] != 0:
             return True
     return False
 
 
 def clear_input():
-    """Every key up, every button up. The stuck-key hazard on focus change
-    is not a Windows speciality, but it is not the game's either --
-    WM_KILLFOCUS is handled the way the Metal backend handles resignKey."""
+    """Every key up, every action off, every button up.
+
+    The stuck-key hazard on focus change is not a Windows speciality, but it
+    is not the game's either -- WM_KILLFOCUS is handled the way the Metal
+    backend handled resignKey. `prev` is cleared with the rest, so the first
+    key pressed after focus returns registers as an edge rather than being
+    swallowed as "already down"."""
     if _HELD_PTR()[] != 0:
-        var held = Pointer[UInt8, MutUntrackedOrigin](
-            unsafe_from_address=_HELD_PTR()[]
-        )
-        for i in range(128):
-            held[unsafe_offset=i] = 0
+        var b = _input_block()
+        for i in range(_INPUT_BYTES):
+            b[unsafe_offset=i] = 0
     if _MOUSE_PTR()[] != 0:
         var mouse = Pointer[Float64, MutUntrackedOrigin](
             unsafe_from_address=_MOUSE_PTR()[]
         )
         mouse.unsafe_offset(2)[] = 0.0
-
-
-# The translation table, VK code -> api-tier code. Written out rather than
-# computed: macOS's codes are not in numeric order past 3, which is why the
-# api spells them out too. A game that declares a key this table has not
-# met is a game for the next sprint, and `key_held` answers False honestly.
-def _mac_code(vk: Int) -> Int:
-    if vk == 0x25:
-        return 123  # left
-    if vk == 0x27:
-        return 124  # right
-    if vk == 0x28:
-        return 125  # down
-    if vk == 0x26:
-        return 126  # up
-    if vk == 0x20:
-        return 49  # space
-    if vk == 0x1B:
-        return 53  # escape
-    if vk == 0x0D:
-        return 36  # return
-    if vk == 0x31:
-        return 18  # 1
-    if vk == 0x32:
-        return 19  # 2
-    if vk == 0x33:
-        return 20  # 3
-    if vk == 0x34:
-        return 21  # 4
-    if vk == 0x35:
-        return 23  # 5
-    if vk == 0x36:
-        return 22  # 6
-    if vk == 0x41:
-        return 0  # A
-    if vk == 0x53:
-        return 1  # S
-    if vk == 0x44:
-        return 2  # D
-    if vk == 0x5A:
-        return 6  # Z
-    if vk == 0x58:
-        return 7  # X
-    if vk == 0x51:
-        return 12  # Q
-    if vk == 0x57:
-        return 13  # W
-    if vk == 0x45:
-        return 14  # E
-    if vk == 0x52:
-        return 15  # R
-    return -1
 
 
 # The window procedure. Windows calls it, so it must never raise, and
@@ -228,11 +333,15 @@ def gamepane_wndproc(
                     unsafe_from_address=_HELD_PTR()[]
                 )
                 var down = message == wm_keydown or message == wm_syskeydown
-                var mac = _mac_code(Int(wparam & 0xFF))
-                if mac >= 0:
-                    held[unsafe_offset=mac] = UInt8(1 if down else 0)
+                # No translation. wParam IS the index -- Windows delivers a
+                # virtual key code in 0..255 for these four messages, and the
+                # table is 256 wide, so the mask states that fact rather than
+                # guarding against anything.
+                held[unsafe_offset = _KEY_DOWN + Int(wparam & 0xFF)] = UInt8(
+                    1 if down else 0
+                )
                 # ESC from a fullscreen pane would otherwise beep.
-                if message == wm_syskeydown and Int(wparam) == 0x1B:
+                if message == wm_syskeydown and Int(wparam) == KEY_ESCAPE:
                     return 0
 
         var wm_mousemove = UInt32(winkb_constant["WM_MOUSEMOVE"]())
@@ -404,6 +513,14 @@ struct GamePane(Movable):
                 return False
             _ = translate(com_addr(msg))
             _ = dispatch(com_addr(msg))
+
+        # The sweep, after the queue is drained and before the game looks.
+        # Order matters both ways: run it before dispatching and every edge
+        # is a frame late; run it twice in a frame and every edge is lost,
+        # because the second sweep sees `prev` already caught up. One call,
+        # here, is the contract -- which is why `input_poll` is exported but
+        # a game should never need to call it.
+        input_poll()
 
         var now = Int(performance_counter())
         var hz = performance_frequency()

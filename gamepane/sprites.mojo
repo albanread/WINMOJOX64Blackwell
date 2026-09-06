@@ -25,7 +25,7 @@
 # ===----------------------------------------------------------------------=== #
 
 from std.memory import Pointer
-from .canvas import CANVAS_H, CANVAS_W, _bytes
+from .canvas import CANVAS_H, CANVAS_W, _bytes, _cstr
 from .device import (
     D3D11_INPUT_ELEMENT_DESC,
     compile_shader_blob,
@@ -199,11 +199,11 @@ struct Sprites(Movable):
         # The per-instance attributes. One slot, PER_INSTANCE_DATA, step 1:
         # the quad's four vertices come from SV_VertexID, so every attribute
         # here advances once per SPRITE rather than once per vertex.
-        var sem_scr = _bytes(String("INSTSCR"))
-        var sem_atl = _bytes(String("INSTATL"))
-        var sem_wh = _bytes(String("INSTWH"))
-        var sem_pal = _bytes(String("INSTPAL"))
-        var sem_a = _bytes(String("INSTA"))
+        var sem_scr = _cstr(String("INSTSCR"))
+        var sem_atl = _cstr(String("INSTATL"))
+        var sem_wh = _cstr(String("INSTWH"))
+        var sem_pal = _cstr(String("INSTPAL"))
+        var sem_a = _cstr(String("INSTA"))
         var elements = List[D3D11_INPUT_ELEMENT_DESC]()
         elements.append(D3D11_INPUT_ELEMENT_DESC(
             Int(sem_scr.unsafe_ptr()), 0, _FORMAT_R32G32_FLOAT, 0, 0,
