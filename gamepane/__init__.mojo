@@ -151,6 +151,21 @@ from .audio import (
     stop_tune,
     stop_tune_gm,
 )
+from .plane import Plane, TRANSPARENT, hsv_to_rgb
+from .spritedata import (
+    SPRITE_COLORS,
+    SpriteBitmap,
+    parse_sprite_rows,
+    sprites_overlap,
+)
+from .panes import (
+    IndexedPane,
+    ShaderPane,
+    SpriteDef,
+    SpriteInstance,
+    Sprites as SpritePool,
+    TextOverlay,
+)
 from .compositor import (
     BLIT_ALPHA,
     BLIT_COPY,

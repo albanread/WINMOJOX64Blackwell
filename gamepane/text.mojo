@@ -76,11 +76,18 @@ works only because the glyph is five columns wide and the rest discards."""
 
 comptime TXT_MAX_INST = 4096
 comptime TXT_STRIDE = 32
-"""Eight floats: screenX, screenY, atlasX, atlasY, r, g, b, pad."""
+"""Eight floats: screenX, screenY, atlasX, atlasY, r, g, b, SCALE.
+
+The eighth was a pad. It is the per-glyph scale now, which costs nothing --
+the stride was already 32 for alignment -- and buys a HUD that can put its
+score at 2x beside its debug line at 1x in the same draw call. The scale
+multiplies the QUAD only; the atlas coordinate is untouched, because the cell
+is 8x8 whatever size it is drawn at."""
 
 comptime _FORMAT_R8_UINT = 62
 comptime _FORMAT_R32G32_FLOAT = 16
 comptime _FORMAT_R32G32B32_FLOAT = 6
+comptime _FORMAT_R32_FLOAT = 41
 comptime _BIND_SHADER_RESOURCE = 8
 comptime _BIND_VERTEX_BUFFER = 1
 comptime _BIND_CONSTANT_BUFFER = 4
@@ -96,10 +103,11 @@ cbuffer TXF:register(b0){float4 txf;};
 struct VO{float4 p:SV_Position;float2 atl:TEXCOORD0;nointerpolation float3 col:TEXCOORD1;
           nointerpolation float2 org:TEXCOORD2;};
 VO TXVS(uint vid:SV_VertexID,
-        float2 scr:INSTPOS, float2 atl:INSTCEL, float3 col:INSTCOL){
+        float2 scr:INSTPOS, float2 atl:INSTCEL, float3 col:INSTCOL,
+        float sc:INSTSCL){
   VO o;
   float2 corner=float2((float)(vid&1u),(float)((vid>>1)&1u));
-  float2 pos=scr+corner*8.0;
+  float2 pos=scr+corner*8.0*sc;
   float2 op=pos*txf.xy+txf.zw;
   o.p=float4(op.x/320.0-1.0, 1.0-op.y/180.0, 0.0, 1.0);
   o.atl=atl+corner*8.0;
@@ -299,6 +307,7 @@ struct Text(Movable):
         var sem_pos = _cstr(String("INSTPOS"))
         var sem_cel = _cstr(String("INSTCEL"))
         var sem_col = _cstr(String("INSTCOL"))
+        var sem_scl = _cstr(String("INSTSCL"))
         var elements = List[D3D11_INPUT_ELEMENT_DESC]()
         elements.append(D3D11_INPUT_ELEMENT_DESC(
             Int(sem_pos.unsafe_ptr()), 0, _FORMAT_R32G32_FLOAT, 0, 0,
@@ -312,6 +321,10 @@ struct Text(Movable):
             Int(sem_col.unsafe_ptr()), 0, _FORMAT_R32G32B32_FLOAT, 0, 16,
             _PER_INSTANCE_DATA, 1,
         ))
+        elements.append(D3D11_INPUT_ELEMENT_DESC(
+            Int(sem_scl.unsafe_ptr()), 0, _FORMAT_R32_FLOAT, 0, 28,
+            _PER_INSTANCE_DATA, 1,
+        ))
         self.layout = create_input_layout(
             device, elements, vs_blob[0], vs_blob[1]
         )
@@ -321,6 +334,7 @@ struct Text(Movable):
         _ = sem_pos
         _ = sem_cel
         _ = sem_col
+        _ = sem_scl
 
         self.rast = create_rasterizer_state(device)
         self.blend_alpha = create_blend_state(device, True)
@@ -388,7 +402,7 @@ struct Text(Movable):
         """Start a frame's text. The queue is emptied, not the screen."""
         self.count = 0
 
-    def draw(mut self, x: Int, y: Int, s: String) -> Int:
+    def draw(mut self, x: Int, y: Int, s: String, scale: Int = 1) -> Int:
         """Queue one string at physical canvas pixels (x, y). Draws nothing.
 
         Returns the pen x after the string, so a caller can append without
@@ -423,15 +437,15 @@ struct Text(Movable):
                 self.inst[b + 4] = self.col_r
                 self.inst[b + 5] = self.col_g
                 self.inst[b + 6] = self.col_b
-                self.inst[b + 7] = 0.0
+                self.inst[b + 7] = Float32(scale)
                 self.count += 1
-            pen += PEN_ADVANCE
+            pen += PEN_ADVANCE * scale
         return pen
 
-    def text_width(self, s: String) -> Int:
+    def text_width(self, s: String, scale: Int = 1) -> Int:
         """What `draw` will advance the pen by. Every character counts, so
         this is exact rather than an estimate."""
-        return s.byte_length() * PEN_ADVANCE
+        return s.byte_length() * PEN_ADVANCE * scale
 
     # ── the pass ────────────────────────────────────────────────────────
     def render(mut self, rtv: Int) raises:
