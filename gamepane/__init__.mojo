@@ -106,6 +106,24 @@ from .keys import (
     action_keys,
     key_name,
 )
+from .cosmos import (
+    COSMOS_SHADER,
+    Cosmos,
+    SCENE_ALIEN,
+    SCENE_AURORA,
+    SCENE_BINARY,
+    SCENE_BLACK_HOLE,
+    SCENE_COUNT,
+    SCENE_GALAXY,
+    SCENE_GAS_GIANT,
+    SCENE_MOON,
+    SCENE_NEBULA,
+    SCENE_NOVA,
+    SCENE_PLASMA,
+    SCENE_PULSAR,
+    SCENE_WORMHOLE,
+    scene_name,
+)
 from .compositor import (
     BLIT_ALPHA,
     BLIT_COPY,

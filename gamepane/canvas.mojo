@@ -105,6 +105,22 @@ float4 ps_main(VO v) : SV_Target {
     }
     return float4(col.rgb, 1.0);
 }
+
+float4 ps_overlay(VO v) : SV_Target {
+    int px = (int)(v.uv.x * 640.0);
+    int py = (int)(v.uv.y * 360.0);
+    px = clamp(px, 0, 639);
+    py = clamp(py, 0, 359);
+    uint c = idx.Load(int3(px, py, 0));
+    if (c == 0u) discard;
+    float4 col;
+    if (c < 16u) {
+        col = palLine.Load(int3((int)c, py, 0));
+    } else {
+        col = palGlobal.Load(int3((int)c, 0, 0));
+    }
+    return float4(col.rgb, 1.0);
+}
 """
 )
 
@@ -122,6 +138,18 @@ struct GpuCanvas(Movable):
     var rast: Int
     var vs: Int
     var ps: Int
+    var ps_overlay: Int
+    """The same resolve with `if (c == 0u) discard`. Two shaders rather than a
+    branch on a constant, because the branch would cost a constant buffer and
+    a bind in the layer that can least afford one."""
+    var overlay: Bool
+    """False: this canvas is the bottom of the stack -- it clears the target
+    and every index is a colour. True: it is a layer OVER something, so it
+    does not clear and index 0 is a hole.
+
+    The Mac pane makes this choice at the shader level too (`if (ci == 0u)
+    discard_fragment()`), and Galaxigans needs it: the indexed plane is layer
+    1, over the cosmos."""
 
     var tex_idx: Int
     var srv_idx: Int
@@ -165,6 +193,12 @@ struct GpuCanvas(Movable):
             _bytes(String("ps_5_0")),
         )
         self.ps = create_pixel_shader(device, ps_blob[0], ps_blob[1])
+        var ov_blob = compile_shader_blob(
+            compile, src, empty, empty, _bytes(String("ps_overlay")),
+            _bytes(String("ps_5_0")),
+        )
+        self.ps_overlay = create_pixel_shader(device, ov_blob[0], ov_blob[1])
+        self.overlay = False
 
         self.tex_idx = create_texture2d(
             device, CANVAS_W, CANVAS_H, _FORMAT_R8_UINT,
@@ -207,6 +241,14 @@ struct GpuCanvas(Movable):
         self.views[0] = self.srv_idx
         self.views[1] = self.srv_global
         self.views[2] = self.srv_line
+
+    def set_overlay(mut self, on: Bool):
+        """Make this canvas a LAYER rather than a background.
+
+        An overlay does not clear the render target and treats index 0 as
+        transparent, so whatever was drawn underneath shows through. Call it
+        once, after construction."""
+        self.overlay = on
 
     # ── the canvas the game writes ──────────────────────────────────────
     def cls(mut self, index: Int):
@@ -314,11 +356,17 @@ struct GpuCanvas(Movable):
         """Bind and draw. The reference's GpuPresent from the render
         target onward, shared by both ways of filling the index plane."""
         om_set_render_targets(self.context, rtv)
-        clear_render_target(self.context, rtv, 0.0, 0.0, 0.0)
+        if not self.overlay:
+            # Only the BOTTOM layer clears. As an overlay this call would
+            # wipe whatever the cosmos just drew, which is exactly what it
+            # did the first time this canvas was put over one.
+            clear_render_target(self.context, rtv, 0.0, 0.0, 0.0)
         set_viewport(self.context, back_w, back_h)
         rs_set_state(self.context, self.rast)
         vs_set_shader(self.context, self.vs)
-        ps_set_shader(self.context, self.ps)
+        ps_set_shader(
+            self.context, self.ps_overlay if self.overlay else self.ps
+        )
         ps_set_shader_resources(self.context, self.views)
         ia_set_topology(self.context, _TOPOLOGY_TRIANGLELIST)
         draw(self.context, 3)
