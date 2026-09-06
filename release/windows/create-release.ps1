@@ -141,18 +141,6 @@ foreach ($project in $exampleProjects) {
     }
 }
 
-# The game pane, as source under lib. The two .mojoc packages resolve std
-# and max; gamepane is a game's worth of readable Mojo and ships the way it
-# is written, resolving through the same import_path. Galaxigans and the two
-# gamepane demos import it the way any installed program would.
-$gamepaneRoot = Join-Path $repository 'gamepane'
-if (Test-Path -LiteralPath $gamepaneRoot) {
-    foreach ($file in (Get-ChildItem -LiteralPath $gamepaneRoot -File -Recurse -Filter '*.mojo')) {
-        $relative = $file.FullName.Substring($gamepaneRoot.Length).TrimStart('\')
-        $artifacts['lib\gamepane\' + $relative] = 'gamepane\' + $relative
-    }
-}
-
 $resolvedArtifacts = [ordered]@{}
 foreach ($entry in $artifacts.GetEnumerator()) {
     $source = $entry.Value
