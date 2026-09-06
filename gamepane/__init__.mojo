@@ -177,6 +177,7 @@ from .window import (
     any_key_held,
     clear_input,
     input_poll,
+    letter_held,
     key_down,
     key_held,
     key_hit,

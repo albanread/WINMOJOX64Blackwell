@@ -41,7 +41,7 @@ from std.windows.gui import (
     win32,
 )
 
-from .keys import ACT_COUNT, KEY_COUNT, KEY_ESCAPE, action_keys
+from .keys import ACT_COUNT, KEY_A, KEY_COUNT, KEY_ESCAPE, KEY_Z, action_keys
 from .device import (
     create_device_and_swapchain,
     create_render_target_view,
@@ -244,6 +244,28 @@ def sim_action(act: Int, down: Bool):
     b[unsafe_offset = _ACT_FORCED + act] = 1 if down else 0
 
 
+def letter_held() -> Int:
+    """The first letter key held, as its ASCII code, or 0 for none.
+
+    An initials screen wants to know WHICH letter, not to ask "is A down"
+    twenty-six times, and a game should not have to carry a positional key
+    table to find out.
+
+    On Windows the answer is the key code itself: VK_A through VK_Z are 65
+    through 90, which are the ASCII capitals -- one of Win32's few
+    kindnesses, and the reason this is a loop rather than a table. The Mac
+    original needed `letter_key(i)` to map a position to a letter because
+    Apple's codes are laid out by where the key sits on the board.
+
+    Ties go to the alphabet: two letters down at once gives the earlier one.
+    For typing three initials that is as good an answer as any, and it is at
+    least repeatable."""
+    for code in range(KEY_A, KEY_Z + 1):
+        if key_down(code):
+            return code
+    return 0
+
+
 def mouse_state() -> Tuple[Float64, Float64, Bool, Bool]:
     """(x, y, left, right), normalised 0..1 with y from the TOP."""
     if _MOUSE_PTR()[] == 0:
@@ -432,12 +454,16 @@ struct GamePane(Movable):
     closed."""
     var dump_path: String
     """GAMEPANE_DUMP: write the last frame here as raw BGRA."""
+    var zoom: Int
+    """The window's magnification, 1..8. See `set_zoom`; it is a property of
+    the WINDOW and never of the game."""
 
     def __init__(out self, title: String, width: Int, height: Int) raises:
         _ensure_input_state()
         self.width = width
         self.height = height
         self.frames = 0
+        self.zoom = 1
         self.dt_secs = 1.0 / 60.0
         self.last_ns = Int(performance_counter())
         self.ctx = DeviceContext(api="cuda")
@@ -532,6 +558,77 @@ struct GamePane(Movable):
         self.dt_secs = elapsed
         self.last_ns = now
         return True
+
+    def set_zoom(mut self, factor: Int) raises:
+        """Show the same picture at 1x..8x, by resizing the window.
+
+        NOTHING ABOUT THE GAME CHANGES. Every layer maps to NDC through the
+        logical size it is handed -- 640x360 -- and the swap chain stretches
+        its back buffer to whatever the client area happens to be, so a bigger
+        window is the same picture at more pixels. No coordinate moves and a
+        game learns no second set of numbers. That is the Metal pane's
+        contract for set_zoom and it survives the crossing unchanged, because
+        on this side DXGI does the scaling instead of the drawable.
+
+        The client area is set EXACTLY, which is what AdjustWindowRect is
+        for: CreateWindowExW takes an OUTER size, so asking for 1280x720
+        there gives a client area smaller than that by a border and a title
+        bar, and the amount differs by machine and by DPI. Zoom is the one
+        place where a caller means the pixels rather than the furniture.
+
+        Out of range clamps to 1..8, and asking for the zoom it already has
+        returns immediately -- so a game can call this from a held key every
+        frame and pay nothing."""
+        var z = factor
+        if z < 1:
+            z = 1
+        if z > 8:
+            z = 8
+        if z == self.zoom:
+            return
+
+        var style = UInt32(winkb_constant["WS_OVERLAPPEDWINDOW"]())
+        var rc = RECT()
+        rc.left = 0
+        rc.top = 0
+        rc.right = Int32(self.width * z)
+        rc.bottom = Int32(self.height * z)
+
+        var adjust = win32[
+            def (Pointer[RECT, MutAnyOrigin], UInt32, c_int) thin abi("C")
+            -> c_int,
+            "AdjustWindowRect",
+        ]()
+        _ = adjust(com_addr(rc), style, 0)
+        var outer_w = Int(rc.right - rc.left)
+        var outer_h = Int(rc.bottom - rc.top)
+
+        # Centred on the primary display, like the reference. A window that
+        # doubles in place walks off the bottom of the screen.
+        var metrics = win32[
+            def (c_int) thin abi("C") -> c_int, "GetSystemMetrics"
+        ]()
+        var screen_w = Int(metrics(c_int(winkb_constant["SM_CXSCREEN"]())))
+        var screen_h = Int(metrics(c_int(winkb_constant["SM_CYSCREEN"]())))
+        var x = (screen_w - outer_w) // 2
+        var y = (screen_h - outer_h) // 2
+        if x < 0:
+            x = 0
+        if y < 0:
+            y = 0
+
+        var set_pos = win32[
+            def (Int, Int, c_int, c_int, c_int, c_int, UInt32) thin abi("C")
+            -> c_int,
+            "SetWindowPos",
+        ]()
+        comptime SWP_NOZORDER = UInt32(winkb_constant["SWP_NOZORDER"]())
+        comptime SWP_NOACTIVATE = UInt32(winkb_constant["SWP_NOACTIVATE"]())
+        _ = set_pos(
+            self.window.handle, 0, c_int(x), c_int(y),
+            c_int(outer_w), c_int(outer_h), SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+        self.zoom = z
 
     def dt(self) -> Float64:
         """Seconds since the previous frame, clamped to something sane."""

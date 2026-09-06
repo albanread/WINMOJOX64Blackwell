@@ -48,14 +48,19 @@ from gamepane import (
     ACT_RIGHT,
     ACT_UP,
     GamePane,
+    KEY_1,
+    KEY_2,
+    KEY_4,
     KEY_COUNT,
     Text,
     action,
     action_hit,
     input_poll,
     key_down,
+    key_held,
     key_hit,
     key_name,
+    letter_held,
     sim_action,
 )
 from gamepane.device import (
@@ -166,6 +171,16 @@ def main() raises:
         if action(ACT_QUIT):
             break
 
+        # Window zoom, on the 1/2/4 ladder the game uses. Cheap to call
+        # from a held key: set_zoom returns immediately when the factor is
+        # already current.
+        if key_held(KEY_1):
+            pane.set_zoom(1)
+        elif key_held(KEY_2):
+            pane.set_zoom(2)
+        elif key_held(KEY_4):
+            pane.set_zoom(4)
+
         var frame = pane.begin_frame()
         om_set_render_targets(pane.context, pane.rtv)
         clear_render_target(pane.context, pane.rtv, 0.04, 0.04, 0.07)
@@ -223,6 +238,25 @@ def main() raises:
                 text.set_colour(90, 90, 120)
             pen = text.draw(pen, GRID_Y + ROWS * CELL_H + 4, _act_name(a))
             pen += 8
+
+        # The initials-screen reader: which letter, not twenty-six questions.
+        # On Windows the answer IS the key code, because VK_A..VK_Z are the
+        # ASCII capitals.
+        var typed = letter_held()
+        text.set_colour(150, 190, 255)
+        var lp = text.draw(330, 6, String("LETTER"))
+        lp += 12
+        if typed != 0:
+            text.set_colour(255, 255, 255)
+            _ = text.draw(lp, 6, String(chr(typed)))
+        else:
+            text.set_colour(90, 90, 120)
+            _ = text.draw(lp, 6, String("-"))
+        text.set_colour(90, 90, 120)
+        _ = text.draw(
+            lp + 24, 6,
+            String("ZOOM ") + String(pane.zoom) + String("X (1 2 4)"),
+        )
 
         text.render(pane.rtv)
         pane.end_frame(frame)
