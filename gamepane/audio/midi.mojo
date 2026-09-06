@@ -114,6 +114,18 @@ def stop_tune_gm() raises:
         def (Int) thin abi("C") -> UInt32, "midiStreamStop"
     ]()
     _ = midiStreamStop(stream)
+
+    # RESET BEFORE UNPREPARING. midiOutUnprepareHeader refuses a buffer the
+    # device still owns (MIDIERR_STILLPLAYING), and a stream stopped
+    # mid-tune still owns every buffer it has not finished. midiOutReset
+    # marks them all done, which is the documented way to get them back.
+    # Without it the unprepares fail, the close fails, and the device is
+    # never released.
+    var midiOutReset = win32[
+        def (Int) thin abi("C") -> UInt32, "midiOutReset"
+    ]()
+    _ = midiOutReset(stream)
+
     var midiOutUnprepareHeader = win32[
         def (Int, Int, UInt32) thin abi("C") -> UInt32,
         "midiOutUnprepareHeader",
@@ -125,10 +137,17 @@ def stop_tune_gm() raises:
         _ = midiOutUnprepareHeader(
             stream, headers + i * hdr_size, UInt32(hdr_size)
         )
-    var midiOutClose = win32[
-        def (Int) thin abi("C") -> UInt32, "midiOutClose"
+    # midiStreamClose, NOT midiOutClose. The handle came from
+    # midiStreamOpen and is an HMIDISTRM; closing it through the plain
+    # output entry point is the wrong call for the wrong type. It returned
+    # an error, the device stayed open, and the handle was then thrown away
+    # below -- so nothing could ever close it and every later
+    # midiStreamOpen answered MMSYSERR_ALLOCATED. That is why exactly ONE
+    # cue in a session ever played: the first.
+    var midiStreamClose = win32[
+        def (Int) thin abi("C") -> UInt32, "midiStreamClose"
     ]()
-    _ = midiOutClose(stream)
+    _ = midiStreamClose(stream)
     if headers != 0:
         var hp = Pointer[UInt8, MutUntrackedOrigin](
             unsafe_from_address=headers
@@ -158,6 +177,15 @@ def play_tune_gm(source: String) raises -> Bool:
     ), "MIDIPROPTIMEDIV and MIDIPROPTEMPO are not the shape declared here"
 
     _check_layouts()
+
+    # ONE PLAYER AT A TIME, which this docstring has always claimed and the
+    # code did not do. The device is exclusive: opening a second stream
+    # while the first is live answers MMSYSERR_ALLOCATED, `play_tune_gm`
+    # returns False, and a caller that writes `_ = play_tune_gm(...)` --
+    # every caller, because music is not a reason to stop a game -- never
+    # learns. Stopping the previous cue here is what lets a second one play
+    # at all.
+    stop_tune_gm()
 
     # ── parse ────────────────────────────────────────────────────────────
     var tune = Tune()

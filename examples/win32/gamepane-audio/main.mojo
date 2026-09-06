@@ -71,6 +71,22 @@ z4 A,2 E2 | A2 c2 e2 d2 | c4 B4 | A8 |"""
 """Galaxigans' 'Stage Alert' cue, verbatim from tunes.mojo. Program 52 is a
 choir, and whether it IS one is the whole point of the General MIDI path."""
 
+comptime TUNE_FANFARE = String(
+    """X:1
+M:4/4
+L:1/8
+Q:1/4=210
+%%MIDI program 80
+K:Cm
+V:1
+G,4 _B,4 | c4 _e4 | _e2d2c2_B2 | G,8 |"""
+)
+"""The head of Galaxigans' alien-victory cue, on a different patch from the
+first. A SECOND cue is the whole point: the device is exclusive, and until
+`play_tune_gm` learned to stop the previous one, exactly one cue per session
+ever played -- the title -- and every later one returned False into a caller
+that discards it."""
+
 comptime MOTIF_HORNET = String(
     """X:1
 M:4/4
@@ -237,6 +253,28 @@ def _run() raises:
             "  FAIL the general midi cue was silent or far too quiet --",
             "expected more than", best_sfx * 0.4,
         )
+
+    # A SECOND CUE, ON A DIFFERENT PATCH, AND THIS IS THE REAL TEST. The
+    # first one always worked. The device is exclusive, and `play_tune_gm`
+    # did not stop the previous stream before opening a new one -- so a
+    # second midiStreamOpen answered MMSYSERR_ALLOCATED, the call returned
+    # False, and every caller writes `_ = play_tune_gm(...)` because music
+    # is not a reason to stop a game. Exactly one cue per session played.
+    var again = play_tune_gm(TUNE_FANFARE)
+    var gm2_peak = 0.0
+    for _ in range(3):
+        var p2 = _peak_over(meter, 1000)
+        if p2 > gm2_peak:
+            gm2_peak = p2
+    stop_tune_gm()
+    print("  second cue accepted     :", again)
+    print("  second cue peak         :", gm2_peak)
+    checks += 1
+    if again and gm2_peak > best_sfx * 0.4:
+        print("  PASS a second cue plays after the first")
+        passes += 1
+    else:
+        print("  FAIL only one cue per session -- device never released")
 
     print("")
     print("gamepane-audio:", passes, "of", checks, "audible")
