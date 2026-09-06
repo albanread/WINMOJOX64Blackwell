@@ -74,7 +74,7 @@ def sfx_frames(index: Int) -> Int:
     return 3
 
 
-def sfx_start(st: P, voice: Int, index: Int) raises:
+def sfx_start(st: P, voice: Int, index: Int):
     """Set the voice up and gate it on. The per-frame movement is
     `sfx_frame` below; this is only the note-on."""
     var i = index
@@ -158,7 +158,7 @@ def sfx_start(st: P, voice: Int, index: Int) raises:
     gate_on(st, voice)
 
 
-def sfx_frame(st: P, voice: Int, index: Int, frame: Int) raises:
+def sfx_frame(st: P, voice: Int, index: Int, frame: Int):
     """One 50 Hz frame of the effect's movement, `frame` counting from 0.
 
     This is the part that makes these sound like a chip rather than like
@@ -202,7 +202,7 @@ def sfx_frame(st: P, voice: Int, index: Int, frame: Int) raises:
     # per frame: the detune does the work.
 
 
-def sfx_stop(st: P, voice: Int, index: Int) raises:
+def sfx_stop(st: P, voice: Int, index: Int):
     """Gate the effect off, including the partner voice the two-voice
     effects borrowed."""
     gate_off(st, voice)

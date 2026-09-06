@@ -92,7 +92,7 @@ PSIn vmain(uint vid : SV_VertexID) {
 # `Uniforms` is carried as c0 = (time, aspect, p0, p1), c1 = p2..p5,
 # c2 = p6, p7 -- and handed to the game's body reassembled into the same
 # `Uniforms` shape the api tier documents. The game writes only the body.
-comptime SHADER_HEADER = String(
+comptime SHADER_DECL = String(
     """
 cbuffer U : register(b0) {
     float4 c0;  // time, aspect, p0, p1
@@ -115,14 +115,31 @@ Uniforms make_u() {
     u.p[6] = c2.x; u.p[7] = c2.y;
     return u;
 }
-
-float4 fmain(float2 uv, Uniforms u) {
 """
 )
+
+comptime SHADER_HEADER = SHADER_DECL
+comptime _FMAIN_OPENER = "float4 fmain(float2 uv, Uniforms u) {"
+
+
 
 # Transliterated from the Metal backend's INDEXED_SHADER. The three
 # specification points survive verbatim: index 0 clips, scroll is world
 # space after the viewport lookup, and the palette index splits at 16.
+comptime TAIL_COMPLETE = String(
+    """
+struct PSIn {
+    float4 pos : SV_Position;
+    float2 uv : TEXCOORD0;
+};
+
+float4 ps_main(PSIn psi) : SV_Target {
+    return fmain(psi.uv, make_u());
+}
+"""
+)
+
+
 comptime TAIL = String(
     """
 }
@@ -402,10 +419,38 @@ struct ShaderPane(Movable):
         self.source = copy^
         # Layer 0 is always Clear -- the ground the other layers draw over.
         self.is_clear = True
-        var src = _bytes(String(SHADER_HEADER))
+        # A body that names fmain is a COMPLETE shader -- MSL ports define
+        # helper functions at file scope, which HLSL allows only outside
+        # any function, so the pane cannot wrap them inside fmain. Simple
+        # bodies (the starfield's thirteen lines) get the wrapper; complete
+        # ones (the twelve cosmos backdrops) bring their own fmain and only
+        # need the tail's ps_main entry point.
+        # Byte scan, not String(find): a List[UInt8]-to-String round trip
+        # was silently producing a string the search never matched, so the
+        # header was always prepended and the complete shader nested inside.
+        var fmain = _bytes(String("float4 fmain"))
+        var complete = False
+        for i in range(len(self.source) - len(fmain) + 1):
+            var miss = False
+            for k in range(len(fmain)):
+                if self.source[i + k] != fmain[k]:
+                    miss = True
+                    break
+            if not miss:
+                complete = True
+                break
+        var src = List[UInt8]()
+        for byte in _bytes(String(SHADER_DECL)):
+            src.append(byte)
+        if not complete:
+            for byte in _bytes(String(_FMAIN_OPENER)):
+                src.append(byte)
         for byte in self.source:
             src.append(byte)
-        for byte in _bytes(String(TAIL)):
+        if not complete:
+            src.append(UInt8(10))
+        var tail = TAIL if not complete else TAIL_COMPLETE
+        for byte in _bytes(String(tail)):
             src.append(byte)
         var built = _build_pass(
             compile_shader_helper(), device, src
@@ -670,9 +715,11 @@ struct IndexedPane(Movable):
     var palette_owned: HostBuffer[DType.uint8]
     var palette_upload: Int
     var index_srv: Int
+    var index_upload: Int
     var palette_srv: Int
     var pixel_shader: Int
     var constant_buffer: Int
+    var vertex_shader: Int
 
     def __init__(
         out self,
@@ -737,6 +784,7 @@ struct IndexedPane(Movable):
             D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, 0,
         )
         self.index_srv = make_srv(device, index_tex)
+        self.index_upload = index_tex
         var palette_tex = create_texture2d(
             device, self.palette_len, 1, DXGI_FORMAT_R8_UINT,
             D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, 0,
@@ -787,6 +835,45 @@ struct IndexedPane(Movable):
         var f = self.slot_of[FRONT]
         self.slot_of[FRONT] = self.slot_of[1]
         self.slot_of[1] = f
+
+    def set_rgb(mut self, index: Int, r: Int, g: Int, b: Int):
+        """One GLOBAL entry (16..255)."""
+        if index < 16 or index > 255:
+            return
+        var entry = (
+            self.viewport_height * LINE_COLORS + (index - GLOBAL_COLORS)
+        )
+        var pp = Pointer[UInt8, MutUntrackedOrigin](
+            unsafe_from_address=self.palette_host
+        )
+        pp[unsafe_offset = entry * 4 + 0] = UInt8(r)
+        pp[unsafe_offset = entry * 4 + 1] = UInt8(g)
+        pp[unsafe_offset = entry * 4 + 2] = UInt8(b)
+        pp[unsafe_offset = entry * 4 + 3] = 255
+
+    def set_line_rgb(
+        mut self, line: Int, index: Int, r: Int, g: Int, b: Int
+    ):
+        """One PER-SCANLINE entry (1..15) on one scanline -- the copper
+        path. The tractor beam in GalixigansDeluxe is drawn once as a cone
+        in index 1 and animated by rewriting what index 1 means on each
+        line, which is what this is for."""
+        if line < 0 or line >= self.viewport_height:
+            return
+        if index < 1 or index >= 16:
+            return
+        var entry = line * LINE_COLORS + index
+        var pp = Pointer[UInt8, MutUntrackedOrigin](
+            unsafe_from_address=self.palette_host
+        )
+        pp[unsafe_offset = entry * 4 + 0] = UInt8(r)
+        pp[unsafe_offset = entry * 4 + 1] = UInt8(g)
+        pp[unsafe_offset = entry * 4 + 2] = UInt8(b)
+        pp[unsafe_offset = entry * 4 + 3] = 255
+
+    def active_plane(mut self) -> Plane:
+        """The plane the next drawing goes to: slot `active`."""
+        return self.plane(self.active)
 
     def set_scroll(mut self, x: Int, y: Int):
         """Where in the world the viewport sits. Clamped to the overscan
@@ -865,7 +952,7 @@ struct IndexedPane(Movable):
         var host = Pointer[UInt8, MutUntrackedOrigin](
             unsafe_from_address=self.bases[self.slot_of[FRONT]]
         )
-        update_subresource(self.context, self.index_tex, host, self.stride)
+        update_subresource(self.context, self.index_upload, host, self.stride)
         update_subresource(
             self.context, self.palette_upload,
             Pointer[UInt8, MutUntrackedOrigin](
@@ -885,7 +972,7 @@ struct IndexedPane(Movable):
         _begin_pass(
             self.context, self.device, rtv, self.vertex_shader,
             self.pixel_shader, self.constant_buffer,
-            uni.unsafe_ptr().unsafe_bitcast[UInt8]().unsafe_origin_cast[
+            Pointer(to=uni).unsafe_bitcast[UInt8]().unsafe_origin_cast[
                 MutUntrackedOrigin
             ](),
             16,

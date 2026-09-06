@@ -23,6 +23,7 @@ from .blitter import (
     blit_fill_kernel, blit_grid, BLOCK, Blitter,
 )
 from .device import device_ptr, host_ptr
+from .midiplay import play_tune_gm, stop_tune_gm
 from .audio import (
     deck_new, deck_free, music_chip, sfx_chip, set_muted, set_music_tick,
     play_tune, stop_tune, sfx_play,

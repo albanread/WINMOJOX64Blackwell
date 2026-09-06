@@ -13,6 +13,7 @@ through a named_global: the fill callback is captureless, exactly like
 the window procedure.
 """
 
+from std.atomic import Atomic, Ordering
 from std.ffi import external_call
 from std.memory import Pointer, OpaquePointer
 from std.sys._globals import named_global
@@ -43,7 +44,7 @@ from gamepane.api.sfx import SFX_COUNT
 from gamepane.abc.parse import parse_abc
 from gamepane.abc.model import Tune
 from gamepane.abc.schedule import build_schedule, sort_steps, Step, resolve_ties
-from gamepane.abc.chipplay import flatten_schedule, silent_tick
+from gamepane.abc.chipplay import flatten_schedule, silent_tick, render_scheduled
 from gamepane.abc.chipplay import SC_LOOP
 
 
@@ -79,6 +80,24 @@ the deck, never in the callback."""
 
 def dput(d: P, slot: Int, value: Int):
     d.unsafe_bitcast[Int]()[unsafe_offset=slot] = value
+
+
+def dget_acquire(d: P, slot: Int) -> Int:
+    """Acquire-load a counter the OTHER thread writes. The ring's two
+    counters are its only shared slots, and plain accesses racing across
+    threads are undefined however many fences surround them -- the ordering
+    has to live on the access itself."""
+    return Atomic[Int].load[ordering=Ordering.ACQUIRE](
+        d.unsafe_bitcast[Int]() + slot
+    )
+
+
+def dput_release(d: P, slot: Int, value: Int):
+    """Release-store a counter this thread owns, publishing the payload
+    written before it."""
+    Atomic[Int].store[ordering=Ordering.RELEASE](
+        d.unsafe_bitcast[Int]() + slot, value
+    )
 
 
 def dget(d: P, slot: Int) -> Int:
@@ -187,12 +206,12 @@ def sfx_play(d: P, effect: Int):
     if effect < 0 or effect >= SFX_COUNT:
         return
     # The ring's write/read cursors are the two slots just before the ring.
-    var write = dget(d, D_RING_BASE - 2)
-    var read = dget(d, D_RING_BASE - 1)
+    var write = dget(d, D_RING_BASE - 2)          # ours; no other writer
+    var read = dget_acquire(d, D_RING_BASE - 1)   # the callback's; acquire
     if write - read >= RING_SIZE:
         return  # full: the oldest unplayed trigger is dropped, never blocked
     dput(d, D_RING_BASE + (write & (RING_SIZE - 1)), effect)
-    dput(d, D_RING_BASE - 2, write + 1)
+    dput_release(d, D_RING_BASE - 2, write + 1)
 
 
 def pending_triggers(d: P) -> Int:
@@ -205,13 +224,13 @@ def dropped_triggers(d: P) -> Int:
 
 def drain_triggers(d: P):
     """Start every queued effect. The audio thread's half of the ring."""
-    var read = dget(d, D_RING_BASE - 1)
-    var write = dget(d, D_RING_BASE - 2)
+    var read = dget(d, D_RING_BASE - 1)           # ours; no other writer
+    let write = dget_acquire(d, D_RING_BASE - 2)   # the game's; acquire
     let b = sfx_chip(d)
     while read < write:
         _start_effect(d, b, dget(d, D_RING_BASE + (read & (RING_SIZE - 1))))
         read += 1
-    dput(d, D_RING_BASE - 1, read)
+    dput_release(d, D_RING_BASE - 1, read)
 
 
 def _start_effect(d: P, b: P, effect: Int):
@@ -236,10 +255,7 @@ def _start_effect(d: P, b: P, effect: Int):
                 oldest = v
         chosen = oldest
     let base = D_VOICE_BASE + chosen * D_VOICE_STRIDE
-    try:
-        sfx_start(b, chosen, effect)
-    except:
-        pass
+    sfx_start(b, chosen, effect)
     dput(d, base + D_V_EFFECT, effect)
     dput(d, base + D_V_FRAME, 0)
     dput(d, base + D_V_LEFT, sfx_frames(effect))
@@ -255,16 +271,10 @@ def advance_effects(d: P):
             continue
         let left = dget(d, base + D_V_LEFT)
         if left <= 0:
-            try:
-                sfx_stop(b, v, e)
-            except:
-                pass
+            sfx_stop(b, v, e)
             dput(d, base + D_V_EFFECT, -1)
             continue
-        try:
-            sfx_frame(b, v, e, dget(d, base + D_V_FRAME))
-        except:
-            pass
+        sfx_frame(b, v, e, dget(d, base + D_V_FRAME))
         dput(d, base + D_V_FRAME, dget(d, base + D_V_FRAME) + 1)
         dput(d, base + D_V_LEFT, left - 1)
 
@@ -310,7 +320,12 @@ def gamepane_fill(
     var a = music_chip(d)
     var b = sfx_chip(d)
 
-    chip_render(a, dest, frames, _player_tick_a)
+    if dget(d, D_TUNE) != 0:
+        # A scheduled tune drives chip A sample-accurately -- every event
+        # applied at the sample it falls on, not on the 50 Hz grid.
+        render_scheduled(a, dest, frames)
+    else:
+        chip_render(a, dest, frames, _player_tick_a)
     chip_render(b, scratch, frames, _sfx_tick_ptr)
 
     for i in range(frames):
