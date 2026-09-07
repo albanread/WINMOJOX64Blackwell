@@ -75,7 +75,7 @@ try {
     # reporting every key as up forever. A check that only builds cannot see
     # that. GAMEPANE_FRAMES makes the run finish on its own.
     $env:GAMEPANE_FRAMES = '20'
-    $runOut = & cmd /c "`"$Targetin\griddle.exe`" --open `"$pane`" --no-lsp --cmd `"run;;run wait 300000`" 2>&1" | Out-String
+    $runOut = & cmd /c "`"$Target\bin\griddle.exe`" --open `"$pane`" --no-lsp --cmd `"run;;run wait 300000`" 2>&1" | Out-String
     Remove-Item Env:GAMEPANE_FRAMES -ErrorAction SilentlyContinue
     Check 'gamepane-runs'       (($runOut -match 'presented 20 frames') -and ($runOut -match 'exit 0')) 'a game example RUNS from the installed copy'
 
