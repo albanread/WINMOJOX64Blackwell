@@ -667,6 +667,37 @@ if ($out -match 'MOJO_PYTHON_LIBRARY = (\S.*)') {
     Record 'python-view' 'FAIL' 'the view does not say what Run injects'
 }
 
+# 31a. A language server starts for a file opened from inside the editor.
+# The server used to be started in exactly one place -- process startup, and
+# only when the file named on the command line was a Mojo file. So
+# `griddle foo.mojo` from a shell had navigation and File > Open did not, and
+# every one of go-to-definition, references, hover and completion answered
+# "no language server for this document" on a file the server understood
+# perfectly well.
+#
+# NO --open HERE, deliberately: that is the path that always worked, and using
+# it would test the wrong thing. The `;;` chain runs the whole sequence in one
+# process, which is what makes it a test of the editor rather than of the
+# command line.
+$probe = Join-Path $env:TEMP ("griddle-lsp-probe-{0}.mojo" -f $PID)
+Set-Content -Path $probe -Encoding ascii -Value @(
+    'def helper(x: Int) -> Int:',
+    '    return x + 1',
+    '',
+    'def main():',
+    '    var a = helper(2)',
+    '    print(a)'
+)
+$lspOut = (cmd /c "`"$Exe`" --cmd `"open $probe;;lsp wait 40000;;goto 5:14;;hover;;hover wait 25000`" 2>&1" | Out-String)
+$started = $lspOut -match 'ready,'
+$hovered = $lspOut -match 'hover: .*helper'
+if ($started -and $hovered) {
+    Record 'lsp-opens-on-demand' 'PASS' 'server started for a file opened in the editor, and answered'
+} else {
+    Record 'lsp-opens-on-demand' 'FAIL' "ready=$started hover=$hovered"
+}
+Remove-Item -Force $probe -ErrorAction SilentlyContinue
+
 # 31b. A Python project sets itself up and runs.
 # The point of Run understanding Python: a project carrying a
 # requirements.txt should need nothing from the person but the keystroke.

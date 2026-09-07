@@ -184,6 +184,7 @@ from ide.lsp import (
     request_definition,
     request_hover,
     request_references,
+    is_disabled,
 )
 from ide.gridview import (
     GUTTER_W,
@@ -1777,6 +1778,10 @@ def open_path(hwnd: Int, path: String) raises -> String:
     # Zero means "the server has not been told about this document", which is
     # what `announce` waits for.
     doc[].sent_version = 0
+    # BEFORE `announce`, which does nothing until a server is ready. Opening
+    # a Mojo file is the moment a language server becomes worth having, and
+    # until now it was not the moment one was started.
+    _maybe_start_lsp(hwnd, full)
     try:
         announce(hwnd)
     except:
@@ -1786,6 +1791,37 @@ def open_path(hwnd: Int, path: String) raises -> String:
         String("opened ") + path + " (" + String(doc[].rope.line_count())
         + " lines)"
     )
+
+
+def _maybe_start_lsp(hwnd: Int, path: String):
+    """Start the language server if this document wants one and none is up.
+
+    Called when a document is opened and when one is switched to, because
+    those are the two moments a window can come to be showing Mojo without
+    having shown any before. It used to be called from neither: the server
+    was started once at process startup and only when a Mojo file was named
+    on the command line, so `griddle foo.mojo` from a shell had navigation
+    and File > Open did not. The symptom was "no language server for this
+    document" from every one of go-to-definition, references, rename, hover
+    and completion, on a file the server would have understood perfectly.
+
+    Cheap to call often: it returns immediately when a server is already
+    running, when `--no-lsp` was given, and for anything that is not Mojo --
+    a Mojo server has nothing to say about a text file, and starting one per
+    opened document would cost a process and a parse for each.
+
+    Failures are swallowed. An editor that cannot open a file because its
+    language server did not start would be worse than one with no language
+    server at all.
+    """
+    if is_disabled() or is_ready():
+        return
+    if not path.endswith(".mojo"):
+        return
+    try:
+        _ = start_server(hwnd, _lsp_exe(), _lsp_stdlib())
+    except:
+        pass
 
 
 def jump_to(hwnd: Int, uri: String, line: Int, character: Int) raises -> String:
@@ -3060,6 +3096,12 @@ def switch_tab(hwnd: Int, i: Int) raises -> String:
     var chrome = Pointer[Chrome, MutAnyOrigin](unsafe_from_address=bits[1])
     chrome[].doc = address
     g_tab()[] = i
+    # A window whose first tabs were text and whose next one is Mojo has no
+    # server yet; switching to it is as good a moment as opening it.
+    try:
+        _maybe_start_lsp(hwnd, document_path(hwnd))
+    except:
+        pass
     # The layout cache belongs to the document, so nothing has to be dropped;
     # the new document's own cache is either warm or will be after one frame.
     try:

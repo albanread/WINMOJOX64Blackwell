@@ -193,7 +193,7 @@ from ide.window import (
     type_unit,
 )
 from ide.menu import build as build_menu, show_context_menu
-from ide.lsp import is_running as lsp_running
+from ide.lsp import is_running as lsp_running, set_disabled
 from ide.rope import Rope
 from ide.tsf import Tsf, activate, deactivate
 from ide.build import ensure_linker
@@ -1563,6 +1563,7 @@ def main() raises:
             no_vsync = True
         if args[i] == "--no-lsp":
             no_lsp = True
+            set_disabled(True)
         if args[i] == "--no-session":
             no_session = True
 
@@ -1952,6 +1953,12 @@ def main() raises:
     # file, and starting one anyway costs a process and a parse for every
     # document a person opens -- which the check suite, whose fixtures are
     # .txt, would pay on every one of its sixty-odd runs.
+    # Only for Mojo, and only when one was named on the command line. A
+    # document opened LATER starts its own server -- see `_maybe_start_lsp`
+    # in ide/window.mojo -- which is the case this branch never covered and
+    # nobody noticed, because a developer launching `griddle foo.mojo` from a
+    # shell got a server and a person opening a file from the File menu did
+    # not.
     if open_path.endswith(".mojo") and not no_lsp:
         # From the toolchain, not spelled here. Written out as a relative
         # bazel-bin path this resolved against whatever directory the editor

@@ -156,6 +156,26 @@ def is_running() -> Bool:
     return g_task()[] != 0
 
 
+comptime g_disabled = named_global["lsp.disabled", Int]
+"""Set once by `--no-lsp`, read wherever a server might be started.
+
+It exists because the decision moved. Starting the server used to happen in
+one place -- process startup, if the file named on the command line was a
+Mojo file -- where the flag was a local variable in `main` and needed to go
+no further. A server that starts when a document is OPENED has to ask the
+same question from `ide/window.mojo`, which cannot see that local."""
+
+
+def set_disabled(on: Bool):
+    """Turn the language server off for this process."""
+    g_disabled()[] = 1 if on else 0
+
+
+def is_disabled() -> Bool:
+    """Whether `--no-lsp` was given."""
+    return g_disabled()[] != 0
+
+
 def is_ready() -> Bool:
     return g_ready()[] != 0
 
