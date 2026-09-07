@@ -667,6 +667,87 @@ if ($out -match 'MOJO_PYTHON_LIBRARY = (\S.*)') {
     Record 'python-view' 'FAIL' 'the view does not say what Run injects'
 }
 
+# 31b. A Python project sets itself up and runs.
+# The point of Run understanding Python: a project carrying a
+# requirements.txt should need nothing from the person but the keystroke.
+#
+# Driven through `run-script` rather than a series of `Ask`s, because every
+# `Ask` is a FRESH PROCESS -- `--cmd` runs one command and exits, so an
+# open project does not survive to the next call. A script runs the whole
+# sequence in one session, which is also how a person experiences it.
+#
+# And it asserts on the ENVIRONMENT rather than on the transcript, because
+# `run-script` answers with a count and keeps its echo in the output pane.
+# That is the better assertion anyway: what matters is that the interpreter
+# ended up with the package, not that some words went past.
+$pyproj = Join-Path $env:TEMP ('griddle-pycheck-' + $PID)
+Remove-Item -Recurse -Force $pyproj -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $pyproj | Out-Null
+Set-Content -Path (Join-Path $pyproj 'requirements.txt') -Value 'six==1.16.0' -Encoding ascii
+Set-Content -Path (Join-Path $pyproj 'main.py') -Encoding ascii -Value @(
+    'import sys, six',
+    'print("PYCHECK", six.__version__, sys.executable)'
+)
+
+# Where the environment will be. `python show` is asked for it rather than
+# guessed at: a packaged application has LOCALAPPDATA redirected into its own
+# LocalCache, and the answer is not a path this script should construct.
+$venv = ''
+$shown = Ask "project $pyproj;;python show"
+if ($shown -notmatch 'venv (\S.*?)\s+(?:absent|present)') {
+    $shown = (cmd /c "`"$Exe`" --cmd `"project $pyproj`" 2>&1" | Out-String)
+    $shown = (cmd /c "`"$Exe`" --cmd `"python show`" 2>&1" | Out-String)
+}
+if ($shown -match 'venv (\S.*?)\s+(?:absent|present)') { $venv = $matches[1].Trim() }
+
+$script = Join-Path $pyproj 'drive.txt'
+Set-Content -Path $script -Encoding ascii -Value @(
+    "project $pyproj",
+    "open $(Join-Path $pyproj 'main.py')",
+    'run',
+    'run wait 300000'
+)
+if ($venv -ne '') { Remove-Item -Recurse -Force $venv -ErrorAction SilentlyContinue }
+$null = Ask "run-script $script"
+
+$venvPy = if ($venv -ne '') { Join-Path $venv 'Scripts\python.exe' } else { '' }
+$stamp = if ($venv -ne '') { Join-Path $venv 'griddle-requirements.txt' } else { '' }
+$made = ($venvPy -ne '') -and (Test-Path $venvPy)
+$imported = $false
+if ($made) {
+    $probe = (cmd /c "`"$venvPy`" -c `"import six;print(six.__version__)`" 2>&1" | Out-String)
+    $imported = $probe -match '1\.16\.0'
+}
+$stamped = ($stamp -ne '') -and (Test-Path $stamp) -and
+    ((Get-Content -Raw $stamp).Trim() -eq (Get-Content -Raw (Join-Path $pyproj 'requirements.txt')).Trim())
+if ($made -and $imported -and $stamped) {
+    Record 'python-project-run' 'PASS' 'venv created, requirements installed into it, install recorded'
+} else {
+    Record 'python-project-run' 'FAIL' "venv=$made import=$imported stamp=$stamped"
+}
+
+# 31c. An unchanged requirements.txt installs nothing.
+# A person presses Run far more often than they edit their dependencies, and
+# a pip round trip every time would make the feature worse than not having
+# it. Proved by REMOVING the package and running again without touching
+# requirements.txt: if nothing reinstalls, it stays removed. A log can be
+# misread; an absent package cannot.
+if ($made) {
+    $null = (cmd /c "`"$venvPy`" -m pip uninstall -y six 2>&1" | Out-String)
+    $gone = -not ((cmd /c "`"$venvPy`" -c `"import six`" 2>&1" | Out-String) -match '1\.16\.0')
+    $null = Ask "run-script $script"
+    $stillGone = -not ((cmd /c "`"$venvPy`" -c `"import six`" 2>&1" | Out-String) -match '1\.16\.0')
+    if ($gone -and $stillGone) {
+        Record 'python-run-cached' 'PASS' 'nothing reinstalled while requirements.txt was unchanged'
+    } else {
+        Record 'python-run-cached' 'FAIL' "removed=$gone stayed-removed=$stillGone"
+    }
+} else {
+    Record 'python-run-cached' 'FAIL' 'no environment to test against'
+}
+Remove-Item -Recurse -Force $pyproj -ErrorAction SilentlyContinue
+if ($venv -ne '') { Remove-Item -Recurse -Force $venv -ErrorAction SilentlyContinue }
+
 # 32. The bottom pane's other faces are reachable from the menu.
 # They are menu items and not only keys because they are the answer to
 # "where has my problem list gone". Naming them by their visible label also

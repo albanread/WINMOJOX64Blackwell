@@ -82,8 +82,10 @@ from ide.toolchain import (
 )
 from ide.python_env import (
     create_environment,
+    dirname,
     environment_ready,
     install_packages,
+    prepare_and_run,
     project_location,
     python_report,
 )
@@ -218,6 +220,7 @@ from ide.build import (
     start as start_build,
     stop as stop_build,
     what_ran,
+    start_chain,
 )
 from ide.dap import (
     configuration_done,
@@ -2664,6 +2667,11 @@ def run_file(hwnd: Int) raises -> String:
     var wrote = save_all(hwnd)
     if not wrote.startswith("saved"):
         return wrote
+    # PYTHON IS NOT MOJO, and this used to hand a .py file to the Mojo
+    # compiler and let it explain the disappointment itself.
+    if path.endswith(".py"):
+        return _run_python(path)
+
     var tools = _toolchain()
     return start_build(
         '"' + tools[0] + '" run' + _stdlib_flag(tools[1]) + ' -I .'
@@ -2689,6 +2697,12 @@ def build_file(hwnd: Int) raises -> String:
     var wrote = save_all(hwnd)
     if not wrote.startswith("saved"):
         return wrote
+    # There is no build step for Python; running it IS the build, and the
+    # environment still has to be prepared either way. Doing the useful
+    # thing beats a compiler error about a file it was never given.
+    if path.endswith(".py"):
+        return _run_python(path)
+
     var out = path
     if out.endswith(".mojo"):
         var stem = String(out[byte=0 : out.byte_length() - 5])
@@ -2700,6 +2714,30 @@ def build_file(hwnd: Int) raises -> String:
         + _stdlib_flag(tools[1]) + ' -I .' + _extra_flags(jit=False)
         + ' -o "' + out + '" "' + path + '"'
     )
+
+
+def _run_python(path: String) raises -> String:
+    """Set the project up if it needs it, then run the file.
+
+    A Python project carrying a `requirements.txt` is one Griddle can
+    prepare by itself, and this is where it does: make the virtual
+    environment if there is not one, install what the file asks for when
+    that has changed since the last install, then run. Each step streams
+    into the output pane and the sequence stops at the first failure, so a
+    person WATCHES pip work -- a first install is minutes, and a modal wait
+    would be the wrong answer even if it were the easier one.
+
+    A project with no requirements file gets none of that and simply runs.
+    Inventing an environment for a script that never asked for one is not a
+    service.
+    """
+    var project = project_location(project_root(), path)
+    var steps = prepare_and_run(project, path)
+    if len(steps) == 0:
+        return String(
+            "no Python interpreter is configured -- see Tools > Python"
+        )
+    return start_chain(steps^, dirname(path))
 
 
 def build_poll(hwnd: Int) raises -> Bool:

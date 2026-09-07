@@ -920,6 +920,221 @@ def project_dependency_arguments(project: String) raises -> List[String]:
     return args^
 
 
+def requirements_file(project: String) raises -> String:
+    """The project's `requirements.txt`, or empty when it has none.
+
+    The one file this whole path turns on. A project that declares its
+    dependencies is a project Griddle can set up by itself; a project that
+    does not is one where guessing would be worse than doing nothing.
+    """
+    if project.byte_length() == 0:
+        return String()
+    var path = _join(project, "requirements.txt")
+    if _exists(path):
+        return path
+    return String()
+
+
+def environment_has_pip(project: String) raises -> Bool:
+    """Whether this environment actually has pip in it.
+
+    `python -m venv` normally bootstraps pip through ensurepip, and normally
+    this question would not be worth asking. It is worth asking here because
+    the bootstrap can silently not happen: a packaged application has its
+    `%LOCALAPPDATA%` redirected into a per-package LocalCache, venv notices
+    ("Actual environment location may have moved due to redirects, links or
+    junctions"), creates the environment at the real path, and the pip
+    bootstrap does not survive the move. The environment is then perfectly
+    good except for the one thing it was made to be able to do, and the
+    first install fails with "No module named pip" -- which reads like a
+    broken Python rather than a redirected one.
+    """
+    var env = environment_dir(project)
+    if env == "":
+        return False
+    return _exists(_join(_join(env, "Lib"), _join("site-packages", "pip")))
+
+
+def ensurepip_command(project: String) raises -> String:
+    """The command that puts pip into an environment that has none.
+
+    `ensurepip --default-pip` against the environment's own interpreter.
+    Cheap -- about a second -- and it only ever runs when the pip check
+    above says it is needed, so a healthy environment never pays for it.
+    """
+    var python = environment_python(project)
+    if python.byte_length() == 0:
+        return String()
+    var args = List[String]()
+    args.append(String("-m"))
+    args.append(String("ensurepip"))
+    args.append(String("--default-pip"))
+    return command_line(python, args)
+
+
+def dependency_stamp(project: String) raises -> String:
+    """Where the record of the last successful install lives.
+
+    Inside the environment rather than beside the requirements: it describes
+    what is INSTALLED, so it belongs with the installation. Deleting the
+    environment deletes the claim about it, which is the correct outcome and
+    would not happen if this sat in the project.
+    """
+    var dir = environment_dir(project)
+    if dir.byte_length() == 0:
+        return String()
+    return _join(dir, "griddle-requirements.txt")
+
+
+def dependencies_current(project: String) raises -> Bool:
+    """Whether the environment already has what requirements.txt asks for.
+
+    BY CONTENT, NOT BY TIMESTAMP, and the difference matters on a machine
+    where people use version control. A clone or a branch switch rewrites
+    every modification time, so an mtime comparison reinstalls the world
+    after every checkout; and saving a file without changing it would do the
+    same. Comparing the text means a reinstall happens when, and only when,
+    the requirements actually changed.
+
+    A project with no requirements file is trivially current -- there is
+    nothing it is asking for.
+    """
+    var requirements = requirements_file(project)
+    if requirements.byte_length() == 0:
+        return True
+    var stamp = dependency_stamp(project)
+    if stamp.byte_length() == 0 or not _exists(stamp):
+        return False
+    try:
+        var want = String()
+        with open(requirements, "r") as f:
+            want = f.read()
+        var have = String()
+        with open(stamp, "r") as f2:
+            have = f2.read()
+        return want == have
+    except:
+        # Unreadable either way: install rather than skip. A needless pip run
+        # costs a minute; a skipped one costs an import error the person will
+        # blame on their code.
+        return False
+
+
+def stamp_command(project: String) raises -> String:
+    """The command that records a successful install.
+
+    A command rather than a Mojo write, because it has to run INSIDE the
+    chain: `build` starts the next step only when the one before exited
+    zero, so making this a step is what ties the record to pip actually
+    having succeeded. Writing it from Mojo after queueing would claim an
+    install that might never happen.
+
+    It runs the environment's own Python, which is certain to exist by the
+    time this step is reached -- `environment_python` builds a path and does
+    not check for one, which is exactly what a planned step needs -- and
+    copies the requirements verbatim, so `dependencies_current` later
+    compares text with text.
+    """
+    var python = environment_python(project)
+    var requirements = requirements_file(project)
+    var stamp = dependency_stamp(project)
+    if (
+        python.byte_length() == 0
+        or requirements.byte_length() == 0
+        or stamp.byte_length() == 0
+    ):
+        return String()
+    var args = List[String]()
+    args.append(String("-c"))
+    args.append(
+        String("import shutil,sys; shutil.copyfile(sys.argv[1], sys.argv[2])")
+    )
+    args.append(requirements)
+    args.append(stamp)
+    return command_line(python, args)
+
+
+def run_file_command(project: String, path: String) raises -> String:
+    """Run one Python file with the project's interpreter.
+
+    The environment's Python when there is one, the toolchain's otherwise --
+    a script with no dependencies should still run, and refusing because
+    nobody wrote a requirements.txt would be a strange thing for an editor
+    to do.
+    """
+    # THE ENVIRONMENT IT WILL HAVE, not the one it has NOW. This is called
+    # while the chain is being BUILT, before a single step has run, so a
+    # project whose environment is about to be created still has none --
+    # and asking `environment_ready` here answered no and picked the
+    # toolchain's Python, which then could not import the packages the very
+    # next-but-one step had just installed. A project that declares
+    # requirements gets the environment's interpreter, because by the time
+    # this command runs the steps before it have made one.
+    var python = String()
+    if requirements_file(project).byte_length() > 0 or environment_ready(
+        project
+    ):
+        python = environment_python(project)
+    if python.byte_length() == 0:
+        python = runtime_python()
+    if python.byte_length() == 0:
+        return String()
+    var args = List[String]()
+    args.append(path)
+    return command_line(python, args)
+
+
+def prepare_and_run(project: String, path: String) raises -> List[String]:
+    """Everything that has to happen before this file can run, then the run.
+
+    One to three commands:
+
+      1. CREATE THE ENVIRONMENT, if the project declares requirements and
+         has no environment yet. A project that declares nothing gets no
+         environment -- there would be nothing to put in it.
+      2. INSTALL, if what requirements.txt asks for is not what was last
+         installed, followed by the step that records it.
+      3. RUN.
+
+    Returning the list rather than starting it keeps the decision here and
+    the process handling in `ide/build.mojo`, which already knows how to
+    stream a command into the output pane and how to stop a sequence when
+    one of its steps fails.
+    """
+    var steps = List[String]()
+    if project.byte_length() == 0 or path.byte_length() == 0:
+        return steps^
+
+    var declares = requirements_file(project).byte_length() > 0
+    var making = declares and not environment_ready(project)
+    if making:
+        var make = create_environment_command(project)
+        if make.byte_length() > 0:
+            steps.append(make)
+    # Pip, when the environment is new or when it turns out not to have any.
+    # A brand-new environment is assumed to need it rather than checked,
+    # because at this point it does not exist to be checked.
+    if declares and (making or not environment_has_pip(project)):
+        var bootstrap = ensurepip_command(project)
+        if bootstrap.byte_length() > 0:
+            steps.append(bootstrap)
+    if declares and not dependencies_current(project):
+        # `planned`: the environment may not exist yet, but the step
+        # queued above creates it, and this one runs after that.
+        var install = project_dependency_command(project, planned=True)
+        if install.byte_length() > 0:
+            steps.append(install)
+            var stamp = stamp_command(project)
+            if stamp.byte_length() > 0:
+                steps.append(stamp)
+
+    var run = run_file_command(project, path)
+    if run.byte_length() == 0:
+        return List[String]()
+    steps.append(run)
+    return steps^
+
+
 def create_environment_command(project: String) raises -> String:
     """The command line that builds or repairs this project's environment.
 
@@ -954,7 +1169,9 @@ def create_environment_command(project: String) raises -> String:
     return command_line(python, args)
 
 
-def install_command(requirement: String, project: String) raises -> String:
+def install_command(
+    requirement: String, project: String, planned: Bool = False
+) raises -> String:
     """The command line that installs into this project's environment.
 
     Always `<venv>\\Scripts\\python.exe -m pip`, never a bare `pip`. A
@@ -965,15 +1182,21 @@ def install_command(requirement: String, project: String) raises -> String:
     Args:
         requirement: A pip requirement, or `-r <path>`.
         project: The project directory.
+        planned: True when the environment does not exist YET but a step
+            earlier in the same chain will have created it by the time this
+            command runs. The readiness check is then skipped, because it
+            would be asking about the wrong moment: at chain-BUILD time no
+            environment exists, and refusing here is how the install step
+            went missing from an otherwise correct sequence.
 
     Returns:
-        A command line, or empty when the environment is not ready or the
-        requirement is empty.
+        A command line, or empty when the environment is neither ready nor
+        planned, or the requirement is empty.
 
     Raises:
         If the disk cannot be read.
     """
-    if not environment_ready(project):
+    if not planned and not environment_ready(project):
         return String()
     var args = package_arguments(requirement, project)
     if len(args) < 4:
@@ -981,20 +1204,28 @@ def install_command(requirement: String, project: String) raises -> String:
     return command_line(environment_python(project), args)
 
 
-def project_dependency_command(project: String) raises -> String:
+def project_dependency_command(
+    project: String, planned: Bool = False
+) raises -> String:
     """The command line that installs what the project declares.
 
     Args:
         project: The project directory.
+        planned: True when the environment does not exist YET but a step
+            earlier in the same chain will have created it by the time this
+            command runs. The readiness check is then skipped, because it
+            would be asking about the wrong moment: at chain-BUILD time no
+            environment exists, and refusing here is how the install step
+            went missing from an otherwise correct sequence.
 
     Returns:
-        A command line, or empty when the environment is not ready or the
-        project declares nothing.
+        A command line, or empty when the environment is neither ready nor
+        planned, or the project declares nothing.
 
     Raises:
         If the disk cannot be read.
     """
-    if not environment_ready(project):
+    if not planned and not environment_ready(project):
         return String()
     var args = project_dependency_arguments(project)
     if len(args) == 0:

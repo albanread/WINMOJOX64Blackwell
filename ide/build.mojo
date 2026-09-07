@@ -37,6 +37,20 @@ comptime g_running = named_global["build.running", Int]
 comptime g_started = named_global["build.started", Int]
 comptime g_what = named_global["build.what", String]
 comptime g_serial = named_global["build.serial", Int]
+comptime g_queue = named_global["build.queue", List[String]]
+comptime g_queue_dir = named_global["build.queuedir", String]
+"""The rest of a CHAIN, and where to run it.
+
+Some things are one command and some are three. Running a Python file in a
+project that declares its dependencies means: make the virtual environment if
+it is missing, install what requirements.txt asks for if that has changed, and
+only then run the file. Each of those is a separate executable -- `spawn` is
+CreateProcessW and not a shell, so there is no `&&` to lean on -- and each has
+to stream into the same pane, in order, stopping at the first failure.
+
+So a chain is a list of command lines. `poll` starts the next one when the
+current one exits ZERO, and drops the rest when it does not: a pip install
+that failed must not be followed by a run that would fail more confusingly."""
 
 # How much of a build log to keep. Ten thousand lines is more than anyone
 # reads and a great deal less than a runaway program can print in a second.
@@ -279,12 +293,21 @@ def ensure_linker() raises -> String:
     return String("toolchain staged: ") + target
 
 
-def start(command: String, working_dir: String = String("")) raises -> String:
+def start(
+    command: String,
+    working_dir: String = String(""),
+    fresh: Bool = True,
+) raises -> String:
     """Run a command, collecting its output into the pane.
 
     Args:
         command: The full command line.
         working_dir: Where to run it, or empty for the current directory.
+        fresh: True to begin a new run -- clear the pane and drop any
+            abandoned chain. False continues one already on screen, which is
+            what the steps AFTER the first in a chain want: watching pip
+            work is the point, and clearing the pane between steps would
+            throw away everything the person is waiting to read.
 
     Returns:
         What was started, or why it was not.
@@ -309,8 +332,13 @@ def start(command: String, working_dir: String = String("")) raises -> String:
         _ = apply_variables(project_location(project_root(), String()))
     except:
         pass
-    clear_output()
-    g_what()[] = command
+    if fresh:
+        # A plain start is not a chain. Anything left over from one that
+        # was abandoned goes now, before this command's output is
+        # collected.
+        g_queue()[] = List[String]()
+        clear_output()
+        g_what()[] = command
     _append(String("> ") + command + "\n")
     # Both streams: a compiler's diagnostics are on stderr and they are
     # the reason anybody is watching this pane.
@@ -322,6 +350,47 @@ def start(command: String, working_dir: String = String("")) raises -> String:
     g_running()[] = 1
     g_started()[] = perf_counter_ns()
     return String("started: ") + command
+
+
+def start_chain(
+    var commands: List[String], working_dir: String = String("")
+) raises -> String:
+    """Run several commands in order, stopping at the first that fails.
+
+    Args:
+        commands: The command lines, in order. An empty list does nothing.
+        working_dir: Where to run them, or empty for the current directory.
+
+    Returns:
+        What was started, or why it was not.
+
+    Raises:
+        If the first process cannot be created.
+    """
+    if len(commands) == 0:
+        return String("nothing to run")
+    var first = commands[0]
+    var started = start(first, working_dir)
+    if not started.startswith("started"):
+        return started
+    # AFTER `start`, which clears the queue -- a plain `start` must not
+    # inherit the tail of an abandoned chain.
+    var rest = List[String]()
+    for i in range(1, len(commands)):
+        rest.append(commands[i])
+    g_queue()[] = rest^
+    g_queue_dir()[] = working_dir
+    if len(commands) > 1:
+        _append(
+            String("[") + String(len(commands) - 1)
+            + " more step(s) to follow]\n"
+        )
+    return started
+
+
+def queued_steps() -> Int:
+    """How many commands are still to come after this one."""
+    return len(g_queue()[])
 
 
 def poll() raises -> Bool:
@@ -389,6 +458,34 @@ def poll() raises -> Bool:
         kill(dying)
         g_running()[] = 0
         changed = True
+
+        # THE CHAIN. A zero exit and something still queued means the next
+        # step starts now, into the same pane. A non-zero exit drops the
+        # rest: a run that follows a failed install fails again, further
+        # away from the reason.
+        # Read IN PLACE rather than copied out: `List[String]` is not
+        # implicitly copyable, and a chain of three command lines is not
+        # worth a heap copy on every timer tick either.
+        var remaining = len(g_queue()[])
+        if remaining > 0:
+            if Int(code) != 0:
+                g_queue()[] = List[String]()
+                _append(
+                    String("[") + String(remaining)
+                    + " step(s) skipped: the one before failed]\n"
+                )
+            else:
+                var next = g_queue()[][0]
+                var tail = List[String]()
+                for i in range(1, remaining):
+                    tail.append(g_queue()[][i])
+                var dir = g_queue_dir()[]
+                # `start` clears the queue, so the tail goes back after it.
+                var said = start(next, dir, fresh=False)
+                g_queue()[] = tail^
+                g_queue_dir()[] = dir
+                if not said.startswith("started"):
+                    g_queue()[] = List[String]()
     return changed
 
 
@@ -405,6 +502,9 @@ def stop() raises -> String:
         return String("nothing is running")
     var child = g_child()[]
     kill(child)
+    # And the rest of any chain: stopping a build means stopping the
+    # whole sequence, not letting the next step start behind it.
+    g_queue()[] = List[String]()
     g_running()[] = 0
     _append(String("\n[stopped]\n"))
     return String("stopped")
