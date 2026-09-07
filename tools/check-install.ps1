@@ -52,6 +52,21 @@ try {
     Check 'python-is-bundled'   ($out -match [regex]::Escape("$Target\python")) 'python view names the bundled runtime'
     Check 'hello-builds'        ($out -match 'exit 0') 'built and ran from the installed toolchain'
 
+    # The game pane, from the INSTALLED copy. `check-packaged.ps1` proves the
+    # examples build against the staged tree; this is the different question
+    # of whether they build once the tree has MOVED, because `lib\gamepane`
+    # is reached through modular.cfg's `import_path` and every path in that
+    # file is rewritten at install time.
+    #
+    # It is worth its own check because the package had never been staged by
+    # the release script at all -- the copy that used to sit in the tree was
+    # put there by hand before the pane was rebuilt, so a release shipped a
+    # `gamepane` two designs out of date and three examples that imported it
+    # and could not compile.
+    $pane = "$Target\examples\win32\gamepane-canvas\main.mojo"
+    $paneOut = & cmd /c "`"$Target\bin\griddle.exe`" --open `"$pane`" --no-lsp --cmd `"build;;build wait 240000`" 2>&1" | Out-String
+    Check 'gamepane-builds'     ($paneOut -match 'exit 0') 'an installed copy builds against lib\gamepane'
+
     # A GPU program, built and RUN the same way. It imports nvptxrt.dll --
     # the runtime is a DLL, not a static archive -- and the three Mojo
     # runtime DLLs; with PATH scrubbed, only the editor can supply the

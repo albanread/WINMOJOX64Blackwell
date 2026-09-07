@@ -127,6 +127,23 @@ $artifacts = [ordered]@{
 # picking out the .mojo files. Build output from a previous run is left
 # behind: an example that ships with someone else's .exe in it is not the
 # pristine copy it is meant to be.
+# THE GAME PANE, into lib\ where modular.cfg's `import_path` points, so a
+# person who installs this can build Galaxigans and the seven gamepane
+# examples without a second include flag. It is a source package -- the
+# layers, the ABC parser and the audio deck -- and it is copied whole
+# because its subpackages (abc, audio) are part of it.
+#
+# It had never been staged by this script at all. The copy that was in the
+# tree got there by hand, before the pane was rebuilt, and then stayed.
+$gamepaneSource = Join-Path $repository 'gamepane'
+if (Test-Path -LiteralPath $gamepaneSource) {
+    foreach ($file in (Get-ChildItem -LiteralPath $gamepaneSource -File -Recurse)) {
+        if ($file.Extension -in @('.exe', '.lib', '.pdb', '.obj')) { continue }
+        $relative = $file.FullName.Substring($gamepaneSource.Length).TrimStart('\\')
+        $artifacts['lib\gamepane\' + $relative] = 'gamepane\' + $relative
+    }
+}
+
 $exampleRoot = Join-Path $repository 'examples\win32'
 $exampleProjects = Get-ChildItem -LiteralPath $exampleRoot -Directory |
     Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'main.mojo') } |
@@ -179,6 +196,31 @@ foreach ($relativePath in $templateFiles) {
 }
 
 New-Item -ItemType Directory -Path $destinationPath -Force | Out-Null
+
+# TWO TREES ARE REBUILT WHOLESALE RATHER THAN MERGED INTO, and everything
+# else is still merged.
+#
+# Staging has always copied over whatever was already here, which is right
+# for the toolchain -- a file that keeps its name keeps its place. It is
+# wrong for anything DELETED from the repository, because nothing here ever
+# notices a deletion. Two things had been quietly riding along for months
+# because of it: the pre-rebuild `lib\gamepane` with its `api` and `d3d11`
+# subpackages, which no longer exist in the tree and describe an API two
+# designs out of date, and three example folders -- galaxigans,
+# gamepane-plasma, gamepane-starfield -- that import that vanished layout
+# and cannot build. A release could therefore ship examples that had never
+# compiled against the thing it shipped.
+#
+# So the example tree and the game-pane package are emptied first and then
+# written from the repository. Whatever the repository has is what ships;
+# whatever it has dropped, drops.
+foreach ($rebuilt in @('examples\win32', 'lib\gamepane')) {
+    $stale = Join-Path $destinationPath $rebuilt
+    if (Test-Path -LiteralPath $stale) {
+        Remove-Item -LiteralPath $stale -Recurse -Force
+    }
+}
+
 foreach ($directory in @('bin', 'lib', 'examples', 'cache', 'crashdb')) {
     New-Item -ItemType Directory -Path (Join-Path $destinationPath $directory) -Force | Out-Null
 }
