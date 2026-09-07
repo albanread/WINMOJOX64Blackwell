@@ -167,6 +167,7 @@ from ide.window import (
     selection_report,
     state_report,
     type_text,
+    copy_output,
 )
 from ide.menu import invoke as invoke_menu
 from ide.menu import report as menu_report
@@ -930,6 +931,10 @@ def agent_command(hwnd: Int, text: StringSlice) raises -> String:
         return build_file(hwnd)
 
     if verb == "output":
+        # `output copy` puts the pane on the clipboard, which is the only way
+        # to read a diagnostic longer than the pane is wide.
+        if rest == "copy":
+            return copy_output(hwnd)
         return output_report(hwnd)
 
     if verb == "stop":

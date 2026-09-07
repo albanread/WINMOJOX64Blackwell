@@ -191,6 +191,7 @@ from ide.window import (
     scroll_by,
     scroll_to,
     type_unit,
+    copy_output,
 )
 from ide.menu import build as build_menu, show_context_menu
 from ide.lsp import is_running as lsp_running, set_disabled
@@ -1208,6 +1209,9 @@ def griddle_wndproc(
                 return 0
             if which == 1035:  # Edit > Select All
                 print("griddle:", move_key(hwnd, "all", False))
+                return 0
+            if which == 1039:  # Edit > Copy Output
+                print("griddle:", copy_output(hwnd))
                 return 0
             if which == 1036:  # Edit > Find
                 print("griddle:", find_text(hwnd, find_needle(hwnd)))

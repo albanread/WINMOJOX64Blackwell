@@ -2709,8 +2709,21 @@ def run_file(hwnd: Int) raises -> String:
         return _run_python(path)
 
     var tools = _toolchain()
+    # --no-optimization, the same as Build, and it is not a preference.
+    #
+    # `named_global` is `pop.global_alloc`, whose deduplication by name does
+    # not survive optimization on this target: every call site gets its own
+    # zero-filled slot, so a value written through one is read back through
+    # another as nothing. Anything holding process state behind it -- the game
+    # pane's key tables, Griddle's own build and session state -- is silently
+    # dead in an optimized build. tools/build-ide.ps1 passes this flag,
+    # examples/win32/build-x64.sh passes it, `build_file` below passes it, and
+    # Run was the one path that did not. So every game example built and none
+    # of them RAN: the pane checks its own globals at startup and refuses
+    # rather than reporting every key as up forever.
     return start_build(
-        '"' + tools[0] + '" run' + _stdlib_flag(tools[1]) + ' -I .'
+        '"' + tools[0] + '" run --no-optimization'
+        + _stdlib_flag(tools[1]) + ' -I .'
         + _extra_flags(jit=True) + ' "' + path + '"'
     )
 
@@ -2814,6 +2827,35 @@ def build_wait(hwnd: Int, milliseconds: Int) raises -> String:
             return output_report(hwnd)
         _ = settle(hwnd, 10)
     return String("still running after ") + String(milliseconds) + " ms"
+
+
+def copy_output(hwnd: Int) raises -> String:
+    """Put the whole output pane on the clipboard.
+
+    A compiler diagnostic is often longer than the pane is wide, and the pane
+    does not wrap -- so the part that says what actually went wrong is off the
+    right-hand edge, and until now there was no way to get at it. Reading an
+    error out of a screenshot is not a thing anyone should be asked to do.
+
+    The WHOLE pane rather than a selection, deliberately. Selection in a
+    read-only log means a caret, a drag, a shift-click and a highlight to
+    draw, all to reach an answer that is nearly always "the last twenty
+    lines". Copying everything is one keystroke, needs no state, and a person
+    pastes it wherever they can read it.
+    """
+    _ = hwnd
+    var total = output_count()
+    if total == 0:
+        return String("the output pane is empty")
+    var text = String("")
+    for i in range(total):
+        text += output_line(i)
+        text += "\n"
+    if not set_clipboard_text(text^):
+        return String("the clipboard would not take it")
+    return String("copied ") + String(total) + " line" + (
+        "" if total == 1 else "s"
+    ) + " of output"
 
 
 def output_report(hwnd: Int) raises -> String:

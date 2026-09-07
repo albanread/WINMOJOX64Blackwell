@@ -67,6 +67,18 @@ try {
     $paneOut = & cmd /c "`"$Target\bin\griddle.exe`" --open `"$pane`" --no-lsp --cmd `"build;;build wait 240000`" 2>&1" | Out-String
     Check 'gamepane-builds'     ($paneOut -match 'exit 0') 'an installed copy builds against lib\gamepane'
 
+    # RUN, not build, and they are different commands with different flags.
+    # `gamepane-builds` passed for a release in which no game would start:
+    # Build passed --no-optimization and Run did not, so every game example
+    # compiled and then refused at startup, because `named_global` does not
+    # survive optimization and the pane checks its own globals rather than
+    # reporting every key as up forever. A check that only builds cannot see
+    # that. GAMEPANE_FRAMES makes the run finish on its own.
+    $env:GAMEPANE_FRAMES = '20'
+    $runOut = & cmd /c "`"$Targetin\griddle.exe`" --open `"$pane`" --no-lsp --cmd `"run;;run wait 300000`" 2>&1" | Out-String
+    Remove-Item Env:GAMEPANE_FRAMES -ErrorAction SilentlyContinue
+    Check 'gamepane-runs'       (($runOut -match 'presented 20 frames') -and ($runOut -match 'exit 0')) 'a game example RUNS from the installed copy'
+
     # A GPU program, built and RUN the same way. It imports nvptxrt.dll --
     # the runtime is a DLL, not a static archive -- and the three Mojo
     # runtime DLLs; with PATH scrubbed, only the editor can supply the

@@ -35,6 +35,7 @@ comptime ID_EDIT_CUT = 1032
 comptime ID_EDIT_COPY = 1033
 comptime ID_EDIT_PASTE = 1034
 comptime ID_EDIT_SELECT_ALL = 1035
+comptime ID_EDIT_COPY_OUTPUT = 1039
 comptime ID_EDIT_FIND = 1036
 comptime ID_EDIT_FIND_NEXT = 1037
 comptime ID_EDIT_FIND_PREV = 1038
@@ -151,6 +152,8 @@ def build(hwnd: Int) raises:
             ID_EDIT_PASTE, "Paste\tCtrl+V")
     _append(AppendMenuW, edit, winkb_constant["MF_STRING"](),
             ID_EDIT_SELECT_ALL, "Select All\tCtrl+A")
+    _append(AppendMenuW, edit, winkb_constant["MF_STRING"](),
+            ID_EDIT_COPY_OUTPUT, "Copy Output\tCtrl+Shift+C")
     _append(AppendMenuW, edit, winkb_constant["MF_SEPARATOR"](), 0, "")
     _append(AppendMenuW, edit, winkb_constant["MF_STRING"](),
             ID_EDIT_FIND, "Find\tCtrl+F")
